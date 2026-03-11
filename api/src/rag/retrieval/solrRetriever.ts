@@ -98,6 +98,10 @@ const readNumberEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const PROCEDURAL_QUERY_HINT_PATTERN = /(申請|手続|手続き|手順|方法|届出|提出|承認|apply|procedure|steps?|how\s+to|workflow)/i;
+const hasProceduralHint = (value: string): boolean =>
+  PROCEDURAL_QUERY_HINT_PATTERN.test(String(value || '').trim());
+
 const stableDocKey = (doc: any): string => {
   const id = String(doc?.id || '').trim();
   if (id) return id;
@@ -443,6 +447,7 @@ export const retrieveDocumentsWithSolr = async (
   // 2) upstream expansion/translation candidates (provided in stable order by expandQuery)
   // 3) wildcard fallback (single final attempt)
   const canonicalQuery = String(input.queryForRAG || '').trim();
+  const queryIsProcedural = hasProceduralHint(canonicalQuery);
   let expandedQueries = uniqueStrings(input.multilingualRetrievalQueries || [], 9);
   let domainPrefilterMetadataFilters: Record<string, any> | undefined;
   let domainPrefilterActive = false;
@@ -620,13 +625,17 @@ export const retrieveDocumentsWithSolr = async (
     );
     const candidateConfidence = computeRetrievalConfidence(candidateTopScore, found.docs.length);
     const hasBest = lexicalBestDocs.length > 0;
-    const isBetterCandidate =
-      !hasBest ||
-      candidateTopTermHits > lexicalBestTopTermHits ||
-      (
-        candidateTopTermHits === lexicalBestTopTermHits &&
-        candidateTopScore > lexicalBestTopScore
-      );
+    const candidateHasProceduralHint = hasProceduralHint(candidate);
+    const bestHasProceduralHint = hasProceduralHint(lexicalBestQuery);
+    const isBetterCandidate = (() => {
+      if (!hasBest) return true;
+      if (queryIsProcedural && candidateHasProceduralHint !== bestHasProceduralHint) {
+        return candidateHasProceduralHint;
+      }
+      if (candidateTopTermHits > lexicalBestTopTermHits) return true;
+      if (candidateTopTermHits < lexicalBestTopTermHits) return false;
+      return candidateTopScore > lexicalBestTopScore;
+    })();
 
     log('lexical_candidate_eval', {
       query: candidate,
@@ -635,6 +644,7 @@ export const retrieveDocumentsWithSolr = async (
       top_term_hits: candidateTopTermHits,
       retrieval_confidence: Number(candidateConfidence.toFixed(3)),
       better_than_current: isBetterCandidate,
+      procedural_hint: candidateHasProceduralHint ? 1 : 0,
     });
 
     if (isBetterCandidate) {
@@ -667,11 +677,18 @@ export const retrieveDocumentsWithSolr = async (
   }
 
   if (mergedLexicalDocsById.size > 0) {
+    const mergeSignalQuery = queryIsProcedural
+      ? lexicalBestQuery
+      : uniqueStrings([canonicalQuery, translatedQuery, lexicalBestQuery], 3).join(' ');
     const mergedRows = Array.from(mergedLexicalDocsById.values())
-      .sort((a, b) => Number(b?.score || 0) - Number(a?.score || 0))
+      .sort((a, b) => {
+        const aHits = countDocTermHits(a, mergeSignalQuery);
+        const bHits = countDocTermHits(b, mergeSignalQuery);
+        if (aHits !== bHits) return bHits - aHits;
+        return Number(b?.score || 0) - Number(a?.score || 0);
+      })
       .slice(0, Math.max(4, solrRows));
-    const lexicalSignalQuery = uniqueStrings([canonicalQuery, translatedQuery, lexicalBestQuery], 3).join(' ');
-    const mergedTopHits = Math.max(...mergedRows.map((doc) => countDocTermHits(doc, lexicalSignalQuery)), 0);
+    const mergedTopHits = Math.max(...mergedRows.map((doc) => countDocTermHits(doc, mergeSignalQuery)), 0);
     const mergedTopScore = Number(mergedRows?.[0]?.score || lexicalBestTopScore || 0);
     lexicalBestDocs = mergedRows;
     lexicalBestTopScore = mergedTopScore;
@@ -682,6 +699,7 @@ export const retrieveDocumentsWithSolr = async (
       top_score: Number(mergedTopScore.toFixed(3)),
       top_term_hits: lexicalBestTopTermHits,
       query_translation_applied: queryTranslationApplied,
+      merge_signal_query: mergeSignalQuery,
     });
   }
 

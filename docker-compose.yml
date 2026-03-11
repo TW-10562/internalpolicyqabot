@@ -59,6 +59,16 @@ services:
       - avairy-network
     restart: unless-stopped
 
+  apisix-dashboard:
+    profiles: ["apisix"]
+    image: apache/apisix-dashboard:3.0.0-centos
+    container_name: hrbot-apisix-dashboard
+    ports:
+      - "9000:9000"
+    networks:
+      - avairy-network
+    restart: unless-stopped
+
   rag-python:
     build:
       context: .
@@ -69,18 +79,26 @@ services:
       - "8010:8010"
     environment:
       PYTHONUNBUFFERED: "1"
+      RAG_FORCE_GPU_ONLY: "${RAG_FORCE_GPU_ONLY:-0}"
+      SOLR_URL: "${SOLR_URL:-http://solr:8983}"
+      SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
     volumes:
       - ./rag:/app/rag
       - ./config:/app/config:ro
+      - ./uploads:/app/uploads
+      - ./rag/data/model:/app/rag/data/model
+      - ./rag/app/rag_db:/app/rag/app/rag_db
     networks:
       - avairy-network
     depends_on:
       - solr
     restart: unless-stopped
 
-  llm-gateway:
+  vllm-single:
+    profiles: ["llm-local"]
     image: "${LLM_GATEWAY_IMAGE:-vllm/vllm-openai:latest}"
-    container_name: hrbot-llm-gateway
+    container_name: hrbot-vllm-single
+    platform: "linux/amd64"
     ports:
       - "8000:8000"
     environment:
@@ -97,7 +115,9 @@ services:
     volumes:
       - llm-model-cache:/root/.cache/huggingface
     networks:
-      - avairy-network
+      avairy-network:
+        aliases:
+          - llm-gateway
     restart: unless-stopped
 
   api:
@@ -106,11 +126,15 @@ services:
       dockerfile: Dockerfile
       target: api
       args:
-        NODE_VERSION: 20.11.1
+        NODE_VERSION: 22.22.0
         PNPM_VERSION: 9.12.3
     container_name: hrbot-api
     ports:
       - "${API_PORT:-8080}:8080"
+      - "${BULL_BOARD_PORT:-9999}:9999"
+    env_file:
+      - ./.env
+      - ./api/.env
     environment:
       DB_MODE: "postgres"
       PG_HOST: postgres
@@ -126,8 +150,9 @@ services:
       SOLR_URL: "${SOLR_URL:-http://solr:8983}"
       SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
 
-      LLM_BASE_URL: "${LLM_BASE_URL:-http://llm-gateway:8000/v1}"
-      LLM_API_KEY: "${LLM_API_KEY:-}"
+      # External (host) OpenAI-compatible gateway default (Linux needs extra_hosts below).
+      # Override with `LLM_BASE_URL_OVERRIDE=http://vllm-single:8000/v1` when using the optional `vllm-single` service.
+      LLM_BASE_URL: "${LLM_BASE_URL_OVERRIDE:-http://host.docker.internal:9080/v1}"
       LLM_MODEL: "${LLM_MODEL:-openai/gpt-oss-20b}"
       RAG_API: "${RAG_API:-http://rag-python:8010}"
       RAG_BACKEND_URL: "${RAG_BACKEND_URL:-http://rag-python:8010}"
@@ -141,6 +166,11 @@ services:
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
       NODE_ENV: "production"
+    volumes:
+      - ./config:/app/config:ro
+      - ./uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - avairy-network
     depends_on:
@@ -148,7 +178,60 @@ services:
       - postgres
       - solr
       - rag-python
-      - llm-gateway
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      args:
+        NODE_VERSION: 22.22.0
+        PNPM_VERSION: 9.12.3
+    container_name: hrbot-worker
+    command: ["node", "dist/queue/worker.js"]
+    env_file:
+      - ./.env
+      - ./api/.env
+    environment:
+      DB_MODE: "postgres"
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: "${PG_DATABASE:-qa_db}"
+      PG_USER: "${PG_USER:-twave_01}"
+      PG_PASSWORD: "${PG_PASSWORD:-twave_01password}"
+      PG_SSL: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-abcd1234}"
+      REDIS_DB: 0
+      SOLR_URL: "${SOLR_URL:-http://solr:8983}"
+      SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
+      LLM_BASE_URL: "${LLM_BASE_URL_OVERRIDE:-http://host.docker.internal:9080/v1}"
+      LLM_MODEL: "${LLM_MODEL:-openai/gpt-oss-20b}"
+      RAG_API: "${RAG_API:-http://rag-python:8010}"
+      RAG_BACKEND_URL: "${RAG_BACKEND_URL:-http://rag-python:8010}"
+      RAG_BACKEND_HOST: rag-python
+      RAG_BACKEND_PORT: 8010
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8080
+      FRONTEND_HOST: "${FRONTEND_HOST:-ui}"
+      FRONTEND_PORT: 7001
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
+      NODE_ENV: "production"
+    volumes:
+      - ./config:/app/config:ro
+      - ./uploads:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - avairy-network
+    depends_on:
+      - redis
+      - postgres
+      - solr
+      - rag-python
     restart: unless-stopped
 
   ui:
@@ -157,7 +240,7 @@ services:
       dockerfile: Dockerfile
       target: ui
       args:
-        NODE_VERSION: 20.11.1
+        NODE_VERSION: 22.22.0
         PNPM_VERSION: 9.12.3
     container_name: hrbot-ui
     ports:

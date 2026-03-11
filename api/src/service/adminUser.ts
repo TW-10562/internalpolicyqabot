@@ -18,10 +18,12 @@ import {
   normalizeRoleCode,
   roleDepartmentForAdmin,
 } from '@/service/rbac';
+import { deleteRoleForEmail, upsertRoleForEmail } from '@/service/ssoRoleStore';
 
 export type AdminUserInput = {
   firstName: string;
   lastName: string;
+  email?: string;
   employeeId: string;
   userName?: string;
   userJobRole: string;
@@ -44,7 +46,9 @@ const normalizeUserName = (value: string) => String(value || '').trim().toLowerC
 
 const toResponseUser = (user: any) => ({
   user_id: user.user_id,
+  user_name: user.user_name,
   emp_id: user.emp_id,
+  email: user.email,
   first_name: user.first_name,
   last_name: user.last_name,
   job_role_key: user.job_role_key,
@@ -94,7 +98,26 @@ function ensureTargetUserScope(scope: AccessScope, target: any) {
   }
 }
 
-export async function listAdminUsers(scope: AccessScope) {
+const normalizeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
+const looksLikeEmail = (value: unknown) => {
+  const v = normalizeEmail(value);
+  return Boolean(v && v.includes('@') && v.includes('.') && !v.includes(' '));
+};
+
+async function syncSsoRoleMapping(email: string | null, roleCode: RoleCode) {
+  if (!email) return;
+  try {
+    if (normalizeRoleCode(roleCode) === 'USER') {
+      await deleteRoleForEmail(email);
+    } else {
+      await upsertRoleForEmail(email, roleCode);
+    }
+  } catch (error) {
+    console.error('[adminUser.syncSsoRoleMapping] failed:', { email, roleCode, error });
+  }
+}
+
+export async function listAdminUsers(scope: AccessScope, opts?: { query?: string }) {
   ensureCanManage(scope);
 
   const where: any = { deleted_at: null };
@@ -102,11 +125,35 @@ export async function listAdminUsers(scope: AccessScope) {
     where.department_code = scope.departmentCode;
   }
 
+  const mode = await detectDbMode();
+  const likeOp: any = mode === 'postgres' ? Op.iLike : Op.like;
+
+  const query = String(opts?.query || '').trim();
+  if (query) {
+    const tokens = query.split(/\s+/).map((t) => t.trim()).filter(Boolean).slice(0, 6);
+    if (tokens.length) {
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        ...tokens.map((token) => ({
+          [Op.or]: [
+            { first_name: { [likeOp]: `%${token}%` } },
+            { last_name: { [likeOp]: `%${token}%` } },
+            { user_name: { [likeOp]: `%${token}%` } },
+            { emp_id: { [likeOp]: `%${token}%` } },
+            { email: { [likeOp]: `%${token}%` } },
+          ],
+        })),
+      ];
+    }
+  }
+
   const rows = await User.findAll({
     raw: true,
     attributes: [
       'user_id',
+      'user_name',
       'emp_id',
+      'email',
       'first_name',
       'last_name',
       'job_role_key',
@@ -121,14 +168,16 @@ export async function listAdminUsers(scope: AccessScope) {
   }) as any[];
 
   return rows
-    .filter((u) => !!u.emp_id)
+    .filter((u) => !!u.email || !!u.emp_id)
     .map((u) => toResponseUser({ ...u, role_code: normalizeRoleCode(u.role_code) }));
 }
 
 export async function createAdminUser(input: AdminUserInput, actorScope: AccessScope) {
   ensureCanManage(actorScope);
 
-  const employeeId = String(input.employeeId || '').trim();
+  const inputEmail = String(input.email || '').trim();
+  const normalizedEmail = inputEmail ? normalizeEmail(inputEmail) : null;
+  const employeeId = String(input.employeeId || '').trim() || (normalizedEmail || '');
   const firstName = String(input.firstName || '').trim();
   const lastName = String(input.lastName || '').trim();
   const password = String(input.password || '');
@@ -177,6 +226,7 @@ export async function createAdminUser(input: AdminUserInput, actorScope: AccessS
       job_role_key: normalizeJobRole(input.userJobRole),
       area_of_work_key: normalizeArea(input.areaOfWork),
       password: await hashPassword(password),
+      email: normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : null),
       status: input.isActive === false ? '0' : '1',
       sso_bound: 0,
       create_by: actorScope.userId,
@@ -196,6 +246,10 @@ export async function createAdminUser(input: AdminUserInput, actorScope: AccessS
     });
 
     return toResponseUser(created.dataValues);
+  }).then(async (created) => {
+    const candidateEmail = normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : null);
+    await syncSsoRoleMapping(candidateEmail, roleCode);
+    return created;
   });
 }
 
@@ -203,7 +257,9 @@ export async function updateAdminUser(userId: number, input: AdminUserInput, act
   ensureCanManage(actorScope);
   if (!Number.isFinite(userId)) throw new Error('validation_error');
 
-  const employeeId = String(input.employeeId || '').trim();
+  const inputEmail = String(input.email || '').trim();
+  const normalizedEmail = inputEmail ? normalizeEmail(inputEmail) : null;
+  const employeeId = String(input.employeeId || '').trim() || (normalizedEmail || '');
   const firstName = String(input.firstName || '').trim();
   const lastName = String(input.lastName || '').trim();
 
@@ -272,6 +328,7 @@ export async function updateAdminUser(userId: number, input: AdminUserInput, act
       last_name: lastName,
       job_role_key: normalizeJobRole(input.userJobRole),
       area_of_work_key: normalizeArea(input.areaOfWork),
+      email: normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : (target.email || null)),
       status: input.isActive === false ? '0' : '1',
       create_by: target.create_by || actorScope.userId,
       department: resolvedDepartment,
@@ -299,6 +356,10 @@ export async function updateAdminUser(userId: number, input: AdminUserInput, act
 
     const updated = await User.findOne({ raw: true, where: { user_id: userId }, transaction }) as any;
     return toResponseUser(updated);
+  }).then(async (updated) => {
+    const candidateEmail = normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : null);
+    await syncSsoRoleMapping(candidateEmail, requestedRole);
+    return updated;
   });
 }
 
@@ -328,6 +389,13 @@ export async function deleteAdminUser(userId: number, actorScope: AccessScope) {
       details: { employeeId: target.emp_id },
     });
   });
+
+  const candidateEmail = looksLikeEmail(target?.email)
+    ? normalizeEmail(target.email)
+    : looksLikeEmail(target?.emp_id)
+      ? normalizeEmail(target.emp_id)
+      : null;
+  await syncSsoRoleMapping(candidateEmail, 'USER');
 
   return { success: true };
 }

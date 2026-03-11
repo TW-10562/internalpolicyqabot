@@ -36,6 +36,8 @@ reports/
 *.Zone.Identifier
 *Zone.Identifier
 config/
+!rag/config/
+!rag/config/**
 faq_database/database/chroma_db/*
 faq_database/files/*
 config/*.env

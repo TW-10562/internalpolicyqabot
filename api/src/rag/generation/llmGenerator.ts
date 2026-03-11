@@ -418,7 +418,7 @@ const EVIDENCE_MAX_CHUNKS = Math.max(
 );
 const EVIDENCE_TRANSLATION_TIMEOUT_MS = Math.max(
   1200,
-  Math.min(20000, Number(process.env.RAG_EVIDENCE_TRANSLATION_TIMEOUT_MS || 10000)),
+  Math.min(25000, Number(process.env.RAG_EVIDENCE_TRANSLATION_TIMEOUT_MS || 20000)),
 );
 const EVIDENCE_TRANSLATION_MAX_CHARS = Math.max(
   600,
@@ -434,7 +434,7 @@ const EVIDENCE_TRANSLATION_MAX_CHUNKS = Math.max(
 );
 const EVIDENCE_LINES_TRANSLATION_TIMEOUT_MS = Math.max(
   1500,
-  Math.min(20000, Number(process.env.RAG_EVIDENCE_LINES_TRANSLATION_TIMEOUT_MS || 9000)),
+  Math.min(25000, Number(process.env.RAG_EVIDENCE_LINES_TRANSLATION_TIMEOUT_MS || 15000)),
 );
 const EVIDENCE_DIRECT_ANSWER_ENABLED =
   String(process.env.RAG_EVIDENCE_DIRECT_ANSWER_ENABLED || '1') !== '0';
@@ -660,7 +660,7 @@ const buildTranslatedExcerptForEnglish = async (chunk: EvidenceChunk): Promise<{
   const sourceForTranslation = sourceText.slice(0, EVIDENCE_TRANSLATION_MAX_CHARS);
   try {
     const translated = String(
-      await translateText(sourceForTranslation, 'en', false, 0, EVIDENCE_TRANSLATION_TIMEOUT_MS) || '',
+      await translateText(sourceForTranslation, 'en', false, 1, EVIDENCE_TRANSLATION_TIMEOUT_MS) || '',
     ).trim();
     if (!translated || translated.toLowerCase() === sourceForTranslation.toLowerCase()) {
       return { excerpt: sourceText, translated: false };

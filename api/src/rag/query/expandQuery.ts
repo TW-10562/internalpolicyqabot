@@ -40,6 +40,17 @@ const JA_LOW_SIGNAL_TERMS = new Set([
   '従業員',
   '会社',
 ]);
+const JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS = new Set([
+  ...Array.from(JA_LOW_SIGNAL_TERMS),
+  '残業',
+  '時間外',
+  '申請',
+  '勤務',
+  '手当',
+  '規程',
+  '規則',
+]);
+const JA_PROCEDURAL_HINT_PATTERN = /(申請|手続|手続き|手順|方法|届出|提出|承認|申告|申込み|申し込み)/;
 
 const prioritizeJapaneseVariants = (variants: string[], limit: number): string[] => {
   const unique = uniqueStringList(
@@ -328,14 +339,28 @@ const buildTranslatedCompositeQueries = (translatedKeywords: string[]): string[]
   );
   if (japaneseKeywords.length < 2) return [];
 
-  const prioritized = japaneseKeywords
+  const substantial = japaneseKeywords
     .map((keyword, index) => ({ keyword, index }))
-    .sort((a, b) => (b.keyword.length - a.keyword.length) || (a.index - b.index))
+    .filter(({ keyword }) => keyword.length >= 4 && !JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS.has(keyword));
+  const base = substantial.length >= 2
+    ? substantial
+    : japaneseKeywords
+      .map((keyword, index) => ({ keyword, index }))
+      .filter(({ keyword }) => keyword.length >= 3 && !JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS.has(keyword));
+
+  const prioritized = base
+    .sort((a, b) => {
+      const leftProcedural = JA_PROCEDURAL_HINT_PATTERN.test(a.keyword) ? 1 : 0;
+      const rightProcedural = JA_PROCEDURAL_HINT_PATTERN.test(b.keyword) ? 1 : 0;
+      if (leftProcedural !== rightProcedural) return rightProcedural - leftProcedural;
+      return (b.keyword.length - a.keyword.length) || (a.index - b.index);
+    })
     .map((row) => row.keyword);
+  if (prioritized.length < 2) return [];
 
   const composites = [
-    prioritized.slice(0, Math.min(6, prioritized.length)).join(' '),
     prioritized.slice(0, Math.min(3, prioritized.length)).join(' '),
+    prioritized.slice(0, Math.min(2, prioritized.length)).join(' '),
   ];
   return uniqueStringList(composites, 2).filter((query) => query.split(/\s+/).length >= 2);
 };
@@ -423,16 +448,36 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   const translatedCompositeQueries = buildTranslatedCompositeQueries(translatedKeywords);
   const japaneseDomainCompositeQueries = buildJapaneseDomainCompositeQueries(canonical, domainOnly);
 
+  const { prioritizedJapaneseKeywords, prioritizedNonJapaneseKeywords } = (() => {
+    const keywords = uniqueStringList(translatedKeywords, MAX_TRANSLATED_KEYWORDS);
+    const japanese = keywords.filter((keyword) => containsJapanese(keyword));
+    const nonJapanese = keywords.filter((keyword) => !containsJapanese(keyword));
+    const prioritizedJapaneseKeywords = [...japanese].sort((a, b) => {
+      const aProcedural = JA_PROCEDURAL_HINT_PATTERN.test(a) ? 1 : 0;
+      const bProcedural = JA_PROCEDURAL_HINT_PATTERN.test(b) ? 1 : 0;
+      if (aProcedural !== bProcedural) return bProcedural - aProcedural;
+      const aLow = JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS.has(a) ? 1 : 0;
+      const bLow = JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS.has(b) ? 1 : 0;
+      if (aLow !== bLow) return aLow - bLow;
+      return (b.length - a.length);
+    });
+    return {
+      prioritizedJapaneseKeywords: uniqueStringList(prioritizedJapaneseKeywords, MAX_TRANSLATED_KEYWORDS),
+      prioritizedNonJapaneseKeywords: uniqueStringList(nonJapanese, MAX_TRANSLATED_KEYWORDS),
+    };
+  })();
+
   const expandedQueries = uniqueStringList(
     [
       canonical,
       ...intentOnly,
       ...emailSignatureOnly,
+      ...prioritizedJapaneseKeywords,
       ...translatedCompositeQueries,
+      ...prioritizedNonJapaneseKeywords,
       ...japaneseDomainCompositeQueries,
       ...domainOnly,
       ...attendanceCorrectionOnly,
-      ...translatedKeywords,
     ],
     nonWildcardLimit,
   );

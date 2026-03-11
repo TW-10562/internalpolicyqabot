@@ -16,9 +16,8 @@ interface User {
   id: string;
   firstName: string;
   lastName: string;
-  employeeId: string;
-  userJobRole: string;
-  areaOfWork: string;
+  email: string;
+  employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
   isActive: boolean;
@@ -28,9 +27,8 @@ interface User {
 interface FormData {
   firstName: string;
   lastName: string;
-  employeeId: string;
-  userJobRole: string;
-  areaOfWork: string;
+  email: string;
+  employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
   isActive: boolean;
@@ -52,51 +50,16 @@ type CsvSummary = {
   errors?: CsvErrorItem[];
 };
 
-const JOB_ROLE_OPTIONS = [
-  { key: 'ai_engineer', label: 'AI Engineer' },
-  { key: 'system_engineer', label: 'System Engineer' },
-  { key: 'it_manager', label: 'IT Manager' },
-  { key: 'tl', label: 'TL' },
-  { key: 'hr', label: 'HR' },
-  { key: 'sales_manager', label: 'Sales Manager' },
-  { key: 'sales_person', label: 'Sales Person' },
-  { key: 'tester', label: 'Tester' },
-  { key: 'factory_worker', label: 'Factory Worker' },
-  { key: 'call_center_agent', label: 'Call Center Agent' },
-];
-
-const AREA_OF_WORK_OPTIONS = [
-  { key: 'ayase', label: 'Ayase' },
-  { key: 'ebina', label: 'Ebina' },
-  { key: 'akihabara_main', label: 'Akihabara Main Building' },
-  { key: 'akihabara_daidoh', label: 'Akihabara Daidoh Building' },
-  { key: 'hiratsuka', label: 'Hiratsuka' },
-];
-
-const normalizeJobRole = (value: string): string => {
-  const trimmed = value.trim().toLowerCase();
-  const jobRoleKey = JOB_ROLE_OPTIONS.find((opt) => opt.key === trimmed || opt.key === value.trim())?.key;
-  if (jobRoleKey) return jobRoleKey;
-  const jobRoleByLabel = JOB_ROLE_OPTIONS.find((opt) => opt.label.toLowerCase() === trimmed)?.key;
-  if (jobRoleByLabel) return jobRoleByLabel;
-  return value.trim();
-};
-
-const normalizeArea = (value: string): string => {
-  const trimmed = value.trim().toLowerCase();
-  const areaKey = AREA_OF_WORK_OPTIONS.find((opt) => opt.key === trimmed || opt.key === value.trim())?.key;
-  if (areaKey) return areaKey;
-  const areaByLabel = AREA_OF_WORK_OPTIONS.find((opt) => opt.label.toLowerCase() === trimmed)?.key;
-  if (areaByLabel) return areaByLabel;
-  return value.trim();
+const looksLikeEmail = (value: string) => {
+  const v = value.trim();
+  return Boolean(v && v.includes('@') && v.includes('.') && !v.includes(' '));
 };
 
 const initialFormData: FormData = {
   firstName: '',
   lastName: '',
-  employeeId: '',
-  userJobRole: '',
-  areaOfWork: '',
+  email: '',
+  employeeCode: '',
   roleCode: 'USER',
   departmentCode: 'HR',
   isActive: true,
@@ -138,59 +101,58 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const [csvSummary, setCsvSummary] = useState<CsvSummary | null>(null);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
 
   const getI18nLabel = (key: string, fallback: string) => {
     const translated = t(key);
     return translated === key ? fallback : translated;
   };
 
-  const getJobRoleLabel = (roleKey: string) => {
-    const fallback = JOB_ROLE_OPTIONS.find((option) => option.key === roleKey)?.label || roleKey;
-    return getI18nLabel(`user.jobRole.${roleKey}`, fallback);
-  };
-
-  const getAreaLabel = (areaKey: string) => {
-    const fallback = AREA_OF_WORK_OPTIONS.find((option) => option.key === areaKey)?.label || areaKey;
-    return getI18nLabel(`user.area.${areaKey}`, fallback);
-  };
-
   const getI18nOrFallback = (key: string, fallback: string) => getI18nLabel(key, fallback);
 
-  const selectJobRoleLabel = getI18nOrFallback('userManagement.form.selectJobRole', 'Select job role');
-  const selectAreaLabel = getI18nOrFallback('userManagement.form.selectAreaOfWork', 'Select area of work');
   const firstNameLabel = getI18nOrFallback('userManagement.table.firstName', 'First name');
   const lastNameLabel = getI18nOrFallback('userManagement.table.lastName', 'Last name');
-  const employeeIdLabel = getI18nOrFallback('userManagement.table.employeeId', 'Employee ID');
+  const emailLabel = getI18nOrFallback('userManagement.table.email', 'Email');
+  const employeeCodeLabel = getI18nOrFallback('userManagement.table.employeeCode', 'Employee Code');
   const passwordLabel = getI18nOrFallback('userManagement.table.password', 'Password');
   const optionalPasswordLabel = getI18nOrFallback('userManagement.password.changeOptional', 'Leave blank to keep');
 
   const uploadCsvLabel = getI18nLabel('userManagement.uploadCsv', 'Upload CSV');
   const addUserLabel = getI18nLabel('userManagement.form.addUserTitle', 'Add User');
 
-  const loadUsers = async () => {
+  const loadUsers = async (query?: string) => {
+    const q = String(query ?? activeSearch).trim();
     setLoading(true);
     setErrorMessage('');
-    const response = await fetchAdminUsers();
+    const response = await fetchAdminUsers(q);
     if (response.code !== 200) {
       setErrorMessage(response.message || 'Failed to fetch users');
       setLoading(false);
       return;
     }
 
-    const mapped = (response.result || []).map((item) => ({
-      id: String(item.user_id),
-      firstName: item.first_name || '',
-      lastName: item.last_name || '',
-      employeeId: item.emp_id || '',
-      userJobRole: item.job_role_key || '',
-      areaOfWork: item.area_of_work_key || '',
-      roleCode: item.role_code || 'USER',
-      departmentCode: item.department_code || 'HR',
-      isActive: item.status === '1',
-      lastUpdated: item.updated_at,
-    }));
+    const mapped = (response.result || []).map((item) => {
+      const apiEmail = String(item.email || '').trim();
+      const apiEmp = String(item.emp_id || '').trim();
+      const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
+      const employeeCode = apiEmail ? apiEmp : (looksLikeEmail(apiEmp) ? '' : apiEmp);
+
+      return {
+        id: String(item.user_id),
+        firstName: item.first_name || '',
+        lastName: item.last_name || '',
+        email,
+        employeeCode,
+        roleCode: item.role_code || 'USER',
+        departmentCode: item.department_code || 'HR',
+        isActive: item.status === '1',
+        lastUpdated: item.updated_at,
+      };
+    });
 
     setUsers(mapped);
+    setActiveSearch(q);
     setSelectedUserIds((prev) => {
       if (prev.size === 0) return prev;
       const allowed = new Set(mapped.map((item) => item.id));
@@ -262,12 +224,17 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   );
 
   const buildPayload = (passwordOptional = false) => {
+    const email = formData.email.trim();
+    const employeeCode = formData.employeeCode.trim();
     const payload: any = {
       firstName: formData.firstName.trim(),
       lastName: formData.lastName.trim(),
-      employeeId: formData.employeeId.trim(),
-      userJobRole: normalizeJobRole(formData.userJobRole),
-      areaOfWork: normalizeArea(formData.areaOfWork),
+      email,
+      employeeCode,
+      // Backend still uses employeeId for emp_id (employee code). Send a fallback for compatibility.
+      employeeId: employeeCode || email,
+      userJobRole: '',
+      areaOfWork: '',
       roleCode: formData.roleCode,
       departmentCode: formData.departmentCode,
       isActive: formData.isActive,
@@ -281,7 +248,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   };
 
   const handleSaveNewUser = async () => {
-    if (!formData.firstName || !formData.lastName || !formData.employeeId || !formData.password) {
+    if (!formData.firstName || !formData.lastName || !formData.email || !formData.password) {
       return;
     }
 
@@ -303,9 +270,8 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       setFormData({
         firstName: user.firstName,
         lastName: user.lastName,
-        employeeId: user.employeeId,
-        userJobRole: user.userJobRole,
-        areaOfWork: user.areaOfWork,
+        email: user.email,
+        employeeCode: user.employeeCode,
         roleCode: user.roleCode,
         departmentCode: user.departmentCode,
         isActive: user.isActive,

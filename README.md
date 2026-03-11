@@ -140,7 +140,7 @@ After copying them, review the values before starting the stack.
 
 This repository contains more than one environment template because it supports multiple deployment styles. Align the values before running services.
 
-- `docker-compose.yml` exposes PostgreSQL on `55432`, Redis on `16379`, Solr on `8983`, RAG on `8010`, the LLM gateway on `8000`, and the API on `3000`
+- `docker-compose.yml` exposes PostgreSQL on `55432`, Redis on `16379`, Solr on `8983`, RAG on `8010`, the LLM gateway on `8000`, the API on `8080`, the UI on `7001`, and Bull Board on `9999`
 - the root `.env.example` assumes a local API on `8080`, PostgreSQL on `5432`, and Redis on `6379`
 - `api/.env.example` includes another profile that points PostgreSQL to `5433` and the LLM gateway to `9080`
 - the UI defaults to `http://localhost:8080` for API access during local development
@@ -177,10 +177,12 @@ Run it from the repository root:
 If you want to run the application services from source, start the supporting services first:
 
 ```bash
-docker compose up -d redis postgres solr llm-gateway
+docker compose up -d redis postgres solr
 ```
 
 If you also want the Python RAG service in Docker, include `rag-python`.
+By default, the Compose stack expects an OpenAI-compatible gateway running on the host at `http://localhost:9080/v1` (from inside containers it uses `http://host.docker.internal:9080/v1`).
+If you also want the local vLLM gateway container, include `--profile llm-local` (requires an amd64 host with the right runtime/GPU setup) and set `LLM_BASE_URL_OVERRIDE=http://vllm-single:8000/v1`.
 
 #### 2. Start the RAG service
 
@@ -258,10 +260,10 @@ This starts:
 - PostgreSQL
 - Solr
 - Python RAG service
-- OpenAI-compatible LLM gateway
-- API container
-
-The Dockerfile also includes a `ui` target, but the current `docker-compose.yml` does not launch a UI container by default.
+- (Optional) OpenAI-compatible LLM gateway (vLLM via `--profile llm-local`)
+- API container (also exposes Bull Board on `9999`)
+- worker container
+- UI container
 
 ## Authentication and Access
 

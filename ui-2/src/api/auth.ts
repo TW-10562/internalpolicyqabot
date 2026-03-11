@@ -58,6 +58,21 @@ export async function login(params: LoginParams): Promise<LoginResponse> {
   return response;
 }
 
+// Temporary Microsoft SSO (mock) login.
+// TODO(EntraID): Replace this with a real Microsoft Entra ID OAuth2/OIDC flow.
+export async function loginWithMicrosoftMock(email: string): Promise<LoginResponse> {
+  const response = await request<LoginResponse>('/api/auth/sso/microsoft/mock', {
+    method: 'POST',
+    data: { email },
+  });
+
+  if (response.code === 200 && response.result?.token) {
+    setToken(response.result.token);
+  }
+
+  return response;
+}
+
 // Logout
 export async function logout(): Promise<void> {
   try {

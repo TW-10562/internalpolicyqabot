@@ -2,11 +2,13 @@ import request from './request';
 
 export type AdminUser = {
   user_id: number;
+  user_name?: string;
   emp_id: string;
+  email?: string;
   first_name: string;
   last_name: string;
-  job_role_key: string;
-  area_of_work_key: string;
+  job_role_key?: string;
+  area_of_work_key?: string;
   role_code: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   department_code: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
   status: string;
@@ -16,17 +18,23 @@ export type AdminUser = {
 export type AdminUserPayload = {
   firstName: string;
   lastName: string;
+  email: string;
+  employeeCode?: string;
+  // Backward-compatible field used by the backend to populate emp_id.
+  // We send employeeCode (or email as fallback) here.
   employeeId: string;
-  userJobRole: string;
-  areaOfWork: string;
+  userJobRole?: string;
+  areaOfWork?: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
   isActive?: boolean;
   password?: string;
 };
 
-export async function fetchAdminUsers() {
-  return request<{ code: number; result?: AdminUser[]; message?: string }>('/api/admin/users', {
+export async function fetchAdminUsers(query?: string) {
+  const q = String(query || '').trim();
+  const url = q ? `/api/admin/users?q=${encodeURIComponent(q)}` : '/api/admin/users';
+  return request<{ code: number; result?: AdminUser[]; message?: string }>(url, {
     method: 'GET',
   });
 }

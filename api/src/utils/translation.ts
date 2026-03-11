@@ -481,13 +481,12 @@ export async function translateText(
   maxRetries: number = 1,
   timeoutMs: number = DEFAULT_TRANSLATION_TIMEOUT_MS,
 ): Promise<string> {
-  void maxRetries;
   const sourceText = String(text || '').trim();
   if (!sourceText) return sourceText;
 
   const targetLangName = getLanguageName(targetLang);
   const systemPrompt = buildTranslationSystemPrompt(targetLangName, preserveCitations);
-  const effectiveTimeoutMs = clampTranslationTimeoutMs(timeoutMs);
+  const baseTimeoutMs = clampTranslationTimeoutMs(timeoutMs);
   const baseMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: `Text:\n${sourceText}` },
@@ -498,13 +497,14 @@ export async function translateText(
     temperature: number,
     maxTokens: number,
     label: string,
+    requestTimeoutMs: number,
   ): Promise<string> => {
     try {
       return await requestTranslationCompletion({
         messages: requestMessages,
         temperature,
         maxTokens,
-        timeoutMs: effectiveTimeoutMs,
+        timeoutMs: clampTranslationTimeoutMs(requestTimeoutMs),
         label: `translate_${label}`,
       });
     } catch (error) {
@@ -518,16 +518,36 @@ export async function translateText(
     }
   };
 
-  const primary = await requestTranslation(
-    baseMessages,
-    TRANSLATION_TEMPERATURE,
-    TRANSLATION_MAX_TOKENS,
-    'primary',
-  );
-  if (!primary || primary.trim().length < 5) {
-    throw new Error('Empty translation result');
+  const retries = Math.max(0, Math.min(3, Number(maxRetries || 0)));
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const isRetry = attempt > 0;
+    const attemptMessages: ChatMessage[] = isRetry
+      ? [
+          {
+            role: 'system',
+            content: `${systemPrompt}\n\nRetry rules:\n- Translate the COMPLETE text.\n- Do not leave any parts untranslated.\n- Return only the translated text.`,
+          },
+          { role: 'user', content: `Text:\n${sourceText}` },
+        ]
+      : baseMessages;
+    const attemptTemperature = isRetry ? 0.1 : TRANSLATION_TEMPERATURE;
+    const attemptTimeoutMs = Math.min(TRANSLATION_MAX_TIMEOUT_MS, baseTimeoutMs + attempt * 5000);
+
+    const translated = (await requestTranslation(
+      attemptMessages,
+      attemptTemperature,
+      TRANSLATION_MAX_TOKENS,
+      isRetry ? `retry_${attempt}` : 'primary',
+      attemptTimeoutMs,
+    )).trim();
+
+    if (translated && translated.length >= 5) {
+      return translated;
+    }
   }
-  return primary;
+
+  throw new Error('Empty translation result');
 }
 function buildTranslationSystemPrompt(targetLangName: string, preserveCitations: boolean) {
   let systemPrompt = `You are a professional translator.

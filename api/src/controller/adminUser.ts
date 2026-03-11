@@ -10,11 +10,34 @@ import {
   updateAdminUser,
 } from '@/service/adminUser';
 
-const parsePayload = (body: any) => ({
+const looksLikeEmail = (value: unknown) => {
+  const v = String(value || '').trim();
+  return Boolean(v && v.includes('@') && v.includes('.') && !v.includes(' '));
+};
+
+const parsePayload = (body: any) => {
+  const legacyEmployeeId = String(body?.employeeId || '').trim();
+  const employeeCode = String(body?.employeeCode || body?.empCode || '').trim();
+  const rawEmail = String(body?.email || body?.mail || '').trim();
+  const email = rawEmail || (looksLikeEmail(legacyEmployeeId) ? legacyEmployeeId : '');
+
+  // Backward-compatible mapping:
+  // - Prefer explicit employeeCode for emp_id
+  // - Otherwise fall back to legacy employeeId when it isn't an email
+  // - Otherwise fall back to email (so existing deployments keep working)
+  const employeeId =
+    employeeCode ||
+    (!looksLikeEmail(legacyEmployeeId) ? legacyEmployeeId : '') ||
+    email ||
+    legacyEmployeeId ||
+    '';
+
+  return ({
   userName: String(body?.userName || body?.user_name || '').trim() || undefined,
   firstName: String(body?.firstName || '').trim(),
   lastName: String(body?.lastName || '').trim(),
-  employeeId: String(body?.employeeId || '').trim(),
+  email: email || undefined,
+  employeeId,
   userJobRole: String(body?.userJobRole || '').trim(),
   areaOfWork: String(body?.areaOfWork || '').trim(),
   roleCode: normalizeRoleCode(body?.roleCode || body?.role || 'USER') as RoleCode,
@@ -22,10 +45,12 @@ const parsePayload = (body: any) => ({
   password: body?.password ? String(body.password) : undefined,
   isActive: body?.isActive == null ? true : Boolean(body.isActive),
 });
+};
 
 export const getAdminUsers = async (ctx: Context, next: () => Promise<void>) => {
   const scope = (ctx.state as any).accessScope as AccessScope;
-  const users = await listAdminUsers(scope);
+  const q = String((ctx.query as any)?.q || (ctx.query as any)?.search || '').trim();
+  const users = await listAdminUsers(scope, q ? { query: q } : undefined);
   ctx.state.formatData = users;
   await next();
 };
@@ -33,7 +58,7 @@ export const getAdminUsers = async (ctx: Context, next: () => Promise<void>) => 
 export const createAdminUserController = async (ctx: Context, next: () => Promise<void>) => {
   try {
     const payload = parsePayload(ctx.request.body);
-    if (!payload.firstName || !payload.lastName || !payload.employeeId || !payload.password) {
+    if (!payload.firstName || !payload.lastName || !payload.email || !payload.password) {
       return ctx.app.emit('error', { code: '400', message: '必須項目が不足しています' }, ctx);
     }
 
@@ -62,7 +87,7 @@ export const updateAdminUserController = async (ctx: Context, next: () => Promis
   try {
     const userId = Number(ctx.params.userId);
     const payload = parsePayload(ctx.request.body);
-    if (!payload.firstName || !payload.lastName || !payload.employeeId) {
+    if (!payload.firstName || !payload.lastName || !payload.email) {
       return ctx.app.emit('error', { code: '400', message: '必須項目が不足しています' }, ctx);
     }
 
