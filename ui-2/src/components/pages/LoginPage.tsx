@@ -4,6 +4,7 @@ import { User as UserType } from '../../types';
 import { useLang } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
 import { login } from '../../api/auth';
+import { getBrandDisplayName } from '../../lib/branding';
 import ContactHRPopup from '../modals/ContactHRPopup';
 import BrandLogo from '../ui/BrandLogo';
 
@@ -14,6 +15,7 @@ interface LoginPageProps {
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const { t, toggleLang, lang } = useLang();
   const { theme, toggleTheme } = useTheme();
+  const brandName = getBrandDisplayName(lang);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -112,9 +114,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         <div className="flex items-center justify-between">
           {/* Logo — pinned to left edge */}
           <div className="flex items-center gap-3">
-            <BrandLogo alt="Thirdwave Logo" className="h-9 w-auto" />
+            <BrandLogo
+              alt={t('brand.logoAlt', { appName: brandName })}
+              className="h-9 w-auto"
+            />
             <h1 className="text-2xl font-bold tracking-tight uppercase text-foreground dark:text-dark-text transition-colors">
-              {t('brand.name')}
+              {t('brand.name', { appName: brandName })}
             </h1>
           </div>
 
@@ -154,14 +159,14 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
             <div className={`text-center ${showForgotPassword ? 'mb-3' : 'mb-8'}`}>
               <BrandLogo
-                alt="Thirdwave Logo"
+                alt={t('brand.logoAlt', { appName: brandName })}
                 className={`mx-auto mb-3 ${showForgotPassword ? 'h-10' : 'h-14'}`}
               />
               <h2 className="text-2xl font-bold text-foreground dark:text-dark-text">
                 {t('login.welcome')}
               </h2>
               <p className="text-muted dark:text-dark-text-muted">
-                {t('login.signIn')}
+                {t('login.signIn', { appName: brandName })}
               </p>
             </div>
 

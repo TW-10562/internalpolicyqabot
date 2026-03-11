@@ -1,12 +1,12 @@
 {
-  "totalRequests": 397,
-  "retrievalHits": 353,
-  "fallbackUsed": 202,
-  "groundedAnswers": 195,
-  "totalLatencyMs": 3043152,
-  "averageLatencyMs": 7665.37,
-  "retrievalHitRate": 0.889169,
-  "fallbackRate": 0.508816,
-  "groundedAnswerRate": 0.491184,
-  "updatedAt": "2026-03-11T04:41:40.106Z"
+  "totalRequests": 511,
+  "retrievalHits": 410,
+  "fallbackUsed": 284,
+  "groundedAnswers": 227,
+  "totalLatencyMs": 3675668,
+  "averageLatencyMs": 7193.088,
+  "retrievalHitRate": 0.802348,
+  "fallbackRate": 0.555773,
+  "groundedAnswerRate": 0.444227,
+  "updatedAt": "2026-03-11T05:44:31.292Z"
 }

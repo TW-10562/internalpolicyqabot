@@ -3,6 +3,7 @@ import AnalyticsEvent from '@/mysql/model/analytics_event.model';
 import User from '@/mysql/model/user.model';
 import File from '@/mysql/model/file.model';
 import { analyzeModeration, ModerationReason } from '@/service/contentModeration';
+import { normalizeDepartmentCode } from '@/service/rbac';
 
 type TimeRange = '7d' | '30d' | '90d';
 
@@ -81,6 +82,67 @@ function getRangeStart(range: TimeRange): Date {
   return d;
 }
 
+const normalizeStoredDepartmentCode = (value: unknown): string | null => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  return normalizeDepartmentCode(raw);
+};
+
+type DepartmentAnalyticsScope = {
+  normalizedDepartment: string;
+  userIds: number[];
+  userNames: string[];
+};
+
+const resolveDepartmentAnalyticsScope = async (departmentCode?: string): Promise<DepartmentAnalyticsScope | null> => {
+  const normalizedDepartment = normalizeStoredDepartmentCode(departmentCode);
+  if (!normalizedDepartment) return null;
+
+  const users = await User.findAll({
+    attributes: ['user_id', 'user_name', 'emp_id', 'department', 'department_code'],
+    where: { deleted_at: null } as any,
+    raw: true,
+  }) as any[];
+
+  const scopedUsers = users.filter((row) => (
+    normalizeStoredDepartmentCode(row.department_code || row.department) === normalizedDepartment
+  ));
+
+  const userIds = Array.from(
+    new Set(
+      scopedUsers
+        .map((row) => Number(row.user_id))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    ),
+  );
+
+  const userNames = Array.from(
+    new Set(
+      scopedUsers
+        .flatMap((row) => [String(row.user_name || '').trim(), String(row.emp_id || '').trim()])
+        .filter(Boolean),
+    ),
+  );
+
+  return {
+    normalizedDepartment,
+    userIds,
+    userNames,
+  };
+};
+
+const buildScopedEventWhere = (baseWhere: Record<string, unknown>, scope: DepartmentAnalyticsScope | null) => {
+  if (!scope) return baseWhere;
+  return {
+    ...baseWhere,
+    [Op.or]: [
+      { department_code: scope.normalizedDepartment },
+      ...(scope.userIds.length > 0 ? [{ user_id: { [Op.in]: scope.userIds } }] : []),
+      ...(scope.userNames.length > 0 ? [{ user_name: { [Op.in]: scope.userNames } }] : []),
+    ],
+  };
+};
+
 export async function recordQueryEvent(input: QueryEventInput) {
   await AnalyticsEvent.create({
     event_type: QUERY_EVENT,
@@ -88,7 +150,7 @@ export async function recordQueryEvent(input: QueryEventInput) {
     task_output_id: input.taskOutputId || null,
     user_id: input.userId || null,
     user_name: input.userName || null,
-    department_code: input.departmentCode || null,
+    department_code: normalizeStoredDepartmentCode(input.departmentCode),
     status: input.status,
     response_ms: Number.isFinite(input.responseMs) ? Number(input.responseMs) : null,
     rag_used: !!input.ragUsed,
@@ -104,7 +166,7 @@ export async function recordFeedbackEvent(input: FeedbackEventInput) {
     task_output_id: input.taskOutputId || null,
     user_id: input.userId || null,
     user_name: input.userName || null,
-    department_code: input.departmentCode || null,
+    department_code: normalizeStoredDepartmentCode(input.departmentCode),
     feedback_signal: input.cacheSignal,
     query_text: input.query || null,
     answer_text: input.answer || null,
@@ -120,10 +182,11 @@ type ContentFlagEventInput = {
   departmentCode?: string;
   queryText?: string;
   answerText?: string;
+  moderation?: import('@/service/contentModeration').ModerationAnalysis;
 };
 
 export async function recordContentFlagEvent(input: ContentFlagEventInput) {
-  const moderation = await analyzeModeration(input.queryText, input.answerText);
+  const moderation = input.moderation || await analyzeModeration(input.queryText, input.answerText);
   if (!moderation.flagged) return;
 
   await AnalyticsEvent.create({
@@ -132,7 +195,7 @@ export async function recordContentFlagEvent(input: ContentFlagEventInput) {
     task_output_id: input.taskOutputId || null,
     user_id: input.userId || null,
     user_name: input.userName || null,
-    department_code: input.departmentCode || null,
+    department_code: normalizeStoredDepartmentCode(input.departmentCode),
     status: 'FLAGGED',
     query_text: input.queryText || null,
     answer_text: input.answerText || null,
@@ -181,14 +244,13 @@ export async function getQueryEventMetricsByTaskOutput(taskOutputId: number) {
 export async function getAnalyticsOverview(range: TimeRange, departmentCode?: string) {
   const startAt = getRangeStart(range);
   const commonWhere: any = { created_at: { [Op.gte]: startAt } };
-  if (departmentCode) commonWhere.department_code = departmentCode;
-
-  const queryWhere = { ...commonWhere, event_type: QUERY_EVENT };
-  const feedbackWhere = { ...commonWhere, event_type: FEEDBACK_EVENT };
-  const contentFlagWhere = { ...commonWhere, event_type: CONTENT_FLAG_EVENT };
+  const departmentScope = await resolveDepartmentAnalyticsScope(departmentCode);
+  const queryWhere = buildScopedEventWhere({ ...commonWhere, event_type: QUERY_EVENT }, departmentScope);
+  const feedbackWhere = buildScopedEventWhere({ ...commonWhere, event_type: FEEDBACK_EVENT }, departmentScope);
+  const contentFlagWhere = buildScopedEventWhere({ ...commonWhere, event_type: CONTENT_FLAG_EVENT }, departmentScope);
 
   const fileWhere: any = {};
-  if (departmentCode) fileWhere.department_code = departmentCode;
+  if (departmentCode) fileWhere.department_code = normalizeDepartmentCode(departmentCode);
 
   const [totalQueries, failedRequests, successfulResponses, queryUserRows, finishedQueryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
     AnalyticsEvent.count({ where: queryWhere }),

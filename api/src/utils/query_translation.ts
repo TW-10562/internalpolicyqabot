@@ -169,6 +169,60 @@ const matchesPhrase = (query: string, phrase: string): boolean => {
   return new RegExp(`\\b${escaped}\\b`, 'i').test(normalizedQuery);
 };
 
+const isKanaDominant = (value: string): boolean => {
+  const text = String(value || '');
+  const kanaChars = (text.match(/[\u3040-\u30ffー]/g) || []).length;
+  const jpChars = (text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fffー]/g) || []).length;
+  return kanaChars >= 4 && jpChars > 0 && kanaChars >= Math.ceil(jpChars * 0.7);
+};
+
+const normalizeJapaneseLooseMatch = (value: string): string =>
+  normalizeSpacing(String(value || '')).replace(/\s+/g, '');
+
+const commonPrefixLength = (left: string, right: string): number => {
+  const a = Array.from(String(left || ''));
+  const b = Array.from(String(right || ''));
+  const max = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < max && a[index] === b[index]) index += 1;
+  return index;
+};
+
+const extractJapaneseTerms = (...sources: string[]): string[] =>
+  uniqueKeywords(
+    sources.flatMap((source) =>
+      String(source || '')
+        .match(/[\u3040-\u30ffー]{2,}|[\u3400-\u4dbf\u4e00-\u9fff]{2,}/g) || [],
+    ),
+    MAX_TRANSLATED_KEYWORDS * 2,
+  );
+
+const matchesJapaneseVariantLoosely = (
+  queryTerms: string[],
+  queryTexts: string[],
+  candidate: string,
+): boolean => {
+  const variant = normalizeSpacing(candidate);
+  if (!variant || !hasJapaneseChars(variant)) return false;
+
+  if (queryTexts.some((text) => matchesPhrase(text, variant))) return true;
+
+  const variantLoose = normalizeJapaneseLooseMatch(variant);
+  if (!variantLoose || variantLoose.length < 4) return false;
+
+  for (const term of queryTerms) {
+    const looseTerm = normalizeJapaneseLooseMatch(term);
+    if (!looseTerm || looseTerm.length < 4) continue;
+    if (looseTerm === variantLoose) return true;
+    if (looseTerm.includes(variantLoose) || variantLoose.includes(looseTerm)) return true;
+    if (!isKanaDominant(term) || !isKanaDominant(variant)) continue;
+    const prefix = commonPrefixLength(looseTerm, variantLoose);
+    const minLen = Math.min(looseTerm.length, variantLoose.length);
+    if (prefix >= 4 && prefix >= minLen - 2) return true;
+  }
+  return false;
+};
+
 const findTermbaseKeywords = (query: string): string[] => {
   const source = normalizeSpacing(query);
   if (!source) return [];
@@ -198,14 +252,27 @@ const findRuleMapKeywords = (query: string): string[] => {
   const sourceLower = source.toLowerCase();
   const out: string[] = [];
   const { crossLangRules, domainRules } = loadRetrievalRuleMap();
+  const containsJapaneseQuery = hasJapaneseChars(source);
+  const queryTexts = uniqueKeywords([source], 4);
+  const queryTerms = containsJapaneseQuery
+    ? extractJapaneseTerms(source)
+    : [];
 
   const matchedDomainRules = domainRules
     .filter((rule) => rule.language !== 'ja')
-    .filter((rule) => matchesPhrase(source, rule.phrase))
+    .filter((rule) => {
+      if (matchesPhrase(source, rule.phrase)) return true;
+      if (!containsJapaneseQuery) return false;
+      return rule.keywords.some((keyword) => matchesJapaneseVariantLoosely(queryTerms, queryTexts, keyword));
+    })
     .sort((a, b) => b.phrase.length - a.phrase.length);
   const selectedDomainPhrases: string[] = [];
   for (const rule of matchedDomainRules) {
     if (selectedDomainPhrases.some((phrase) => phrase.includes(rule.phrase))) continue;
+    const matchedByPhrase = matchesPhrase(source, rule.phrase);
+    if (containsJapaneseQuery && !matchedByPhrase && (rule.language === 'en' || rule.language === 'any')) {
+      out.push(rule.phrase);
+    }
     out.push(...rule.keywords.slice(0, 3));
     selectedDomainPhrases.push(rule.phrase);
     if (out.length >= MAX_TRANSLATED_KEYWORDS) break;

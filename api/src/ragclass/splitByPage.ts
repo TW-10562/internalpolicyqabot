@@ -34,6 +34,7 @@ import { config } from '@/config/index';
 import { deleteFile } from '@/controller/file';
 import { Context } from 'koa';
 import { STRICT_OLLAMA_MODEL } from '@/constants/llm';
+import { getPublicApiBaseUrl } from '@/utils/publicUrl';
 
 async function retry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 1200): Promise<T> {
   let lastError: unknown;
@@ -617,7 +618,7 @@ function formatRagResult(results: RAGSearchResultItem[]): string {
   return results.map((doc, index) => `
   ### 参考資料 ${index + 1}
     - 出典: ${doc.title}(ページ ${doc.chunk_number_i})
-    - 引用の形：<a href="http://localhost:${config.Backend.port}/${doc.file_path_s}" target="_blank" rel="noopener noreferrer">
+    - 引用の形：<a href="${getPublicApiBaseUrl()}/${String(doc.file_path_s || '').replace(/^\/+/, '')}" target="_blank" rel="noopener noreferrer">
     ${doc.title}(ページ ${doc.chunk_number_i})
   </a>
     - 内容：${doc.content.trim()}

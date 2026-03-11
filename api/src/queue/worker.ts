@@ -18,17 +18,57 @@ import translateGenProcess from './translateGenProcess';
 import fileUploadProcess from './fileUploadProcess';
 import { chatGenQueue, summaryGenQueue, translateGenQueue, fileUploadQueue } from './queue';
 
+const parsePositiveInt = (raw: unknown, fallback: number) => {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+};
+
+const QUEUE_LOG_TIMING = process.env.QUEUE_LOG_TIMING === '1';
+const withQueueTiming =
+  (queueName: string, processor: any) =>
+  async (job: any) => {
+    if (!QUEUE_LOG_TIMING) return processor(job);
+
+    const startedAt = Date.now();
+    const enqueuedAt = Number(job?.timestamp);
+    const waitMs = Number.isFinite(enqueuedAt) ? Math.max(0, startedAt - enqueuedAt) : undefined;
+
+    console.log(
+      `[QUEUE_TIMING] ${queueName} start jobId=${String(job?.id ?? '')} taskId=${String(job?.data?.taskId ?? '')} waitMs=${String(waitMs ?? '')}`,
+    );
+
+    try {
+      return await processor(job);
+    } finally {
+      const runMs = Math.max(0, Date.now() - startedAt);
+      console.log(
+        `[QUEUE_TIMING] ${queueName} done jobId=${String(job?.id ?? '')} taskId=${String(job?.data?.taskId ?? '')} runMs=${String(runMs)}`,
+      );
+    }
+  };
+
 initializeZSet().catch((error) => {
   console.error('Failed to initialize Ollama endpoint set in worker:', error);
 });
 
-chatGenQueue.process(chatGenProcess);
-summaryGenQueue.process(summaryGenProcess);
-translateGenQueue.process(translateGenProcess);
-fileUploadQueue.process(fileUploadProcess);
+const defaultConcurrency = parsePositiveInt(process.env.QUEUE_CONCURRENCY, 1);
+const chatConcurrency = parsePositiveInt(process.env.CHAT_QUEUE_CONCURRENCY, defaultConcurrency);
+const summaryConcurrency = parsePositiveInt(process.env.SUMMARY_QUEUE_CONCURRENCY, defaultConcurrency);
+const translateConcurrency = parsePositiveInt(process.env.TRANSLATE_QUEUE_CONCURRENCY, defaultConcurrency);
+const fileUploadConcurrency = parsePositiveInt(process.env.FILEUPLOAD_QUEUE_CONCURRENCY, defaultConcurrency);
+
+chatGenQueue.process(chatConcurrency, withQueueTiming('chat', chatGenProcess));
+summaryGenQueue.process(summaryConcurrency, withQueueTiming('summary', summaryGenProcess));
+translateGenQueue.process(translateConcurrency, withQueueTiming('translate', translateGenProcess));
+fileUploadQueue.process(fileUploadConcurrency, withQueueTiming('fileUpload', fileUploadProcess));
 
 console.log(`[WORKER] PID ${process.pid} started. Registered chat/summary/translate/fileUpload queue consumers.`);
 console.log(`[WORKER] This process also handles jobQueue jobs (countLoginJob/sayHelloJob/fileUploadJob).`);
+console.log(
+  `[WORKER] Queue concurrency: chat=${chatConcurrency} summary=${summaryConcurrency} translate=${translateConcurrency} fileUpload=${fileUploadConcurrency} (default=${defaultConcurrency})`,
+);
+if (QUEUE_LOG_TIMING) console.log('[WORKER] QUEUE_LOG_TIMING=1 (logs queue wait/run time per job)');
 
 // count login job
 jobQueue.process('countLoginJob', async (job) => {

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User, Building, Calendar, Key, LogOut, Shield } from 'lucide-react';
 import { User as UserType } from '../../types';
 import { useLang } from '../../context/LanguageContext';
+import { getBrandDisplayName } from '../../lib/branding';
 import ContactHRPopup from './ContactHRPopup';
 
 interface ProfilePopupProps {
@@ -10,8 +11,9 @@ interface ProfilePopupProps {
 }
 
 export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [showContactHR, setShowContactHR] = useState(false);
+  const brandName = getBrandDisplayName(lang);
 
   return (
     <div className="p-6 h-full overflow-y-auto bg-[#F6F6F6] dark:bg-dark-surface transition-colors">
@@ -111,7 +113,7 @@ export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
 
         <div className="text-center pt-4">
           <p className="text-xs text-[#9CA3AF] dark:text-dark-text-muted transition-colors">
-            {t('app.version')}
+            {t('app.version', { appName: brandName })}
           </p>
         </div>
       </div>

@@ -2021,6 +2021,14 @@ export const runRagPipeline = async (
     final: 1,
   });
 
+  const noEvidenceText = noEvidenceReply(userLanguage);
+  const generationFailureText = generationFailureReply(userLanguage);
+  const shouldExposeSources =
+    docs.length > 0 &&
+    finalAnswer !== noEvidenceText &&
+    finalAnswer !== generationFailureText;
+  const finalSources = shouldExposeSources ? sources : [];
+
   const result: RunRagPipelineResult = {
     userLanguage,
     retrievalIndexLanguage,
@@ -2035,7 +2043,7 @@ export const runRagPipeline = async (
     docs,
     prompt,
     answer: finalAnswer,
-    sources,
+    sources: finalSources,
     metrics: {
       documentCount: countDistinctDocuments(docs),
       promptLength: prompt.length,
@@ -2051,8 +2059,6 @@ export const runRagPipeline = async (
   };
 
   try {
-    const noEvidenceText = noEvidenceReply(userLanguage);
-    const generationFailureText = generationFailureReply(userLanguage);
     const retrievalHit = docs.length > 0;
     const usedFallback =
       usedSemanticFallback ||
@@ -2087,8 +2093,6 @@ export const runRagPipeline = async (
   logRagTiming(llmMs);
 
   if (RESPONSE_CACHE_ENABLED && String(finalAnswer || '').trim()) {
-    const noEvidenceText = noEvidenceReply(userLanguage);
-    const generationFailureText = generationFailureReply(userLanguage);
     const shouldCache =
       finalAnswer !== noEvidenceText &&
       finalAnswer !== generationFailureText;

@@ -14,6 +14,10 @@ type FAQItem = {
   qualityLabel?: 'VERIFIED' | 'RELAXED';
 };
 
+const normalizeQualityLabel = (value: unknown): 'VERIFIED' | 'RELAXED' => (
+  value === 'RELAXED' ? 'RELAXED' : 'VERIFIED'
+);
+
 const MAX_FAQ_ITEMS = 10;
 const MIN_FREQUENT_COUNT = 3;
 
@@ -23,7 +27,7 @@ const normalizeQuestion = (q: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-export default function FAQPage({ user }: { history: unknown[]; user?: UserType }) {
+export default function FAQPage({ user }: { user?: UserType }) {
   const { t } = useLang();
   const [remoteItems, setRemoteItems] = useState<FAQItem[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -77,7 +81,7 @@ export default function FAQPage({ user }: { history: unknown[]; user?: UserType 
             items.map((it) => ({
               ...it,
               key: normalizeQuestion(it.question || ''),
-              qualityLabel: (it.qualityLabel === 'RELAXED' ? 'RELAXED' : 'VERIFIED') as const,
+              qualityLabel: normalizeQualityLabel(it.qualityLabel),
               sourceCount: Number(it.sourceCount || 0),
             }));
           setRemoteItems(normalizeItems(data.data.items));

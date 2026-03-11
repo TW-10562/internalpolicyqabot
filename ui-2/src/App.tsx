@@ -15,7 +15,7 @@ import Messenger from './components/chat/Messenger';
 // @ts-ignore
 import ContactAdminPopup from './components/modals/ContactAdminPopup';
 import BroadcastModal from './components/modals/BroadcastModal';
-import { User, FeatureType, HistoryItem } from './types';
+import { User, FeatureType } from './types';
 import {
   createSupportTicket,
   getMyTickets,
@@ -30,7 +30,6 @@ function AppContent() {
   const [user, setUser] = useState<User | null>(null);
   const [activeFeature, setActiveFeature] = useState<FeatureType | null>(null);
   const [showProfile, setShowProfile] = useState(false);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showContactAdminModal, setShowContactAdminModal] = useState(false);
@@ -409,20 +408,6 @@ function AppContent() {
     setUnreadCount(computeNotificationCount(filtered, user.role));
   };
  
-  const handleSaveToHistory = (query: string, answer: string, source: any) => {
-    const newItem: HistoryItem = {
-      id: Date.now().toString(),
-      query,
-      answer,
-      timestamp: new Date(),
-      source: {
-        document: source.document,
-        page: source.page,
-      },
-    };
-    setHistory((prev) => [newItem, ...prev]);
-  };
- 
   const getPopupTitle = (): string => {
     if (showProfile) return t('profile.title');
     switch (activeFeature) {
@@ -448,7 +433,7 @@ function AppContent() {
  
     switch (activeFeature) {
       case 'chat':
-        return <ChatInterface onSaveToHistory={handleSaveToHistory} />;
+        return <ChatInterface />;
       case 'history':
         return <HistoryPage user={user || undefined} />;
       case 'notifications':
@@ -479,8 +464,6 @@ function AppContent() {
         onMarkAsRead={handleMarkAsRead}
         unreadCount={unreadCount}
         onSendToAll={handleSendToAll}
-        onSaveToHistory={handleSaveToHistory}
-        history={history}
         onNotificationBellClick={handleNotificationBellClick}
         onClearNotifications={handleClearNotifications}
       />

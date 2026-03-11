@@ -2,8 +2,6 @@
 
 Internal Policy QA Bot is a multi-service enterprise knowledge assistant for internal policy, HR, and operational Q&A. It combines a role-aware web application, a Node.js orchestration API, and a Python Retrieval-Augmented Generation (RAG) service backed by Solr, PostgreSQL, Redis, and an OpenAI-compatible LLM gateway.
 
-Some legacy files and internal identifiers still use names such as `hrbot`, `Digital Twin`, or `Aviary Lite`. This README uses the current repository-facing name: Internal Policy QA Bot.
-
 ## Overview
 
 This repository provides the full application stack used to:
@@ -213,6 +211,16 @@ Optional worker process:
 ```bash
 cd api
 pnpm worker
+```
+
+Worker concurrency (defaults to FIFO, `1`):
+
+```bash
+# Increase parallel chat generation jobs per worker process
+CHAT_QUEUE_CONCURRENCY=4 pnpm worker
+
+# Optional: log per-job queue wait/run time
+QUEUE_LOG_TIMING=1 pnpm worker
 ```
 
 Default local URLs:

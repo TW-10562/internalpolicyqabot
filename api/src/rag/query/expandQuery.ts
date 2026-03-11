@@ -256,6 +256,14 @@ const buildDomainVariants = (
   const selectedPhrases: string[] = [];
   for (const rule of matchedRules) {
     if (selectedPhrases.some((phrase) => phrase.includes(rule.phrase))) continue;
+    const reverseCanonicalMatch =
+      containsJapaneseQuery &&
+      (rule.language === 'en' || rule.language === 'any') &&
+      !queryTexts.some((text) => hasPhrase(text, rule.phrase)) &&
+      rule.variants.some((variant) => matchesJapaneseVariantLoosely(queryTerms, queryTexts, variant));
+    if (reverseCanonicalMatch) {
+      out.push(rule.phrase);
+    }
     out.push(...rule.variants.slice(0, 3));
     selectedPhrases.push(rule.phrase);
   }

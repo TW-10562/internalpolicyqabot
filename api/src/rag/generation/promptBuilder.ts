@@ -1,3 +1,5 @@
+import { getCompanyDisplayName } from '@/constants/branding';
+
 const STRICT_NO_ANSWER_RESPONSE_EN =
   'No reliable information found in the internal documents for this question.';
 const STRICT_NO_ANSWER_RESPONSE_JA =
@@ -27,6 +29,7 @@ export const buildEnterpriseRagSystemPrompt = (
   hasRetrievedContext: boolean,
 ): string => {
   const strictNoAnswer = strictNoAnswerForLanguage(language);
+  const companyDisplayName = getCompanyDisplayName(language);
   const lines = [
     'You are an internal enterprise knowledge assistant.',
     '',
@@ -54,7 +57,7 @@ export const buildEnterpriseRagSystemPrompt = (
     '- copy raw document fragments',
     '',
     ...buildLanguageOutputInstructions(language),
-    '- Use "Thirdwave" in English and "サードウェーブ" in Japanese.',
+    `- Use "${companyDisplayName}" when the answer needs to name the organization.`,
     '- Preserve SOURCE/SOURCES citation wording exactly as provided by the system. Do not add or duplicate the footer in the answer body; runtime appends it.',
     `- If the documents do not contain enough information, reply exactly: "${strictNoAnswer}"`,
     '',
@@ -70,8 +73,8 @@ export const buildEnterpriseRagSystemPrompt = (
 
 export const generationFailureReply = (language: 'ja' | 'en'): string =>
   language === 'ja'
-    ? 'サードウェーブの関連社内文書は見つかりましたが、回答生成に一時的な問題が発生しました。少し時間をおいて再度お試しください。'
-    : 'Relevant Thirdwave internal documents were found, but answer generation failed due to a temporary model issue. Please try again.';
+    ? '関連する社内文書は見つかりましたが、回答生成に一時的な問題が発生しました。少し時間をおいて再度お試しください。'
+    : 'Relevant internal documents were found, but answer generation failed due to a temporary model issue. Please try again.';
 
 export const NO_EVIDENCE_FOUND_TOKEN = 'NO_EVIDENCE_FOUND';
 

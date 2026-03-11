@@ -28,7 +28,7 @@
 
 ### Project Status: ✅ 100% COMPLETE
 
-**Digital Twin** is an enterprise Retrieval-Augmented Generation (RAG) platform designed for internal knowledge management. It combines AI-powered question answering with strict department-based access control, comprehensive audit logging, and escalation workflows.
+**Internal Policy QA Bot** is an enterprise Retrieval-Augmented Generation (RAG) platform designed for internal knowledge management. It combines AI-powered question answering with strict department-based access control, comprehensive audit logging, and escalation workflows.
 
 ### What You've Received
 

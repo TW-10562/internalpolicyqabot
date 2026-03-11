@@ -15,7 +15,6 @@ import { useToast } from '../../context/ToastContext';
 import PDFPreview, { SourceCitation } from './PDFPreview';
 
 interface ChatInterfaceProps {
-  onSaveToHistory: (query: string, answer: string, source: any) => void;
   focusSignal?: number;
   onUserTyping?: (typing: boolean) => void;
 }
@@ -814,7 +813,7 @@ function DualLanguageMessage({
   );
 }
 
-export default function ChatInterface({ onSaveToHistory, focusSignal, onUserTyping }: ChatInterfaceProps) {
+export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -1090,13 +1089,6 @@ export default function ChatInterface({ onSaveToHistory, focusSignal, onUserTypi
                 }
                 return updated;
               });
-              if (contentText) {
-                setMessages(prev => {
-                  const lastUser = [...prev].reverse().find(m => m.type === 'user');
-                  if (lastUser) onSaveToHistory(lastUser.content || '', contentText, { document: 'HR Policy', page: 1 });
-                  return prev;
-                });
-              }
             }
           }
         }
@@ -1135,7 +1127,7 @@ export default function ChatInterface({ onSaveToHistory, focusSignal, onUserTypi
         }
       }
     }, pollIntervalMs);
-  }, [fetchKpiFallback, fetchTraceForOutput, onSaveToHistory]);
+  }, [fetchKpiFallback, fetchTraceForOutput]);
 
   const streamForResponse = useCallback(async (taskId: string, newFieldSort: number): Promise<boolean> => {
     const requestStartedAt = Date.now();

@@ -29,8 +29,6 @@ interface HomePageProps {
   onMarkAsRead?: (item: any) => void;
   unreadCount?: number;
   onSendToAll?: (message: string) => void;
-  onSaveToHistory?: (query: string, answer: string, source: any) => void;
-  history?: any[];
   onNotificationBellClick?: () => void;
   onClearNotifications?: (items: any[]) => void;
 }
@@ -53,8 +51,6 @@ export default function HomePage({
   onMarkAsRead,
   unreadCount = 0,
   onSendToAll,
-  onSaveToHistory,
-  history = [],
   onNotificationBellClick,
   onClearNotifications,
 }: HomePageProps) {
@@ -147,7 +143,6 @@ export default function HomePage({
           >
             {user.role !== 'admin' && activeSection === 'chat' && (
               <ChatInterface
-                onSaveToHistory={(q, a, s) => onSaveToHistory?.(q, a, s)}
                 focusSignal={chatFocusTick}
                 onUserTyping={setIsTyping}
               />
@@ -175,7 +170,7 @@ export default function HomePage({
             )}
 
             {user.role !== 'admin' && activeSection === 'faq' && (
-              <FAQPage history={history as any} user={user} />
+              <FAQPage user={user} />
             )}
           </section>
 

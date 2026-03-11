@@ -4,6 +4,7 @@
  */
 
 import { openaiClient, ChatMessage } from '@/service/openai_client';
+import { getCompanyDisplayName } from '@/constants/branding';
 import { STRICT_OLLAMA_MODEL } from '@/constants/llm';
 import { detectLanguage as detectSharedLanguage } from '@/utils/languageDetector';
 import {
@@ -863,6 +864,8 @@ export async function* translateTextStream(
 function createMockTranslation(text: string, targetLang: LanguageCode): string {
   // For development/testing, create a more realistic mock translation
   // that actually changes the content based on target language
+  const companyNameJa = getCompanyDisplayName('ja');
+  const companyNameEn = getCompanyDisplayName('en');
   
   if (targetLang === 'ja') {
     // Simple mock Japanese translation
@@ -879,7 +882,7 @@ function createMockTranslation(text: string, targetLang: LanguageCode): string {
       'information': '情報',
       'document': 'ドキュメント',
       'policy': 'ポリシー',
-      'company': 'サードウェーブ',
+      'company': companyNameJa,
       'employee': '従業員',
       'work': '仕事',
       'leave': '休暇',
@@ -921,7 +924,7 @@ function createMockTranslation(text: string, targetLang: LanguageCode): string {
       '情報': 'information',
       'ドキュメント': 'document',
       'ポリシー': 'policy',
-      '会社': 'Thirdwave',
+      '会社': companyNameEn,
       '従業員': 'employee',
       '仕事': 'work',
       '休暇': 'leave',
@@ -1334,15 +1337,31 @@ export function formatSingleLanguageOutput(
   generationMeta?: {
     generation_status?: string;
     used_fallback?: boolean;
+    [key: string]: any;
   },
 ): string {
+  const meta = (generationMeta && typeof generationMeta === 'object') ? generationMeta : {};
+  const reservedKeys = new Set([
+    'dualLanguage',
+    'content',
+    'language',
+    'translationPending',
+    'formattedAt',
+    'contentLength',
+    'generation_status',
+    'used_fallback',
+  ]);
+  const extraMeta = Object.fromEntries(
+    Object.entries(meta).filter(([key]) => !reservedKeys.has(key)),
+  );
   const output = {
     dualLanguage: false,
     content: content,
     language: language,
     translationPending: true, // Flag for frontend: translation available on-demand
-    generation_status: String(generationMeta?.generation_status || 'ok'),
-    used_fallback: Boolean(generationMeta?.used_fallback),
+    ...extraMeta,
+    generation_status: String(meta.generation_status || 'ok'),
+    used_fallback: Boolean(meta.used_fallback),
     formattedAt: new Date().toISOString(),
     contentLength: content.length,
   };

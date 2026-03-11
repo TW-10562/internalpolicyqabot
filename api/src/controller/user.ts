@@ -4,6 +4,7 @@ import { createUserSer, deleteUser, getAllUserInfoSer, getAllUsersSer, getUserIn
 import { userListType, userQuerySerType, userQueryType, userType } from '@/types';
 import { createHash, formatHumpLineTransfer } from '@/utils';
 import { addAll } from '@/utils/mapper';
+import { getPublicFrontendUrl, getRequestOrigin } from '@/utils/publicUrl';
 import { getKeyValue, setKeyValue } from '@/utils/redis';
 import { getFullUserInfo } from '@/utils/userInfo';
 import dayjs from 'dayjs';
@@ -599,28 +600,11 @@ export const authCallback = async (ctx: Context, next: () => Promise<void>) => {
 
   setKeyValue(`auth_code_${authCode}`, token, 60); // 60 seconds expiration
 
-  // Referer または Origin ヘッダーからフロントエンド URL を取得。存在しない場合は localhost を使用
-  const referer = ctx.headers.referer || ctx.headers.origin || '';
-  let frontendUrl = `http://${config.Frontend.host}:${config.Frontend.port}`;
-  
-  // Referer からフロントエンド URL の抽出を試行
-  if (referer) {
-    try {
-      const url = new URL(referer);
-      // 設定されたフロントエンドポートの有無を確認
-      if (url.port === String(config.Frontend.port) || (!url.port && url.protocol === 'http:')) {
-        frontendUrl = `${url.protocol}//${url.hostname}:${url.port || config.Frontend.port}`;
-      }
-    } catch (e) {
-      // 解析に失敗した場合、デフォルト値を使用
-      console.warn('フロントエンドのURLを解析できません。デフォルト値を使用します:', e);
-    }
-  }
-  
-  // クエリパラメータからも frontend_url を取得可能（SSO ログイン時にフロントエンドが渡す場合）
+  let frontendUrl = getRequestOrigin(ctx.headers) || getPublicFrontendUrl();
+
   const frontendUrlFromQuery = ctx.query.frontend_url as string;
   if (frontendUrlFromQuery) {
-    frontendUrl = frontendUrlFromQuery;
+    frontendUrl = frontendUrlFromQuery.replace(/\/+$/, '');
   }
 
   ctx.redirect(`${frontendUrl}/ssoLoginSuccess?auth_code=${authCode}`);

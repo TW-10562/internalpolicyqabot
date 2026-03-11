@@ -216,7 +216,7 @@ export default function SystemResetButton() {
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={closeModal}
+                onClick={() => closeModal()}
                 className="rounded-lg border border-default px-4 py-2 text-sm text-foreground transition-colors"
                 disabled={isSubmitting}
               >

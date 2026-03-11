@@ -555,3 +555,19 @@ export async function analyzeModeration(queryText?: string, answerText?: string)
     llmAssisted: detectors.includes('vllm'),
   };
 }
+
+// Rules-only moderation for low-latency guards (no LLM calls).
+export function analyzeModerationRulesOnly(queryText?: string, answerText?: string): ModerationAnalysis {
+  const queryReasons = findRuleReasons(String(queryText || ''), 'query');
+  const answerReasons = findRuleReasons(String(answerText || ''), 'answer');
+  const reasons = dedupeReasons([...queryReasons, ...answerReasons]);
+  const score = reasons.reduce((acc, item) => acc + Math.max(0, Number(item.severity || 0)), 0);
+  const detectors = Array.from(new Set(reasons.map((item) => item.detector || 'rules')));
+  return {
+    flagged: reasons.length > 0,
+    score,
+    reasons,
+    detectors,
+    llmAssisted: false,
+  };
+}

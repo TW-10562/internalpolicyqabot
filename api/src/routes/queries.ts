@@ -14,6 +14,14 @@ import { requireAdmin, requireScopedAccess } from '@/controller/auth';
 const router = new Router({ prefix: '/api' });
 router.use(requireScopedAccess);
 
+const firstHistorySource = (message: any): { document: string; page: number } | undefined => {
+  const sourceIds = Array.isArray(message?.source_ids) ? message.source_ids : [];
+  const firstSource = sourceIds
+    .map((value: unknown) => sanitizeString(String(value || '')))
+    .find(Boolean);
+  return firstSource ? { document: firstSource, page: 1 } : undefined;
+};
+
 /**
  * GET /api/live-queries
  * Returns recent questions from all users (anonymized) for recommendations
@@ -130,7 +138,7 @@ router.get('/chat-history', async (ctx: any) => {
               query: query || 'Chat',
               answer: answer || 'No response available',
               timestamp: conv.updated_at,
-              source: { document: 'Chat History', page: 1 },
+              source: firstHistorySource(assistantMsg),
             };
           }),
         );

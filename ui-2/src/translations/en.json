@@ -48,7 +48,7 @@
   },
   "login": {
     "welcome": "Welcome",
-    "signIn": "Sign in to access QA Policy System",
+    "signIn": "Sign in to access {{appName}}",
     "username": "Username",
     "password": "Password",
     "signInButton": "Sign In",
@@ -103,7 +103,8 @@
     "purgeNotificationsErrorBody": "Failed to purge notifications"
   },
   "brand": {
-    "name": "Thirdwave"
+    "name": "{{appName}}",
+    "logoAlt": "{{appName}} logo"
   },
   "language": {
     "switchToEnglish": "Switch to English",
@@ -569,7 +570,7 @@
     "defaultMessage": "Please contact your HR department for assistance."
   },
   "app": {
-    "version": "Thirdwave Digital Twin v1.0.0"
+    "version": "{{appName}} v1.0.0"
   },
   "inlineContactAdmin": {
     "title": "Send Message to Admin",

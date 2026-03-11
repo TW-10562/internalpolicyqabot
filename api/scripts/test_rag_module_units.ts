@@ -10,6 +10,7 @@ import {
   buildGroundedAnswerPrompt,
   noEvidenceReply,
 } from '@/rag/generation/promptBuilder';
+import { runRagPipeline } from '@/rag/pipeline/ragPipeline';
 import {
   extractPolicyEvidenceFallback,
   prioritizeFactEvidenceLines,
@@ -117,6 +118,22 @@ async function main() {
     jaPartTimeLimitExpansion.multilingualRetrievalQueries.some((query) => /パートタイマー|パート社員|短時間勤務/.test(query) && /通勤費|月額上限/.test(query)),
   );
 
+  const birthdayBenefitsQuestion = 'BALCONE SHIBUYAの誕生日特典は誰が利用できますか？';
+  const birthdayBenefitsCanonical = canonicalizeQuery(birthdayBenefitsQuestion);
+  const birthdayBenefitsTranslation = await translateQueryForRetrievalDetailed(birthdayBenefitsCanonical);
+  assert.ok(
+    birthdayBenefitsTranslation.keywords.some((keyword) => /birthday benefits/i.test(keyword)),
+  );
+
+  const birthdayBenefitsExpansion = await expandQuery({
+    originalQueryText: birthdayBenefitsQuestion,
+    promptText: birthdayBenefitsQuestion,
+    userLanguage: 'ja',
+  });
+  assert.ok(
+    birthdayBenefitsExpansion.multilingualRetrievalQueries.some((query) => /birthday benefits/i.test(query)),
+  );
+
   const factContext = [
     '--- Document: 通勤手当支給規程20211001__2112.pdf ---',
     '３．パートタイマー等',
@@ -189,6 +206,36 @@ async function main() {
   assert.equal(parsed.singleContent, 'Approved answer.');
   assert.equal(parsed.language, 'en');
   assert.equal(parsed.translationPending, true);
+
+  const noEvidencePipeline = await runRagPipeline({
+    query: 'How do I temporarily use the parking lot at my headquarters?',
+    prompt: 'How do I temporarily use the parking lot at my headquarters?',
+    retrieveDocuments: async () => ({
+      docs: [
+        {
+          id: 'chunk-1',
+          file_name_s: 'Parking_lot_policy.pdf',
+          title: 'Parking lot policy',
+          content_txt:
+            'Parking lot temporary use at headquarters requires a prior application and approval through the general affairs workflow before entry is permitted.',
+          score: 5,
+        },
+      ],
+      retrievalQueryUsed: 'parking lot temporary use headquarters',
+      topScore: 5,
+      topTermHits: 3,
+      solrCallsCount: 1,
+      queryTranslationApplied: false,
+      translateCallsCount: 0,
+      translateMs: 0,
+      usedSemanticFallback: false,
+    }),
+    generateAnswer: async () => noEvidenceReply('en'),
+    logger: () => undefined,
+  });
+  assert.equal(noEvidencePipeline.metrics.documentCount, 1);
+  assert.equal(noEvidencePipeline.answer, noEvidenceReply('en'));
+  assert.deepEqual(noEvidencePipeline.sources, []);
 
   console.log('PASS: focused RAG module unit checks');
 }

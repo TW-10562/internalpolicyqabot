@@ -48,7 +48,7 @@
   },
   "login": {
     "welcome": "ようこそ",
-    "signIn": "QAポリシーシステムにサインインしてください",
+    "signIn": "{{appName}} にサインインしてください",
     "username": "ユーザー名",
     "password": "パスワード",
     "signInButton": "サインイン",
@@ -103,7 +103,8 @@
     "purgeNotificationsErrorBody": "通知の完全削除に失敗しました"
   },
   "brand": {
-    "name": "サードウェーブ"
+    "name": "{{appName}}",
+    "logoAlt": "{{appName}} のロゴ"
   },
   "language": {
     "switchToEnglish": "英語に切り替え",
@@ -569,7 +570,7 @@
     "defaultMessage": "サポートが必要な場合は人事部へお問い合わせください。"
   },
   "app": {
-    "version": "Thirdwave デジタルツイン v1.0.0"
+    "version": "{{appName}} v1.0.0"
   },
   "inlineContactAdmin": {
     "title": "管理者にメッセージを送信",

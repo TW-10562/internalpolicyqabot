@@ -147,7 +147,7 @@ export class ChatStoreRedis {
           timestamp: ts || Number(meta.updatedAt || 0) || Date.now(),
           source: sources?.[0]
             ? { document: sources[0].title || sources[0].docId, page: sources[0].page || 1 }
-            : { document: 'HR Policies', page: 1 },
+            : undefined,
         };
       }),
     );

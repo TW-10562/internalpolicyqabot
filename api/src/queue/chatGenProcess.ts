@@ -12,6 +12,7 @@ import { put, queryList } from '../utils/mapper';
 import redis from '@/clients/redis';
 
 import { loadRagProcessor } from '@/service/loadRagProcessor';
+import { analyzeModerationRulesOnly } from '@/service/contentModeration';
 import {
   formatSingleLanguageOutput,
   translateText,
@@ -64,6 +65,10 @@ import {
   generationFailureReply,
   noEvidenceReply,
 } from '@/rag/generation/promptBuilder';
+import {
+  getCompanyDisplayName,
+  getCompanyPossessiveNameEn,
+} from '@/constants/branding';
 import {
   callLLM,
   generateWithLLM,
@@ -2387,23 +2392,31 @@ const isCannotConfirmStyleAnswer = (value: string): boolean => {
   if (!text) return false;
   const compactLatin = text.replace(/[^a-z]/g, '');
   const compactJa = text.replace(/[\s。、，,.:;!?！？「」『』【】（）()]/g, '');
+  const strictNoEvidenceEn = noEvidenceReply('en').toLowerCase();
+  const strictNoEvidenceJa = noEvidenceReply('ja');
+  const compactStrictNoEvidenceEn = strictNoEvidenceEn.replace(/[^a-z]/g, '');
+  const compactStrictNoEvidenceJa = strictNoEvidenceJa.replace(/[\s。、，,.:;!?！？「」『』【】（）()]/g, '');
   return (
+    text.includes(strictNoEvidenceEn) ||
     text.includes('i can’t confirm from the provided documents') ||
     text.includes("i can't confirm from the provided documents") ||
     text.includes('i could not find a matching section in internal policy documents') ||
     text.includes('i could not find relevant information in the available company documents') ||
-    text.includes('i could not find relevant information in the available thirdwave internal documents') ||
+    /i could not find relevant information in the available .*internal documents/.test(text) ||
     text.includes('the requested information was not found in the available company documents') ||
-    text.includes('the requested information was not found in the available thirdwave internal documents') ||
+    /the requested information was not found in the available .*internal documents/.test(text) ||
+    text.includes(strictNoEvidenceJa) ||
     text.includes('提供された文書から確認できません') ||
     text.includes('社内文書から該当する記載を確認できません') ||
     text.includes('利用可能な社内文書内で、要求された情報は見つかりませんでした') ||
-    text.includes('利用可能なサードウェーブ社内文書内で、要求された情報は見つかりませんでした') ||
+    /利用可能な.+社内文書内で、要求された情報は見つかりませんでした/.test(text) ||
+    compactLatin.includes(compactStrictNoEvidenceEn) ||
     compactLatin.includes('icouldnotfindrelevantinformationintheavailablecompanydocuments') ||
-    compactLatin.includes('icouldnotfindrelevantinformationintheavailablethirdwaveinternaldocuments') ||
+    /icouldnotfindrelevantinformationintheavailable[a-z]+internaldocuments/.test(compactLatin) ||
     compactLatin.includes('therequestedinformationwasnotfoundintheavailablecompanydocuments') ||
-    compactLatin.includes('therequestedinformationwasnotfoundintheavailablethirdwaveinternaldocuments') ||
-    compactJa.includes('利用可能なサードウェーブ社内文書内で要求された情報は見つかりませんでした') ||
+    /therequestedinformationwasnotfoundintheavailable[a-z]+internaldocuments/.test(compactLatin) ||
+    compactJa.includes(compactStrictNoEvidenceJa) ||
+    /利用可能な.+社内文書内で要求された情報は見つかりませんでした/.test(compactJa) ||
     compactJa.includes('利用可能な社内文書内で要求された情報は見つかりませんでした')
   );
 };
@@ -2416,6 +2429,12 @@ const isGenerationFailureStyleAnswer = (value: string): boolean => {
     text.includes('回答生成に一時的な問題が発生しました')
   );
 };
+
+const shouldKeepRagSourcesForAnswer = (answer: string, ragUsed: boolean): boolean => (
+  Boolean(ragUsed) &&
+  !isCannotConfirmStyleAnswer(answer) &&
+  !isGenerationFailureStyleAnswer(answer)
+);
 
 const isWeakHowToAnswer = (value: string, language: 'ja' | 'en'): boolean => {
   const text = String(value || '').trim();
@@ -3004,6 +3023,8 @@ const trimDanglingBodyBeforeSources = (text: string): string => {
 const normalizeCompanyBranding = (text: string, language: 'ja' | 'en'): string => {
   const raw = String(text || '').trim();
   if (!raw) return '';
+  const companyDisplayName = getCompanyDisplayName(language);
+  const companyPossessiveNameEn = getCompanyPossessiveNameEn();
 
   const lines = raw.split('\n');
   const sourceStart = lines.findIndex((line) => SOURCES_HEADER_LINE_RE.test(String(line || '')));
@@ -3013,14 +3034,14 @@ const normalizeCompanyBranding = (text: string, language: 'ja' | 'en'): string =
   const normalizedBody = bodyLines.map((line) => {
     if (language === 'en') {
       return String(line || '')
-        .replace(/\b(?:your|our|this)\s+company\b/gi, 'Thirdwave')
-        .replace(/\bthe\s+company\b/gi, 'Thirdwave')
-        .replace(/\bcompany's\b/gi, "Thirdwave's");
+        .replace(/\b(?:your|our|this)\s+company\b/gi, companyDisplayName)
+        .replace(/\bthe\s+company\b/gi, companyDisplayName)
+        .replace(/\bcompany's\b/gi, companyPossessiveNameEn);
     }
 
     return String(line || '')
-      .replace(/あなたの会社/g, 'サードウェーブ')
-      .replace(/(?:貴社|御社|当社|自社)/g, 'サードウェーブ');
+      .replace(/あなたの会社/g, companyDisplayName)
+      .replace(/(?:貴社|御社|当社|自社)/g, companyDisplayName);
   });
 
   return [...normalizedBody, ...sourceLines].join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -3340,7 +3361,7 @@ const buildEvidenceRecoveryAnswer = async (params: {
   const instruction = [
     'Use ONLY the provided document context to answer.',
     `Respond in ${outputLanguage}.`,
-    `When referring to the company, use ${params.language === 'ja' ? '"サードウェーブ"' : '"Thirdwave"'}.`,
+    `When referring to the company, use "${getCompanyDisplayName(params.language)}".`,
     'Do not use generic company references like "your company", "our company", "the company", "当社", or "貴社".',
     'If procedure is not explicitly defined, state what the policy says and clearly mention that no explicit application process is specified.',
     'Keep the answer concise and complete (target: 4-6 short points).',
@@ -3715,12 +3736,105 @@ export const chatGenProcess = async (job) => {
       ? { intent: declaredQueryIntent, confidence: 1, matchedRule: 'task_metadata' }
       : classifySharedQueryIntent(originalQueryText || String(data.prompt || ''));
     const shouldUseRagPipeline = sharedQueryIntent.intent === 'rag_query';
+    const earlyUserLanguage: 'ja' | 'en' = detectRagLanguage(originalQueryText || String(data.prompt || ''));
+
     console.log(`\n========== [CHAT PROCESS] Starting chat generation ==========`);
     console.log(`[CHAT PROCESS] PID: ${process.pid}, Task ID: ${taskId}, Output ID: ${outputId}`);
     console.log(`[CHAT PROCESS] Metadata:`, JSON.stringify(data, null, 2));
     console.log(
       `[CHAT PROCESS] Query intent: ${sharedQueryIntent.intent} (confidence=${sharedQueryIntent.confidence.toFixed(2)}, matchedRule=${sharedQueryIntent.matchedRule || 'default'})`,
     );
+
+    // NG words / abusive content: return a static response immediately (skip RAG + LLM) to keep UX snappy.
+    const moderation = analyzeModerationRulesOnly(originalQueryText, '');
+    if (moderation.flagged) {
+      const staticReply =
+        earlyUserLanguage === 'ja'
+          ? '不適切な表現が含まれているため回答できません。暴力・自傷・脅迫・侮辱表現を含まない形で言い換えてください。'
+          : "I can't help with that message because it contains inappropriate language. Please rephrase without abusive, threatening, self-harm, or violent content.";
+      const finalAnswer = staticReply;
+      const content = formatSingleLanguageOutput(finalAnswer, earlyUserLanguage as LanguageCode, {
+        moderation_flagged: true,
+        moderation_score: moderation.score,
+        moderation_categories: Array.from(new Set(moderation.reasons.map((r) => r.category))),
+      });
+      const finalStatus = 'FINISHED';
+
+      kpiMetrics.userLanguage = earlyUserLanguage;
+      kpiMetrics.endTime = Date.now();
+      kpiMetrics.totalTime = kpiMetrics.endTime - kpiMetrics.startTime;
+      kpiMetrics.responseLength = content.length;
+      kpiMetrics.ragUsed = false;
+      kpiMetrics.llmTime = 0;
+
+      if (await canMutateOutput()) {
+        await put<IGenTaskOutputSer>(
+          KrdGenTaskOutput,
+          { id: outputId },
+          {
+            content,
+            status: finalStatus,
+            update_by: 'JOB',
+          },
+        ).catch(() => undefined);
+      }
+      await publishLive('done', { status: finalStatus, content });
+
+      const rawSourceIds: string[] = [];
+      void persistChatTurn({
+        userId: Number(data.userId || 0) || 0,
+        userName: String(data.userName || 'anonymous'),
+        departmentCode,
+        conversationId: String(taskId),
+        outputId: Number(outputId),
+        userText: originalQueryText,
+        userLanguage: earlyUserLanguage,
+        workingQuery: undefined,
+        assistantText: finalAnswer,
+        ragUsed: false,
+        sourceIds: rawSourceIds,
+        tokenInput: 0,
+        tokenOutput: Math.ceil(finalAnswer.length / 4),
+        metadata: {
+          moderation_flagged: true,
+          moderation_score: moderation.score,
+          moderation_reasons: moderation.reasons,
+        },
+      }).catch(() => undefined);
+
+      void recordQueryEvent({
+        taskId: String(taskId),
+        taskOutputId: Number(outputId),
+        userId: Number(data.userId || 0) || undefined,
+        userName: String(data.userName || ''),
+        departmentCode,
+        status: finalStatus,
+        responseMs: kpiMetrics.totalTime,
+        ragUsed: false,
+        queryText: originalQueryText,
+        answerText: finalAnswer,
+        metadata: {
+          moderation_flagged: true,
+          moderation_score: moderation.score,
+          moderation_categories: Array.from(new Set(moderation.reasons.map((r) => r.category))),
+        },
+      })
+        .then(() =>
+          recordContentFlagEvent({
+            taskId: String(taskId),
+            taskOutputId: Number(outputId),
+            userId: Number(data.userId || 0) || undefined,
+            userName: String(data.userName || ''),
+            departmentCode,
+            queryText: originalQueryText,
+            answerText: finalAnswer,
+            moderation,
+          }),
+        )
+        .catch(() => undefined);
+
+      return { outputId, isOk: true, content };
+    }
 
     // Check if files are uploaded
     const explicitFileIds = Array.isArray(data.fileId) ? data.fileId : [];
@@ -4554,6 +4668,9 @@ export const chatGenProcess = async (job) => {
             String(originalQueryText || queryForRAG || prompt || ''),
             userLanguage,
           );
+        }
+        if (!shouldKeepRagSourcesForAnswer(finalAnswer, kpiMetrics.ragUsed) && ragSources.length > 0) {
+          ragSources.splice(0, ragSources.length);
         }
         void pushProcessingPreview(finalAnswer, { force: true });
         if (kpiMetrics.ragUsed && isGenerationFailureStyleAnswer(finalAnswer)) {
@@ -6614,6 +6731,9 @@ export const chatGenProcess = async (job) => {
             String(originalQueryText || queryForRAG || prompt || ''),
             userLanguage,
           );
+      }
+      if (!shouldKeepRagSourcesForAnswer(finalAnswer, kpiMetrics.ragUsed) && ragSources.length > 0) {
+        ragSources.splice(0, ragSources.length);
       }
       content = finalAnswer;
 

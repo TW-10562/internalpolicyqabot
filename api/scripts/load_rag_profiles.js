@@ -54,8 +54,8 @@ const looksLikeFailureReply = (text) => {
   const v = String(text || '').toLowerCase();
   return (
     v.includes('answer generation failed due to a temporary model issue') ||
-    v.includes('requested information was not found in the available thirdwave internal documents') ||
-    v.includes('利用可能なサードウェーブ社内文書内で')
+    /requested information was not found in the available .*internal documents/.test(v) ||
+    /利用可能な.+社内文書内で/.test(v)
   );
 };
 

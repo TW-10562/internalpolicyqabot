@@ -2,6 +2,7 @@ import { User, Globe, Bell, Moon, Sun } from 'lucide-react';
 import { User as UserType } from '../../types';
 import { useLang } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
+import { getBrandDisplayName } from '../../lib/branding';
 import BrandLogo from '../ui/BrandLogo';
 import SystemResetButton from './SystemResetButton';
 
@@ -25,6 +26,7 @@ export default function Header({
 }: HeaderProps) {
   const { lang, toggleLang, t } = useLang();
   const { theme, toggleTheme } = useTheme();
+  const brandName = getBrandDisplayName(lang);
 
   return (
     <header className="w-full py-3 px-6 bg-surface dark:bg-[#0f1724] border-b border-default transition-colors" style={{ boxShadow: `inset 0 -1px 0 var(--c-section-divider)` }}>
@@ -32,9 +34,12 @@ export default function Header({
 
         {/* Left: Logo and Company Name */}
         <div className="flex items-center gap-3">
-          <BrandLogo alt={t('brand.name')} className="h-9 w-auto object-contain" />
+          <BrandLogo
+            alt={t('brand.logoAlt', { appName: brandName })}
+            className="h-9 w-auto object-contain"
+          />
           <h1 className="text-2xl font-bold tracking-tight uppercase text-foreground dark:text-dark-text">
-            {t('brand.name')}
+            {t('brand.name', { appName: brandName })}
           </h1>
         </div>
 
