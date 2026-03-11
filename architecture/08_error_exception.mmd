@@ -1,0 +1,61 @@
+%% ERROR & EXCEPTION FLOW
+flowchart TB
+  Client["Client Browser"]
+  Router["routes/*.ts Koa Router"]
+  Middleware["middleware<br/>addEditSchema validation"]
+  Controller["controller/* handlers"]
+  Service["service/* business logic"]
+  DB["mysql/db/index.ts<br/>Sequelize models"]
+  Worker["queue/worker.ts<br/>queue/chatGenProcess.ts"]
+  ErrHandler["utils/errHandler.ts"]
+  Logger["runtime logs / metrics"]
+  IndexCon["controller/index.ts<br/>response formatter"]
+
+  Client -->|HTTP request| Router
+  Router --> Middleware
+  Middleware --> Controller
+  Controller --> Service
+  Service --> DB
+  Service --> Worker
+
+  subgraph ErrorThrowPoints["Error Throwing Points"]
+    E_validation["Validation errors<br/>schemas/*.ts<br/>throw 400"]
+    E_db["Sequelize errors<br/>connection errors<br/>constraint violations"]
+    E_http["HTTP errors<br/>Ollama timeout<br/>Solr unavailable<br/>RAG API 5xx"]
+    E_logic["Business logic errors<br/>file not found<br/>user not authorized"]
+    E_worker["Worker task errors<br/>LLM generation failure<br/>RAG search failure"]
+  end
+
+  E_validation -->|caught in middleware| Middleware
+  E_db -->|caught in Service| Service
+  E_http -->|caught in Service or Worker| Service
+  E_logic -->|caught in Controller| Controller
+  E_worker -->|caught in queue process| Worker
+
+  subgraph ErrorHandling["Error Handling & Logging"]
+    Handler1["Middleware validation error<br/>ctx.app.emit 'error' with 400"]
+    Handler2["Service error<br/>catch and log<br/>throw or return error response"]
+    Handler3["Worker error<br/>catch in queue processor<br/>mark task FAILED<br/>log error"]
+  end
+
+  Middleware --> Handler1
+  Service --> Handler2
+  Worker --> Handler3
+
+  Handler1 --> ErrHandler
+  Handler2 --> ErrHandler
+  Handler3 --> ErrHandler
+
+  ErrHandler -->|logs context<br/>stack trace| Logger
+  ErrHandler -->|sets ctx.status<br/>ctx.body| IndexCon
+  IndexCon -->|200 with error response| Client
+
+  subgraph ExampleFails["Example Error Scenarios"]
+    Fail1["User sends invalid JSON<br/>schema validator throws<br/>400 bad request returned"]
+    Fail2["Ollama is down<br/>fetch timeout in llmService<br/>catch -> log -> return 500<br/>task marked FAILED"]
+    Fail3["DB constraint error<br/>duplicate key<br/>catch -> wrap -> 400 conflict"]
+  end
+
+  Fail1 --> Handler1
+  Fail2 --> Handler3
+  Fail3 --> Handler2

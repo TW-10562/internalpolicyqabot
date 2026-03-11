@@ -1,0 +1,152 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hrbot-redis
+    ports:
+      - "16379:6379"   # host:container
+    command: >
+      redis-server /usr/local/etc/redis/redis.conf
+      --appendonly yes
+      --requirepass "${REDIS_PASSWORD:-abcd1234}"
+    volumes:
+      - /srv/tbot/redis:/data
+      - ./data/volumes/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - avairy-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hrbot-postgres
+    ports:
+      - "55432:5432"   # host:container
+    environment:
+      POSTGRES_DB: "${PG_DATABASE:-qa_db}"
+      POSTGRES_USER: "${PG_USER:-twave_01}"
+      POSTGRES_PASSWORD: "${PG_PASSWORD:-twave_01password}"
+      TZ: "Asia/Tokyo"
+      PGTZ: "Asia/Tokyo"
+    volumes:
+      - /srv/tbot/db:/var/lib/postgresql/data
+    networks:
+      - avairy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-twave_01} -d ${PG_DATABASE:-qa_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  solr:
+    image: solr:9.8.1
+    container_name: hrbot-solr
+    ports:
+      - "8983:8983"
+    environment:
+      SOLR_MODULES: "extraction"
+      SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
+    user: "0:0"
+    command: >
+      bash -lc "
+        mkdir -p /var/solr &&
+        chown -R 8983:8983 /var/solr &&
+        exec gosu solr solr-precreate ${SOLR_CORE_NAME:-mycore} /opt/solr/server/solr/configsets/sample_techproducts_configs
+      "
+    volumes:
+      - /srv/tbot/solr:/var/solr
+      - /srv/tbot/storage/docs:/data/docs
+    networks:
+      - avairy-network
+    restart: unless-stopped
+
+  rag-python:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: rag
+    container_name: hrbot-rag-python
+    ports:
+      - "8010:8010"
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./rag:/app/rag
+      - ./config:/app/config:ro
+    networks:
+      - avairy-network
+    depends_on:
+      - solr
+    restart: unless-stopped
+
+  llm-gateway:
+    image: "${LLM_GATEWAY_IMAGE:-vllm/vllm-openai:latest}"
+    container_name: hrbot-llm-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --model
+      - "${LLM_GATEWAY_MODEL_SOURCE:-openai/gpt-oss-20b}"
+      - --served-model-name
+      - "openai/gpt-oss-20b"
+    volumes:
+      - llm-model-cache:/root/.cache/huggingface
+    networks:
+      - avairy-network
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      args:
+        NODE_VERSION: 20.11.1
+        PNPM_VERSION: 9.12.3
+    container_name: hrbot-api
+    ports:
+      - "3000:3000"      # adjust if the backend listens on a different port
+    environment:
+      # database/redis settings mirror those used by other services
+      POSTGRES_DB: "${PG_DATABASE:-qa_db}"
+      POSTGRES_USER: "${PG_USER:-twave_01}"
+      POSTGRES_PASSWORD: "${PG_PASSWORD:-twave_01password}"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-abcd1234}"
+      SOLR_URL: "${SOLR_URL:-http://solr:8983}"
+
+      # LLM gateway configuration
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://llm-gateway:8000/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-openai/gpt-oss-20b}"
+      RAG_API: "${RAG_API:-http://rag-python:8010}"
+      RAG_BACKEND_URL: "${RAG_BACKEND_URL:-http://rag-python:8010}"
+
+      # other env vars the app may need (temp list)
+      NODE_ENV: "development"
+    volumes:
+      - ./api:/home/node/app      # mount source for local development
+    networks:
+      - avairy-network
+    depends_on:
+      - redis
+      - postgres
+      - solr
+      - rag-python
+      - llm-gateway
+    restart: unless-stopped
+
+networks:
+  avairy-network:
+    driver: bridge
+
+volumes:
+  llm-model-cache:

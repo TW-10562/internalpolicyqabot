@@ -1,0 +1,186 @@
+APP_MODE: development
+
+ApacheSolr:
+  url: ${SOLR_URL}
+  coreName: ${SOLR_CORE_NAME}
+
+# Backward-compat section for existing code. Values should match PostgreSQL.
+MySQL:
+  host: ${PG_HOST}
+  port: ${PG_PORT}
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}
+  database: ${PG_DATABASE}
+
+PostgreSQL:
+  host: ${PG_HOST}
+  port: ${PG_PORT}
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}
+  database: ${PG_DATABASE}
+  url: ${DATABASE_URL}
+
+Redis:
+  host: ${REDIS_HOST}
+  port: ${REDIS_PORT}
+  password: ${REDIS_PASSWORD}
+  database: ${REDIS_DB}
+
+Ollama:
+  url:
+    - ${OLLAMA_BASE_URL}
+  model: ${OLLAMA_MODEL}
+
+Models:
+  chatModel:
+    name: ${CHAT_MODEL_NAME}
+    temperature: 0.7
+    repeat_penalty: 1.5
+
+  chatTitleGenModel:
+    name: ${CHAT_TITLE_MODEL_NAME}
+    temperature: 0.8
+    repeat_penalty: 1.5
+
+  chatKeywordGenModel:
+    name: ${CHAT_KEYWORD_MODEL_NAME}
+    temperature: 0.1
+    repeat_penalty: 1.5
+
+  summaryGenModel:
+    name: ${SUMMARY_MODEL_NAME}
+    temperature: 0.7
+    repeat_penalty: 1.5
+
+  translateModel:
+    name: ${TRANSLATE_MODEL_NAME}
+    temperature: 0.7
+    repeat_penalty: 1.5
+
+  ragEmbeddingModel:
+    name: ${RAG_EMBEDDING_MODEL}
+    cacheDir: <PROJECT_ROOT_DIR>/rag/data/model
+
+  ragRerankModel:
+    name: ${RAG_RERANK_MODEL}
+    cacheDir: <PROJECT_ROOT_DIR>/rag/data/model
+
+Frontend:
+  host: ${FRONTEND_HOST}
+  port: ${FRONTEND_PORT}
+
+Backend:
+  host: ${BACKEND_HOST}
+  port: ${BACKEND_PORT}
+  jwtSecret: ${JWT_SECRET}
+  jwtRefreshSecret: ${JWT_REFRESH_SECRET}
+  logTime: ja
+  Tokenizer:
+    charactersPerToken: 4
+  ModelContextWindowLimits:
+    totalLimit: 4096
+    systemPromptReserve: 300
+    formattingReserve: 100
+    outputReserve: 500
+
+RAG:
+  Backend:
+    host: ${RAG_BACKEND_HOST}
+    port: ${RAG_BACKEND_PORT}
+    url: ${RAG_BACKEND_URL}
+
+  VectorStore:
+    type: chroma
+    path: <PROJECT_ROOT_DIR>/rag/app/rag_db
+
+  Uploads:
+    rootDir: <PROJECT_ROOT_DIR>/uploads
+    filesDir: <PROJECT_ROOT_DIR>/uploads/files
+    maxFileSize: 1073741824
+    keepExtensions: true
+    uploadDirectory: <PROJECT_ROOT_DIR>/uploads/temp
+
+  useFaqCache: false
+  FaqCacheSettings:
+    cacheApiUrl: ${FAQ_CACHE_API_URL}
+    vectorSimilarityThreshold: 0.8
+    crossEncoderThreshold: 0.5
+
+  mode:
+    - splitByArticleWithHybridSearch
+    - splitByPage
+
+  PreProcess:
+    PDF:
+      extensions:
+        - .pdf
+      splitByPage:
+        separator: \n \n  \n \n
+        chunkSize: 512
+        overlap: 128
+      splitByArticle:
+        collectionName: splitByArticleWithHybridSearch
+        footerRatio: 0.92
+        multiplier: 2
+
+    DOC:
+      extensions:
+        - .doc
+        - .docx
+      splitByPage:
+        separator: \n\n
+        chunkSize: 512
+        overlap: 128
+
+    Default:
+      splitByPage:
+        separator: \n\n
+        chunkSize: 512
+        overlap: 128
+
+  Retrieval:
+    usingRerank: false
+    throwErrorWhenCUDAUnavailable: false
+    HybridSearch:
+      vector_only: true
+      bm25_only: false
+      vector_weight: 0.5
+      bm25_weight: 0.5
+      bm25_params:
+        k1: 1.8
+        b: 0.75
+    topK: 10
+    topKForEachCollection: 3
+    usingNeighborChunkAware: true
+
+ResponseFormatPrompt:
+  General:
+    description: >
+      General response format
+    format: |
+      <Answer>
+      <Key Points>
+    example: |
+      <Question>
+      When can I take paid leave?
+      <Answer>
+      You can take paid leave immediately after joining.
+
+  FollowUpQuestion:
+    description: >
+      Follow-up question format when context is insufficient.
+    format: |
+      <Explanation>
+      <Question>
+    example: |
+      <Question>
+      Night shift only policy?
+
+      <Answer>
+      Could you clarify whether you mean overnight duty exemption policy?
+
+AZURE_AD:
+  TENANT_ID: ${AZURE_AD_TENANT_ID}
+  CLIENT_ID: ${AZURE_AD_CLIENT_ID}
+  CLIENT_SECRET: ${AZURE_AD_CLIENT_SECRET}
+  REDIRECT_URI: ${AZURE_AD_REDIRECT_URI}

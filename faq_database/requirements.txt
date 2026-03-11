@@ -1,0 +1,15 @@
+pandas>=2.0.0
+numpy>=1.25.0
+openpyxl>=3.1.0    # pandas excel (xlsx) backend
+chromadb>=0.4.0
+sentence-transformers>=2.2.2
+transformers>=4.56.1
+torch>=2.0.0
+fugashi[unidic-lite]>=1.2.0
+huggingface-hub>=0.23.0
+safetensors>=0.3.0
+# FastAPI and dependencies (for cache_api.py)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+requests>=2.31.0

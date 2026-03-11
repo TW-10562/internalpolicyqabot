@@ -1,0 +1,156 @@
+[
+  {
+    "query": "how to apply for overtime / 残業申請 方法",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "勤怠", "attendance", "payroll"],
+    "forbidden_source_terms": ["通勤手当", "経理規程", "commuting allowance", "accounting policy"],
+    "should_answer": true
+  },
+  {
+    "query": "What is the commuter pass policy?",
+    "expected_sources": [],
+    "should_answer": false
+  },
+  {
+    "query": "残業申請の手順を教えてください",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "勤怠", "申請"],
+    "forbidden_source_terms": ["経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "How do I submit attendance correction?",
+    "expected_sources": [],
+    "expected_source_terms": ["attendance", "勤怠"],
+    "forbidden_source_terms": ["commuting allowance", "accounting policy"],
+    "should_answer": true
+  },
+  {
+    "query": "通勤手当の申請方法は？",
+    "expected_sources": [],
+    "expected_source_terms": ["通勤", "手当"],
+    "expected_canonical_query": "COMMUTE:COMMUTER_PASS_APPLICATION",
+    "forbidden_source_terms": [],
+    "should_answer": true
+  },
+  {
+    "query": "How to request parking slot at head office?",
+    "expected_sources": [],
+    "expected_source_terms": ["parking", "office", "駐車"],
+    "forbidden_source_terms": ["accounting policy"],
+    "should_answer": true
+  },
+  {
+    "query": "経費精算の締め日と申請手順",
+    "expected_sources": [],
+    "expected_source_terms": ["経費", "精算", "経理"],
+    "forbidden_source_terms": ["通勤手当"],
+    "should_answer": true
+  },
+  {
+    "query": "How do I submit an invoice for payment?",
+    "expected_sources": [],
+    "expected_source_terms": ["invoice", "payment", "accounting"],
+    "forbidden_source_terms": ["commuter pass"],
+    "should_answer": true
+  },
+  {
+    "query": "IDカード再発行 手順",
+    "expected_sources": [],
+    "expected_source_terms": ["ID", "カード", "再発行"],
+    "forbidden_source_terms": ["経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "休職制度の対象条件は？",
+    "expected_sources": [],
+    "expected_source_terms": ["休職", "制度"],
+    "forbidden_source_terms": ["経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "benefits?",
+    "expected_sources": [],
+    "expected_source_terms": ["benefit", "制度", "手当"],
+    "forbidden_source_terms": [],
+    "should_answer": true
+  },
+  {
+    "query": "経理規程はどこで確認できますか",
+    "expected_sources": [],
+    "expected_source_terms": ["経理規程", "会計", "経理"],
+    "forbidden_source_terms": [],
+    "should_answer": true
+  },
+  {
+    "query": "Where is the policy for office relocation and facilities?",
+    "expected_sources": [],
+    "expected_source_terms": ["office", "facility", "relocation"],
+    "forbidden_source_terms": ["payroll"],
+    "should_answer": true
+  },
+  {
+    "query": "how to apply for overtime",
+    "expected_sources": [],
+    "expected_source_terms": ["overtime", "attendance", "残業", "勤怠"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "expected_tier": "tier1",
+    "should_answer": true
+  },
+  {
+    "query": "commuter pass application steps",
+    "expected_sources": [],
+    "expected_source_terms": ["commuter", "通勤", "手当", "定期"],
+    "forbidden_source_terms": ["経理規程"],
+    "expected_tier": "tier1_or_tier2",
+    "should_answer": true
+  },
+  {
+    "query": "I need the rule around approvals",
+    "expected_sources": [],
+    "expected_source_terms": [],
+    "forbidden_source_terms": [],
+    "expected_tier": "tier2",
+    "should_answer": true
+  },
+  {
+    "query": "how to apply overtime",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "overtime", "申請"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "expected_canonical_query": "HR:OVERTIME_APPLICATION",
+    "should_answer": true
+  },
+  {
+    "query": "残業の申請方法",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "申請"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "expected_canonical_query": "HR:OVERTIME_APPLICATION",
+    "should_answer": true
+  },
+  {
+    "query": "overtime application procedure",
+    "expected_sources": [],
+    "expected_source_terms": ["overtime", "残業", "申請"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "expected_canonical_query": "HR:OVERTIME_APPLICATION",
+    "should_answer": true
+  },
+  {
+    "query": "残業 申請 手順",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "申請", "手順"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "expected_canonical_query": "HR:OVERTIME_APPLICATION",
+    "should_answer": true
+  },
+  {
+    "query": "通勤手当の上限額はいくらですか",
+    "expected_sources": [],
+    "expected_source_terms": ["通勤手当", "上限", "金額"],
+    "forbidden_source_terms": ["経理規程"],
+    "expected_canonical_query": "COMMUTE:COMMUTING_ALLOWANCE_CAP",
+    "should_answer": true
+  }
+]

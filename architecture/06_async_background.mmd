@@ -1,0 +1,58 @@
+%% ASYNC / BACKGROUND FLOW
+flowchart TB
+  subgraph Producer["Producer - Task Creation"]
+    C_genTask["controller/genTask.ts#getAddMid<br/>detect language once"]
+    S_gen["service/genTaskService.ts#handleAddGenTask<br/>enrich metadata"]
+  end
+
+  subgraph QueueLayer["Queue & Broker"]
+    JobQueue["queue/jobQueue.ts<br/>task enqueue"]
+    QueueLib["queue/queue.ts<br/>queue client wrapper"]
+    RedisQ["Redis instance<br/>clients/redis.ts<br/>list-based queue"]
+  end
+
+  subgraph Workers["Consumers & Workers"]
+    WorkerMain["queue/worker.ts<br/>job loop runner"]
+    ChatProc["queue/chatGenProcess.ts"]
+    SummaryProc["queue/summaryGenProcess.ts"]
+    TranslateProc["queue/translateGenProcess.ts"]
+  end
+
+  subgraph SideEffects["Side-effects & I/O"]
+    DBWrites["MySQL models<br/>mysql/model/*.ts<br/>update KrdGenTask<br/>KrdGenTaskOutput"]
+    LLMCalls["LLM gateway calls<br/>service/openai_client.ts"]
+    RAGCalls["RAG Python API<br/>rag/api/main.py<br/>rag/pipeline/ragPipeline.ts"]
+    FileWrites["File system writes<br/>uploads/ filesystem<br/>service/fileUploadTask.ts"]
+    SolrCalls["Solr search<br/>service/solrService.ts"]
+    LogCalls["Logging<br/>console and metrics hooks"]
+  end
+
+  C_genTask --> S_gen
+  S_gen --> JobQueue
+  JobQueue --> QueueLib
+  QueueLib --> RedisQ
+
+  WorkerMain -->|BLPOP jobs| RedisQ
+  WorkerMain --> ChatProc
+  WorkerMain --> SummaryProc
+  WorkerMain --> TranslateProc
+
+  ChatProc --> DBWrites
+  ChatProc --> LLMCalls
+  ChatProc --> RAGCalls
+  ChatProc --> SolrCalls
+  ChatProc --> LogCalls
+
+  SummaryProc --> DBWrites
+  SummaryProc --> LLMCalls
+  SummaryProc --> LogCalls
+
+  TranslateProc --> DBWrites
+  TranslateProc --> LLMCalls
+  TranslateProc --> LogCalls
+
+  S_gen --> FileWrites
+
+  %% Database updates propagate back
+  DBWrites -->|mark FINISHED| WorkerMain
+  LogCalls -->|background logging| "runtime logs"

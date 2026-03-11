@@ -1,0 +1,30 @@
+[
+  {
+    "query": "how to apply for overtime",
+    "expected_sources": [],
+    "expected_source_terms": ["overtime", "attendance", "残業", "勤怠"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "残業申請の方法",
+    "expected_sources": [],
+    "expected_source_terms": ["残業", "申請"],
+    "forbidden_source_terms": ["通勤手当", "経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "通勤手当の上限額はいくらですか",
+    "expected_sources": [],
+    "expected_source_terms": ["通勤手当", "上限", "金額"],
+    "forbidden_source_terms": ["経理規程"],
+    "should_answer": true
+  },
+  {
+    "query": "What is the commuter pass policy?",
+    "expected_sources": [],
+    "expected_source_terms": [],
+    "forbidden_source_terms": [],
+    "should_answer": false
+  }
+]

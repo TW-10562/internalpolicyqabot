@@ -1,0 +1,153 @@
+================================================================================
+STEP 0: DISCOVERING USERS TABLE
+================================================================================
+User-related tables found:
+  - sso_user_bind
+  - sys_user
+  - sys_user_role
+  - user
+  - user_group
+  - user_role
+
+Target table for analysis: sys_user
+
+================================================================================
+STEP 1: BASIC TABLE INFORMATION
+================================================================================
+Schema: public
+Table Name: sys_user
+Owner: twave_01
+Estimated Rows: 1
+Total Size: 64 kB
+Table Size: 8192 bytes
+Index Size: 48 kB
+
+================================================================================
+STEP 2: COLUMN STRUCTURE
+================================================================================
+Columns (20 total):
+  user_id                   | bigint               | Nullable: NO    | Default: None                                    
+    └─ Numeric Precision: 64, Scale: 0
+  user_name                 | character varying    | Nullable: NO    | Default: None                                    
+    └─ Character Max Length: 100
+  password                  | character varying    | Nullable: NO    | Default: None                                    
+    └─ Character Max Length: 255
+  email                     | character varying    | Nullable: YES   | Default: None                                    
+    └─ Character Max Length: 255
+  phonenumber               | character varying    | Nullable: YES   | Default: None                                    
+    └─ Character Max Length: 20
+  status                    | character            | Nullable: NO    | Default: '0'::bpchar                             
+    └─ Character Max Length: 1
+  del_flag                  | character            | Nullable: NO    | Default: '0'::bpchar                             
+    └─ Character Max Length: 1
+  sso_bound                 | smallint             | Nullable: NO    | Default: 0                                       
+    └─ Numeric Precision: 16, Scale: 0
+  department                | character varying    | Nullable: NO    | Default: 'Unknown'::character varying            
+    └─ Character Max Length: 100
+  create_by                 | bigint               | Nullable: YES   | Default: None                                    
+    └─ Numeric Precision: 64, Scale: 0
+  deleted_by                | bigint               | Nullable: YES   | Default: None                                    
+    └─ Numeric Precision: 64, Scale: 0
+  created_at                | timestamp with time zone | Nullable: NO    | Default: now()                                   
+  updated_at                | timestamp with time zone | Nullable: NO    | Default: now()                                   
+  create_time               | timestamp with time zone | Nullable: NO    | Default: now()                                   
+  update_time               | timestamp with time zone | Nullable: NO    | Default: now()                                   
+  last_updated              | timestamp with time zone | Nullable: NO    | Default: now()                                   
+  last_login_at             | timestamp with time zone | Nullable: YES   | Default: None                                    
+  deleted_at                | timestamp with time zone | Nullable: YES   | Default: None                                    
+  department_code           | character varying    | Nullable: YES   | Default: 'HR'::character varying                 
+    └─ Character Max Length: 16
+  role_code                 | character varying    | Nullable: YES   | Default: 'USER'::character varying               
+    └─ Character Max Length: 16
+
+================================================================================
+STEP 3: PRIMARY KEY
+================================================================================
+Constraint Name: sys_user_pkey
+Definition: PRIMARY KEY (user_id)
+
+================================================================================
+STEP 4: FOREIGN KEYS
+================================================================================
+Outgoing Foreign Keys (this table references others):
+  fk_sys_user_department_code: FOREIGN KEY (department_code) REFERENCES departments(code)
+No incoming foreign keys found
+
+================================================================================
+STEP 5: INDEXES
+================================================================================
+Indexes (3 total):
+
+  Name: idx_sys_user_department_role
+  Definition: CREATE INDEX idx_sys_user_department_role ON public.sys_user USING btree (department_code, role_code)
+  Scans: 0, Tuples Read: 0, Tuples Fetched: 0
+
+  Name: sys_user_pkey
+  Definition: CREATE UNIQUE INDEX sys_user_pkey ON public.sys_user USING btree (user_id)
+  Scans: 0, Tuples Read: 0, Tuples Fetched: 0
+
+  Name: sys_user_user_name_key
+  Definition: CREATE UNIQUE INDEX sys_user_user_name_key ON public.sys_user USING btree (user_name)
+  Scans: 0, Tuples Read: 0, Tuples Fetched: 0
+
+================================================================================
+STEP 6: UNIQUE CONSTRAINTS
+================================================================================
+Unique Constraints (1 total):
+  sys_user_user_name_key: UNIQUE (user_name)
+
+================================================================================
+STEP 7: CHECK CONSTRAINTS
+================================================================================
+No check constraints found
+
+================================================================================
+STEP 8: TRIGGERS
+================================================================================
+No triggers found
+
+================================================================================
+STEP 9: PERMISSIONS
+================================================================================
+Role Permissions (7 total):
+  twave_01: DELETE (GRANTABLE)
+  twave_01: INSERT (GRANTABLE)
+  twave_01: REFERENCES (GRANTABLE)
+  twave_01: SELECT (GRANTABLE)
+  twave_01: TRIGGER (GRANTABLE)
+  twave_01: TRUNCATE (GRANTABLE)
+  twave_01: UPDATE (GRANTABLE)
+
+================================================================================
+STEP 10: COLUMN COMMENTS/DESCRIPTIONS
+================================================================================
+No column comments found
+
+================================================================================
+STEP 11: SAMPLE DATA STRUCTURE
+================================================================================
+Sample data (1 rows):
+Columns: user_id, user_name, password, email, phonenumber, status, del_flag, sso_bound, department, create_by, deleted_by, created_at, updated_at, create_time, update_time, last_updated, last_login_at, deleted_at, department_code, role_code
+
+Row 1:
+  user_id: 1
+  user_name: admin
+  password: ***MASKED***
+  email: admin@admin.co.jp
+  phonenumber: 117
+  status: 1
+  del_flag: 0
+  sso_bound: 0
+  department: Unknown
+  create_by: None
+  deleted_by: None
+  created_at: 2026-02-17 11:17:06.142807+09:00
+  updated_at: 2026-02-17 11:17:06.142807+09:00
+  create_time: 2026-02-17 11:17:06.142807+09:00
+  update_time: 2026-02-17 11:17:06.142807+09:00
+  last_updated: 2026-02-17 11:17:06.142807+09:00
+  last_login_at: None
+  deleted_at: None
+  department_code: HR
+  role_code: SUPER_ADMIN
+

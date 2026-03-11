@@ -1,0 +1,53 @@
+
+
+```mermaid
+%% CONTAINER DIAGRAM (C4 L2)
+flowchart TB
+  subgraph Frontend
+    UI_src["ui-2/src/App.tsx\n(ui dev server)"]
+  end
+
+  subgraph Backend
+    API_main["api/src/main.ts\n(Koa HTTP Server)"]
+    API_routes["api/src/routes/*.ts\n(Koa Router)"]
+    API_controllers["api/src/controller/*.ts"]
+    API_services["api/src/service/*.ts\n(chatTask, genTaskService, ragService)"]
+    API_utils["api/src/utils/*.ts\n(translation, redis, mapper, logger)"]
+  end
+
+  subgraph WorkerEnv
+    Worker_proc["api/src/queue/worker.ts\n(job runner)"]
+    Queue_procs["api/src/queue/*GenProcess.ts\n(chatGenProcess, summaryGenProcess, translateGenProcess)"]
+  end
+
+  subgraph RAG_Service
+    RAG_api["rag/api/main.py\n(Python RAG API)"]
+    RAG_services["rag/services/*.py\n(embedder, document_service)"]
+  end
+
+  subgraph Data
+    MySQL_db["api/src/mysql/*\n(Sequelize models)"]
+    Redis_cache["api/src/clients/redis.ts\n(Redis client)"]
+    Solr_search["api/src/service/solrService.ts"]
+    File_store["uploads/ (local)"]
+    Ollama_host["External Ollama daemon\n(config)"]
+  end
+
+  UI_src -->|HTTP /api/*| API_main
+  API_main --> API_routes
+  API_routes --> API_controllers
+  API_controllers --> API_services
+  API_services --> API_utils
+  API_services --> MySQL_db
+  API_utils --> Redis_cache
+  API_services --> Solr_search
+  API_services -->|HTTP /api/chat| Ollama_host
+  Worker_proc --> Queue_procs
+  Queue_procs --> API_services
+  Queue_procs --> Ollama_host
+  RAG_api --> RAG_services
+  API_services --> RAG_api
+  API_services --> File_store
+  RAG_services --> File_store
+  API_main -->|Scheduler jobs| api/src/scheduler/repeatJobs.ts
+  

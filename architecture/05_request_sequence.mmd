@@ -1,0 +1,58 @@
+%% REQUEST EXECUTION SEQUENCE (example: POST /api/gen-task)
+sequenceDiagram
+  participant UserBrowser as Browser ui
+  participant Router as routes/index.ts
+  participant Route as routes/genTask.ts
+  participant Middleware as middleware<br/>addEditSchema<br/>getAddMid
+  participant Controller as controller/genTask.ts
+  participant Service as service/genTaskService.ts
+  participant Queue as queue/jobQueue.ts
+  participant Redis as clients/redis.ts
+  participant Worker as queue/worker.ts
+  participant Processor as queue/chatGenProcess.ts
+  participant LLMClient as service/openai_client.ts
+  participant DB as mysql/db/index.ts
+  participant ErrHandler as utils/errHandler.ts
+
+  UserBrowser->>Router: POST /api/gen-task with JSON body
+  Router->>Route: dispatch to /gen-task route
+  Route->>Middleware: runs addEditSchema validation
+  Middleware->>Controller: validateInput if OK
+  Controller->>Controller: detectLanguage from userQuery
+  Controller->>Controller: classify query type
+  Controller->>Service: handleAddGenTask with enhanced content
+  Service->>Service: validate and enrich task metadata
+  Service->>Queue: jobQueue.add job CHAT
+  Queue->>Redis: push job to queue
+  Service->>DB: save KrdGenTask record
+  Queue-->>UserBrowser: 200 OK taskId from controller/index.ts
+
+  Note over Redis,Worker: Background execution begins
+  Worker->>Redis: BLPOP to get next job
+  Worker->>Processor: switch on type chatGenProcess
+  Processor->>DB: fetch KrdGenTaskOutput record
+  Processor->>Processor: detectLanguage once from originalQuery
+  Processor->>Processor: translate to Japanese if EN
+  Processor->>Service: RAG search via ragPipeline.ts
+  Service->>Solr: HTTP search query
+  Processor->>LLMClient: callLLM with RAG context
+  LLMClient->>Ollama: HTTP POST /v1/chat/completions
+  Ollama-->>LLMClient: stream or JSON response
+  LLMClient-->>Processor: message content
+  Processor->>Processor: auto-translate back to userLanguage if needed
+  Processor->>DB: update KrdGenTaskOutput with content
+  Processor->>DB: mark status FINISHED
+
+  alt Success path
+    Processor->>DB: status FINISHED
+  else Error path
+    Processor->>ErrHandler: catch exception
+    ErrHandler->>DB: status FAILED
+    ErrHandler->>Logger: log error
+  end
+
+  Note over UserBrowser: Client polls GET /api/gen-task-output/list
+  UserBrowser->>Router: GET /api/gen-task-output/list
+  Router->>Controller: getOutputListMid
+  Controller->>DB: SELECT where task_id and status
+  Controller-->>UserBrowser: 200 OK with content

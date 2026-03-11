@@ -1,0 +1,79 @@
+%% ROUTER & ENDPOINT MAP
+flowchart TB
+  subgraph genTask["GenTask Endpoints"]
+    POST_genTask["POST /api/gen-task<br/>middleware: addEditSchema getAddMid"]
+    GET_genTaskList["GET /api/gen-task/list<br/>middleware: getListMid formatHandle"]
+    GET_genTaskTitle["GET /api/gen-task/getChatTitle<br/>middleware: getChatTitleMid"]
+    POST_feedback["POST /api/gen-task/feedback<br/>middleware: sendFeedbackToCache"]
+    POST_translateDemand["POST /api/gen-task/translate-on-demand<br/>middleware: translateContentOnDemandMid"]
+  end
+
+  subgraph auth["Auth Endpoints"]
+    POST_login["POST /user/login<br/>middleware: userSchema loginVal getUserBase"]
+    DELETE_logout["DELETE /user/logout"]
+    GET_userInfo["GET /user/getInfo<br/>middleware: queryUserInfo"]
+    GET_userList["GET /user/list"]
+    POST_userCreate["POST /user/create"]
+    PUT_userUpdate["PUT /user/update"]
+    DELETE_userDel["DELETE /user/:id"]
+    PUT_userProfile["PUT /user/profile"]
+    PUT_userPassword["PUT /user/password"]
+    GET_userGroups["GET /user/:userId/groups"]
+    GET_authCallback["GET /user/auth/callback"]
+    GET_authExchange["GET /user/auth/exchange"]
+  end
+
+  subgraph file["File Endpoints"]
+    POST_upload["POST /api/files/upload"]
+    POST_addTag["POST /api/files/addNewTag"]
+    POST_extractText["POST /api/files/extract-text"]
+    GET_filesList["GET /api/files/"]
+    GET_fileTags["GET /api/files/tags"]
+    GET_preview["GET /api/files/preview/:storage_key"]
+    GET_download["GET /api/files/download/:storage_key"]
+    DELETE_file["DELETE /api/files/delete"]
+    DELETE_fileById["DELETE /api/files/:id"]
+    PUT_fileInfo["PUT /api/files/"]
+    PUT_editTag["PUT /api/files/editTag"]
+  end
+
+  subgraph translate["Translate Endpoints"]
+    POST_translate["POST /api/translate<br/>route: routes/translate.ts"]
+    GET_languages["GET /api/translate/languages"]
+    GET_history["GET /api/translate/history"]
+    DELETE_history["DELETE /api/translate/history"]
+  end
+
+  subgraph queries["Query Endpoints"]
+    GET_liveQueries["GET /api/live-queries"]
+    GET_chatHistory["GET /api/chat-history"]
+    GET_recentChats["GET /api/recent-chats"]
+    GET_adminUsers["GET /api/admin/users"]
+    GET_adminActivity["GET /api/admin/activity"]
+    GET_adminStats["GET /api/admin/stats"]
+  end
+
+  subgraph flow["Flow Endpoints"]
+    GET_flowList["GET /api/flow"]
+    GET_flowDetail["GET /api/flow/:id"]
+    POST_flowCreate["POST /api/flow"]
+    DELETE_flowDel["DELETE /api/flow/:id"]
+    POST_flowExecute["POST /api/flow/execute"]
+  end
+
+  subgraph other["Other Endpoints"]
+    POST_msgSend["POST /api/message/send"]
+    GET_msgInbox["GET /api/message/inbox"]
+    POST_supportTicket["POST /api/support/ticket"]
+    GET_supportTickets["GET /api/support/tickets"]
+  end
+
+  POST_genTask -->|controller: genTask#getAddMid<br/>service: genTaskService#handleAddGenTask| "chatGenProcess.ts"
+  GET_genTaskList -->|controller: genTask#getListMid| "service: genTaskService"
+  GET_genTaskTitle -->|controller: genTask#getChatTitle| "service: chatTask"
+  POST_feedback -->|controller: genTask#sendFeedbackToCache| "service: cache"
+  POST_login -->|controller: user#login| "service: user"
+  POST_upload -->|controller: file#uploadFile| "service: fileUploadTask"
+  GET_filesList -->|controller: file#listFiles| "model: file.model"
+  POST_translate -->|controller: translate| "service: aiTranslationService"
+  GET_liveQueries -->|inline handler in routes/queries.ts| "model: gen_task"

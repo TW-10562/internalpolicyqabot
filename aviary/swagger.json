@@ -1,0 +1,487 @@
+{
+    "openapi": "3.0.1",
+    "info": {
+        "title": "Aviary App API Starter Kit - Koa.js",
+        "version": "1.0.0",
+        "description": "Koa.js API starter kit powered by aviary platform."
+    },
+    "tags": [
+        {
+            "name": "health",
+            "description": "Service health"
+        },
+        {
+            "name": "auth",
+            "description": "Authentication (legacy /auth)"
+        }
+    ],
+    "components": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT"
+            }
+        },
+        "schemas": {
+            "HealthResponse": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "example": "ok"
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "LoginRequest": {
+                "type": "object",
+                "required": [
+                    "userName",
+                    "password"
+                ],
+                "properties": {
+                    "userName": {
+                        "type": "string",
+                        "example": "admin"
+                    },
+                    "password": {
+                        "type": "string",
+                        "example": "abcd1234"
+                    },
+                    "code": {
+                        "type": "string",
+                        "example": "1234",
+                        "description": "验证码(可选)"
+                    },
+                    "uuid": {
+                        "type": "string",
+                        "example": "uuid-string",
+                        "description": "验证码UUID(可选)"
+                    }
+                }
+            },
+            "LoginResponse": {
+                "type": "object",
+                "properties": {
+                    "token": {
+                        "type": "string",
+                        "description": "JWT bearer token"
+                    },
+                    "sessionId": {
+                        "type": "string"
+                    },
+                    "user": {
+                        "type": "object",
+                        "properties": {
+                            "userId": {
+                                "type": "number"
+                            },
+                            "userName": {
+                                "type": "string"
+                            },
+                            "avatar": {
+                                "type": "string",
+                                "nullable": true
+                            }
+                        }
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "permissions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "RegisterRequest": {
+                "type": "object",
+                "required": [
+                    "userName",
+                    "password"
+                ],
+                "properties": {
+                    "userName": {
+                        "type": "string"
+                    },
+                    "password": {
+                        "type": "string",
+                        "minLength": 6
+                    }
+                }
+            },
+            "RegisterResponse": {
+                "type": "object",
+                "properties": {
+                    "userId": {
+                        "type": "number"
+                    },
+                    "userName": {
+                        "type": "string"
+                    }
+                }
+            },
+            "GetInfoResponse": {
+                "type": "object",
+                "description": "Basic user info with roles and permissions (no postGroup/roleGroup)",
+                "properties": {
+                    "userInfo": {
+                        "type": "object",
+                        "properties": {
+                            "userId": {
+                                "type": "number"
+                            },
+                            "userName": {
+                                "type": "string"
+                            },
+                            "avatar": {
+                                "type": "string",
+                                "nullable": true
+                            }
+                        }
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "permissions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "ProfileResponse": {
+                "type": "object",
+                "description": "Detailed profile with postGroup and roleGroup (flattened structure)",
+                "properties": {
+                    "userId": {
+                        "type": "number"
+                    },
+                    "userName": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "nickName": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "phoneNumber": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "sex": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "avatar": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "deptId": {
+                        "type": "number",
+                        "nullable": true
+                    },
+                    "userType": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "roleId": {
+                                    "type": "number"
+                                },
+                                "roleName": {
+                                    "type": "string"
+                                },
+                                "roleKey": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "postGroup": {
+                        "type": "string",
+                        "description": "Comma-separated post names",
+                        "example": "总经理,项目经理"
+                    },
+                    "roleGroup": {
+                        "type": "string",
+                        "description": "Comma-separated role names",
+                        "example": "管理员,普通角色"
+                    }
+                }
+            },
+            "PasswordUpdateRequest": {
+                "type": "object",
+                "required": [
+                    "oldPwd",
+                    "newPwd"
+                ],
+                "properties": {
+                    "oldPwd": {
+                        "type": "string"
+                    },
+                    "newPwd": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CaptchaResponse": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "number",
+                        "example": 200
+                    },
+                    "msg": {
+                        "type": "string",
+                        "example": "操作成功"
+                    },
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "img": {
+                                "type": "string",
+                                "description": "SVG图片字符串（数学表达式验证码）"
+                            },
+                            "uuid": {
+                                "type": "string",
+                                "description": "验证码UUID，用于验证"
+                            }
+                        }
+                    }
+                }
+            },
+            "SuccessResponse": {
+                "type": "object",
+                "properties": {
+                    "success": {
+                        "type": "boolean",
+                        "example": true
+                    }
+                }
+            },
+            "ErrorResponse": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "example": "invalidToken"
+                    },
+                    "msg": {
+                        "type": "string"
+                    }
+                }
+            }
+        }
+    },
+    "paths": {
+        "/health": {
+            "get": {
+                "tags": [
+                    "health"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/captcha": {
+            "get": {
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Get captcha image",
+                "responses": {
+                    "200": {
+                        "description": "Captcha payload",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CaptchaResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [ ]
+            }
+        },
+        "/auth/login": {
+            "post": {
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Login with userName and password",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/LoginRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Login success",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LoginResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid credentials",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [ ]
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Register a new user",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RegisterRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "User created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RegisterResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "User exists or invalid payload",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [ ]
+            }
+        },
+        "/auth/logout": {
+            "post": {
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Logout current session",
+                "responses": {
+                    "200": {
+                        "description": "Logout success",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SuccessResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": [ ]
+                    }
+                ]
+            }
+        },
+        "/auth/password": {
+            "post": {
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Update password",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PasswordUpdateRequest"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Password updated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SuccessResponse"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": [ ]
+                    }
+                ]
+            }
+        }
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8080"
+        }
+    ]
+}

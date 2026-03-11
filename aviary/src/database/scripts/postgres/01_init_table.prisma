@@ -1,0 +1,559 @@
+// Prisma Schema for Aviary Platform
+// Migrated from PostgreSQL DDL: 01_init_table.sql
+// Target: PostgreSQL 8.0.44+
+// Generated: January 2026
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// ENUMS: Business Logic Enumerations
+// ============================================================================
+
+/// Task execution status lifecycle
+enum TaskStatus {
+  WAIT      @map("WAIT")
+  IN_PROCESS @map("IN_PROCESS")
+  FINISHED  @map("FINISHED")
+  FAILED    @map("FAILED")
+}
+
+/// AI task generation types supported by the platform
+enum TaskType {
+  QUESTION_GEN  @map("QUESTION_GEN")
+  LONG_TEXT_GEN @map("LONG_TEXT_GEN")
+  VOICE_GEN     @map("VOICE_GEN")
+  IMAGE_GEN     @map("IMAGE_GEN")
+  SEARCH        @map("SEARCH")
+}
+
+/// Import task types for bulk operations
+enum ImportType {
+  SCHOOL @map("SCHOOL")
+  USER   @map("USER")
+}
+
+/// Import task lifecycle status
+enum ImportTaskStatus {
+  UPLOADED @map("UPLOADED")
+  PARSING  @map("PARSING")
+  PARSED   @map("PARSED")
+  COMPLETED @map("COMPLETED")
+  FAILED   @map("FAILED")
+}
+
+/// Data operation types for audit snapshots
+enum ActionType {
+  INSERT    @map("INSERT")
+  UPDATE    @map("UPDATE")
+  DELETE    @map("DELETE")
+  UNCHANGED @map("UNCHANGED")
+}
+
+/// Task output feedback ratings
+enum FeedbackType {
+  GOOD      @map("GOOD")
+  AVERAGE   @map("AVERAGE")
+  NOT_GOOD  @map("NOT_GOOD")
+}
+
+/// Generic status flag (0 = active, 1 = disabled)
+enum StatusFlag {
+  ACTIVE    @map("0")
+  DISABLED  @map("1")
+}
+
+/// Generic boolean flags using single character
+enum BooleanFlag {
+  NO  @map("0")
+  YES @map("1")
+}
+
+/// Menu type classifications
+enum MenuType {
+  DIRECTORY @map("M")  // Directory/category
+  MENU      @map("C")  // Menu item
+  ACTION    @map("F")  // Button/action
+}
+
+/// User type classifications
+enum UserType {
+  ADMIN      @map("0")
+  NORMAL     @map("1")
+}
+
+/// Business operation types for audit logs
+enum BusinessType {
+  OTHER  @map("0")
+  CREATE @map("1")
+  UPDATE @map("2")
+  DELETE @map("3")
+}
+
+/// Operator category for audit context
+enum OperatorType {
+  OTHER        @map("0")
+  ADMIN_USER   @map("1")
+  MOBILE_USER  @map("2")
+}
+
+/// Gender classification
+enum Gender {
+  MALE   @map("0")
+  FEMALE @map("1")
+}
+
+/// Login operation result status
+enum LoginStatus {
+  SUCCESS @map("0")
+  FAILURE @map("1")
+}
+
+/// User data scope permissions
+enum DataScope {
+  ALL_DATA              @map("1")  // Access all data
+  CUSTOM               @map("2")  // Custom scope
+  DEPARTMENT_ONLY      @map("3")  // Same department only
+  DEPT_AND_SUBDEPT     @map("4")  // Department and sub-departments
+}
+
+/// External link/iframe handling flag
+enum FrameType {
+  INTERNAL @map("1")
+  EXTERNAL @map("0")
+}
+
+// ============================================================================
+// MODELS: AI Task Management System
+// ============================================================================
+
+/// AI Generation Tasks - Primary task entity for content generation operations
+model AviaryGenTask {
+  id        String   @id @default(cuid()) @db.VarChar(21) @map("id")
+  type      TaskType @default(WAIT) @map("type")
+  formData  String   @db.Text @map("form_data")
+  status    TaskStatus @default(WAIT) @map("status")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Relation to task outputs (one-to-many)
+  outputs   AviaryGenTaskOutput[]
+
+  @@map("aviary_gen_task")
+}
+
+/// AI Generation Task Outputs - Generated result records linked to parent task
+model AviaryGenTaskOutput {
+  id        Int      @id @default(autoincrement()) @map("id")
+  taskId    String   @db.VarChar(21) @map("task_id")
+  metadata  String   @db.Text @map("metadata")
+  sort      BigInt?  @map("sort")
+  content   String?  @db.Text @map("content")
+  status    TaskStatus @default(WAIT) @map("status")
+  feedback  FeedbackType? @map("feedback")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key to parent task - CASCADE delete
+  task      AviaryGenTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: Cascade) @map("task_id")
+
+  @@index([taskId])
+  @@map("aviary_gen_task_output")
+}
+
+// ============================================================================
+// MODELS: Import System (CSV/Bulk Operations)
+// ============================================================================
+
+/// Import Batch Tasks - Tracks bulk data import operations
+model AviaryImportTask {
+  id         BigInt   @id @default(autoincrement()) @map("id")
+  type       ImportType @default(SCHOOL) @map("type")
+  filePath   String   @db.VarChar(255) @map("file_path")
+  status     ImportTaskStatus @default(UPLOADED) @map("status")
+  totalCount Int      @default(0) @map("total_count")
+  insertCount Int     @default(0) @map("insert_count")
+  updateCount Int     @default(0) @map("update_count")
+  deleteCount Int     @default(0) @map("delete_count")
+  createdBy  String?  @db.Char(64) @map("create_by")
+  updatedBy  String?  @db.Char(64) @map("update_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  /// Relation to import snapshots (one-to-many)
+  snapshots  AviaryImportSnapshot[]
+
+  @@map("aviary_import_task")
+}
+
+/// Import Data Snapshots - Detailed record of each row change during import
+model AviaryImportSnapshot {
+  id        BigInt   @id @default(autoincrement()) @map("id")
+  taskId    BigInt   @map("task_id")
+  type      ImportType @default(SCHOOL) @map("type")
+  kv        String   @db.VarChar(255) @map("kv")
+  action    ActionType @default(INSERT) @map("action")
+  oldData   Json?    @map("old_data")
+  newData   Json?    @map("new_data")
+  diff      Json?    @map("diff")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key to parent import task - CASCADE delete
+  task      AviaryImportTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: Cascade) @map("task_id")
+
+  @@index([taskId])
+  @@map("aviary_import_snapshot")
+}
+
+// ============================================================================
+// MODELS: System Configuration Management
+// ============================================================================
+
+/// System Configuration - Key-value configuration storage
+model SysConfig {
+  configId   Int      @id @default(autoincrement()) @map("config_id")
+  configName String?  @db.VarChar(255) @map("config_name")
+  configKey  String?  @db.VarChar(255) @map("config_key")
+  configValue String? @db.VarChar(255) @map("config_value")
+  configType String   @default("N") @db.VarChar(255) @map("config_type")
+  createdBy  String?  @db.VarChar(255) @map("create_by")
+  createdAt  DateTime? @map("created_at")
+  updatedBy  String?  @db.VarChar(255) @map("update_by")
+  updatedAt  DateTime? @map("updated_at")
+  remark     String?  @db.VarChar(255) @map("remark")
+
+  @@map("sys_config")
+}
+
+// ============================================================================
+// MODELS: Organizational Structure (RBAC + Departments)
+// ============================================================================
+
+/// System Departments - Hierarchical organizational units
+model SysDept {
+  deptId      BigInt   @id @default(autoincrement()) @map("dept_id")
+  parentId    BigInt   @default(0) @map("parent_id")
+  ancestors   String?  @default("") @db.Char(50) @map("ancestors")
+  deptName    String?  @db.Char(255) @map("dept_name")
+  orderNum    BigInt   @default(0) @map("order_num")
+  leader      String?  @db.Char(255) @map("leader")
+  phone       String?  @db.Char(255) @map("phone")
+  email       String?  @db.Char(255) @map("email")
+  status      StatusFlag @default(ACTIVE) @map("status")
+  delFlag     BooleanFlag @default(NO) @map("del_flag")
+  createdBy   String?  @db.Char(64) @map("create_by")
+  updatedBy   String?  @db.Char(64) @map("update_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  schoolId    BigInt?  @map("school_id")
+  schoolCode  String?  @db.Char(64) @map("school_code")
+  prefecture  String?  @db.Char(64) @map("prefecture")
+  address     String?  @db.Text @map("address")
+
+  /// Relation to users in this department (one-to-many)
+  users       SysUser[]
+
+  @@unique([deptId])
+  @@map("sys_dept")
+}
+
+/// System Users - User accounts with authentication and role bindings
+model SysUser {
+  userId          BigInt   @id @default(autoincrement()) @map("user_id")
+  deptId          BigInt?  @map("dept_id")
+  userName        String   @db.VarChar(255) @map("user_name")
+  nickName        String?  @db.VarChar(255) @map("nick_name")
+  userType        UserType @default(ADMIN) @map("user_type")
+  email           String?  @db.Char(50) @map("email")
+  phonenumber     String?  @db.Char(11) @map("phonenumber")
+  sex             Gender   @default(MALE) @map("sex")
+  avatar          String?  @db.Char(255) @map("avatar")
+  password        String   @db.Char(64) @map("password")
+  status          StatusFlag @default(ACTIVE) @map("status")
+  delFlag         BigInt   @default(0) @map("del_flag")
+  loginIp         String?  @db.Char(128) @map("login_ip")
+  loginDate       DateTime? @map("login_date")
+  createdBy       String?  @db.Char(64) @map("create_by")
+  updatedBy       String?  @db.Char(64) @map("update_by")
+  remark          String?  @db.Char(255) @map("remark")
+  firstLoginDate  DateTime? @map("first_login_date")
+  expirationDate  DateTime? @map("expiration_date")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key to department - CASCADE delete
+  department      SysDept? @relation(fields: [deptId], references: [deptId], onDelete: Cascade, onUpdate: Cascade)
+
+  /// Relations to roles (many-to-many through SysUserRole)
+  roles           SysUserRole[]
+
+  /// Relations to positions (many-to-many through SysUserPost)
+  posts           SysUserPost[]
+
+  /// Relation to user opinions (one-to-many)
+  opinions        SysUserOpinion[]
+
+  @@index([deptId])
+  @@map("sys_user")
+}
+
+/// System Positions/Jobs - Job role definitions
+model SysPost {
+  postId    BigInt   @id @default(autoincrement()) @map("post_id")
+  postCode  String?  @db.Char(255) @map("post_code")
+  postName  String?  @db.Char(255) @map("post_name")
+  postSort  BigInt?  @map("post_sort")
+  status    StatusFlag @default(ACTIVE) @map("status")
+  delFlag   BooleanFlag @default(NO) @map("del_flag")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  remark    String?  @db.Char(255) @map("remark")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Relation to user-post mappings (one-to-many)
+  userPosts SysUserPost[]
+
+  @@unique([postId])
+  @@map("sys_post")
+}
+
+/// System Roles - Permission role definitions
+model SysRole {
+  roleId    BigInt   @id @default(autoincrement()) @map("role_id")
+  roleName  String?  @db.Char(255) @map("role_name")
+  roleKey   String?  @db.Char(255) @map("role_key")
+  roleSort  BigInt?  @map("role_sort")
+  dataScope DataScope @default(ALL_DATA) @map("data_scope")
+  status    StatusFlag @default(ACTIVE) @map("status")
+  delFlag   BooleanFlag @default(NO) @map("del_flag")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  remark    String?  @db.Char(255) @map("remark")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Relations to users (many-to-many through SysUserRole)
+  users     SysUserRole[]
+
+  /// Relations to menus (many-to-many through SysRoleMenu)
+  menus     SysRoleMenu[]
+
+  @@unique([roleId])
+  @@map("sys_role")
+}
+
+// ============================================================================
+// MODELS: Menu & Permission System
+// ============================================================================
+
+/// System Menu - UI menu items and permissions
+model SysMenu {
+  menuId    BigInt   @id @default(autoincrement()) @map("menu_id")
+  menuName  String   @db.VarChar(255) @map("menu_name")
+  parentId  BigInt   @default(0) @map("parent_id")
+  orderNum  BigInt   @default(0) @map("order_num")
+  path      String?  @default("") @db.Char(255) @map("path")
+  component String?  @db.Char(255) @map("component")
+  query     String?  @db.Char(255) @map("query")
+  isFrame   FrameType @default(INTERNAL) @map("is_frame")
+  isCache   BigInt   @default(0) @map("is_cache")
+  menuType  MenuType @default(MENU) @map("menu_type")
+  visible   BooleanFlag @default(NO) @map("visible")
+  status    StatusFlag @default(ACTIVE) @map("status")
+  perms     String?  @db.Char(100) @map("perms")
+  icon      String?  @default("") @db.Char(100) @map("icon")
+  createdBy String?  @default("") @db.Char(64) @map("create_by")
+  updatedBy String?  @default("") @db.Char(64) @map("update_by")
+  remark    String?  @db.Char(255) @map("remark")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Relations to roles (many-to-many through SysRoleMenu)
+  roles     SysRoleMenu[]
+
+  @@unique([menuId])
+  @@map("sys_menu")
+}
+
+// ============================================================================
+// MODELS: Dictionary System (Key-Value Enumerations)
+// ============================================================================
+
+/// Dictionary Types - Category definitions for sys_dict_data
+model SysDictType {
+  dictId    BigInt   @id @default(autoincrement()) @map("dict_id")
+  dictName  String?  @default("") @db.Char(255) @map("dict_name")
+  dictType  String?  @default("") @db.Char(255) @map("dict_type")
+  status    StatusFlag @default(ACTIVE) @map("status")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  remark    String?  @db.Char(255) @map("remark")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Relation to dictionary data entries (one-to-many)
+  entries   SysDictData[]
+
+  @@unique([dictId])
+  @@map("sys_dict_type")
+}
+
+/// Dictionary Data - Configuration entries for enumeration types
+model SysDictData {
+  dictCode  BigInt   @id @default(autoincrement()) @map("dict_code")
+  dictSort  BigInt   @default(0) @map("dict_sort")
+  dictLabel String?  @default("") @db.Char(255) @map("dict_label")
+  dictValue String?  @default("") @db.Char(255) @map("dict_value")
+  dictType  String?  @default("") @db.Char(255) @map("dict_type")
+  cssClass  String?  @db.Char(255) @map("css_class")
+  listClass String?  @db.Char(255) @map("list_class")
+  isDefault BooleanFlag @default(NO) @map("is_default")
+  status    StatusFlag @default(ACTIVE) @map("status")
+  createdBy String?  @db.Char(64) @map("create_by")
+  updatedBy String?  @db.Char(64) @map("update_by")
+  remark    String?  @db.Char(255) @map("remark")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([dictCode])
+  @@map("sys_dict_data")
+}
+
+// ============================================================================
+// MODELS: Audit & Logging System
+// ============================================================================
+
+/// Operation Audit Log - Tracks all user operations for compliance
+model SysOperLog {
+  operId        Int      @id @default(autoincrement()) @map("oper_id")
+  title         String   @db.VarChar(255) @map("title")
+  businessType  BusinessType @default(OTHER) @map("business_type")
+  method        String?  @db.VarChar(255) @map("method")
+  requestMethod String?  @db.VarChar(255) @map("request_method")
+  operatorType  OperatorType @default(OTHER) @map("operator_type")
+  operName      String?  @db.VarChar(255) @map("oper_name")
+  deptName      String?  @db.VarChar(255) @map("dept_name")
+  operUrl       String?  @db.VarChar(255) @map("oper_url")
+  operIp        String?  @db.VarChar(255) @map("oper_ip")
+  operLocation  String?  @db.VarChar(255) @map("oper_location")
+  operParam     String?  @db.VarChar(2000) @map("oper_param")
+  jsonResult    String?  @db.VarChar(2000) @map("json_result")
+  status        LoginStatus @default(SUCCESS) @map("status")
+  errorMsg      String?  @db.VarChar(2000) @map("error_msg")
+  operTime      DateTime? @map("oper_time")
+  createdAt     DateTime? @map("created_at")
+  updatedAt     DateTime? @map("updated_at")
+
+  @@map("sys_oper_log")
+}
+
+/// Login Information Log - Tracks user authentication attempts
+model SysLoginInfo {
+  infoId        Int      @id @default(autoincrement()) @map("info_id")
+  userName      String?  @db.VarChar(255) @map("user_name")
+  ipaddr        String?  @db.VarChar(255) @map("ipaddr")
+  loginLocation String?  @db.VarChar(255) @map("login_location")
+  browser       String?  @db.VarChar(255) @map("browser")
+  os            String?  @db.VarChar(255) @map("os")
+  status        LoginStatus? @map("status")
+  msg           String?  @db.VarChar(255) @map("msg")
+  loginTime     DateTime? @map("login_time")
+  createdAt     DateTime? @map("created_at")
+  updatedAt     DateTime? @map("updated_at")
+
+  @@map("sys_logininfor")
+}
+
+// ============================================================================
+// MODELS: User Feedback System
+// ============================================================================
+
+/// User Opinions - Stores user feedback and feature requests
+model SysUserOpinion {
+  id         Int      @id @default(autoincrement()) @map("id")
+  userId     Int      @map("user_id")
+  deptId     Int?     @map("dept_id")
+  schoolName String?  @db.VarChar(255) @map("school_name")
+  opinion    String   @db.Text @map("opinion")
+  functions  String?  @db.Text @map("functions")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key to user - no explicit constraint in original DDL
+  user       SysUser  @relation(fields: [userId], references: [userId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([userId])
+  @@map("sys_user_opinion")
+}
+
+// ============================================================================
+// MODELS: Junction Tables (Many-to-Many Relationships)
+// ============================================================================
+
+/// User-Role Mapping - Links users to their assigned roles
+model SysUserRole {
+  id        Int      @id @default(autoincrement()) @map("id")
+  userId    BigInt?  @map("user_id")
+  roleId    BigInt?  @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key relations
+  user      SysUser? @relation(fields: [userId], references: [userId], onDelete: Cascade, onUpdate: Cascade)
+  role      SysRole? @relation(fields: [roleId], references: [roleId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("sys_user_role")
+}
+
+/// User-Post Mapping - Links users to their assigned positions
+model SysUserPost {
+  id        Int      @id @default(autoincrement()) @map("id")
+  userId    BigInt?  @map("user_id")
+  postId    BigInt?  @map("post_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key relations
+  user      SysUser? @relation(fields: [userId], references: [userId], onDelete: Cascade, onUpdate: Cascade)
+  post      SysPost? @relation(fields: [postId], references: [postId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId])
+  @@index([postId])
+  @@map("sys_user_post")
+}
+
+/// Role-Menu Mapping - Links roles to their accessible menus/permissions
+model SysRoleMenu {
+  id        Int      @id @default(autoincrement()) @map("id")
+  roleId    BigInt?  @map("role_id")
+  menuId    BigInt?  @map("menu_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Foreign key relations
+  role      SysRole? @relation(fields: [roleId], references: [roleId], onDelete: Cascade, onUpdate: Cascade)
+  menu      SysMenu? @relation(fields: [menuId], references: [menuId], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([roleId, menuId])
+  @@index([roleId])
+  @@index([menuId])
+  @@map("sys_role_menu")
+}

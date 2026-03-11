@@ -1,0 +1,85 @@
+%% COMPONENT DIAGRAM (C4 L3)
+flowchart TB
+  subgraph Routes["Routes Layer"]
+    R_index["routes/index.ts"]
+    R_auth["routes/auth.ts"]
+    R_genTask["routes/genTask.ts"]
+    R_file["routes/file.ts"]
+    R_queries["routes/queries.ts"]
+    R_translate["routes/translate.ts"]
+    R_flow["routes/flow.ts"]
+    R_support["routes/support.ts"]
+    R_messages["routes/messages.ts"]
+  end
+
+  subgraph Controllers["Controllers Layer"]
+    C_index["controller/index.ts"]
+    C_user["controller/user.ts"]
+    C_genTask["controller/genTask.ts"]
+    C_file["controller/file.ts"]
+    C_flow["controller/flow.ts"]
+    C_common["controller/common.ts"]
+  end
+
+  subgraph Services["Services Layer"]
+    S_gen["service/genTaskService.ts"]
+    S_chat["service/chatTask.ts"]
+    S_rag["rag/pipeline/ragPipeline.ts"]
+    S_translate["utils/translation.ts"]
+    S_file["service/file.ts"]
+    S_queue["service/task.dispatch.ts"]
+    S_queryClass["service/queryClassificationService.ts"]
+  end
+
+  subgraph Queue["Queue and Workers"]
+    Q_job["queue/jobQueue.ts"]
+    Q_worker["queue/worker.ts"]
+    Q_chatProcess["queue/chatGenProcess.ts"]
+    Q_summary["queue/summaryGenProcess.ts"]
+    Q_translate["queue/translateGenProcess.ts"]
+  end
+
+  subgraph Clients["Clients and Utilities"]
+    U_llm["service/openai_client.ts"]
+    U_solr["service/solrService.ts"]
+    U_redis["clients/redis.ts"]
+    U_db["mysql/db/index.ts"]
+    U_mapper["utils/mapper.ts"]
+    U_translation["utils/translation.ts"]
+    U_logger["utils/logger.ts or console"]
+    U_err["utils/errHandler.ts"]
+  end
+
+  subgraph Models["Data Models"]
+    M_genTask["mysql/model/gen_task.model.ts"]
+    M_genOutput["mysql/model/gen_task_output.model.ts"]
+    M_file["mysql/model/file.model.ts"]
+    M_user["mysql/model/user.model.ts"]
+  end
+
+  R_index --> R_auth
+  R_index --> R_genTask
+  R_index --> R_file
+  R_index --> R_queries
+  R_auth --> C_user
+  R_genTask --> C_genTask
+  R_file --> C_file
+  R_flow --> C_flow
+  C_genTask --> S_gen
+  C_genTask --> S_queryClass
+  C_genTask --> S_translate
+  C_genTask --> U_db
+  C_genTask --> M_genTask
+  S_gen --> Q_job
+  Q_job --> Q_worker
+  Q_worker --> Q_chatProcess
+  Q_chatProcess --> U_llm
+  Q_chatProcess --> S_rag
+  Q_chatProcess --> M_genOutput
+  S_chat --> U_llm
+  S_rag --> U_solr
+  S_translate --> U_llm
+  S_file --> U_db
+  S_file --> M_file
+  U_translation --> U_llm
+  U_redis --> Q_job

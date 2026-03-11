@@ -1,0 +1,1 @@
+ALTER TABLE `user` ADD COLUMN `department` VARCHAR(100) NOT NULL DEFAULT 'Unknown' COMMENT '部署';

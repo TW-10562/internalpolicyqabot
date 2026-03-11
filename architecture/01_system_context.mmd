@@ -1,0 +1,30 @@
+%% SYSTEM CONTEXT DIAGRAM (C4 L1)
+flowchart LR
+  Browser["User Browser\n(ui-2/src/App.tsx)"]
+  API["Aviary API Server\n(api/src/main.ts)"]
+  Worker["Background Worker\n(api/src/queue/worker.ts)"]
+  RAGPython["RAG Service\n(rag/api/main.py)"]
+  FrontendRepo["Frontend App\n(ui-2/src/main.tsx)"]
+  MySQL["MySQL Database\n(api/src/mysql/db/index.ts)"]
+  Redis["Redis Cache / Queue\n(api/src/clients/redis.ts)"]
+  Solr["Apache Solr Search\n(config/default.yml -> ApacheSolr.url)"]
+  Ollama["LLM Gateway / Model Host\n(LLM_BASE_URL or config/default.yml)"]
+  FileStorage["Upload Storage FS\n(uploads/)"]
+
+  Browser -->|HTTP XHR Websocket\n-> /api/*| API
+  FrontendRepo -->|Dev HTTP| Browser
+  API -->|MySQL protocol via sequelize| MySQL
+  API -->|Redis ioredis reads writes| Redis
+  API -->|HTTP Solr API search| Solr
+  API -->|HTTP /v1/chat/completions via client\napi/src/service/openai_client.ts| Ollama
+  API -->|Filesystem file reads writes| FileStorage
+  Worker -->|Reads jobs updates DB| MySQL
+  Worker -->|Uses Redis as queue backend| Redis
+  Worker -->|Calls Ollama or RAG endpoints| Ollama
+  Worker -->|May call RAG Python HTTP API| RAGPython
+  RAGPython -->|Local vector DB Chroma FS| FileStorage
+  RAGPython -->|Calls LangChain embeddings| Ollama
+
+  subgraph "External Users"
+    Browser
+  end

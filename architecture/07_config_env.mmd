@@ -1,0 +1,45 @@
+%% CONFIGURATION & ENV FLOW
+flowchart LR
+  ConfigFile["config/default.yml<br/>config/example.yml"]
+  ConfigSchema["config/schema.ts<br/>Zod schema validation"]
+  ConfigLoader["config/index.ts<br/>loadConfig"]
+  RuntimeEnv["Environment Variables<br/>process.env<br/>OLLAMA_API OLLAMA_MODEL<br/>MYSQL_HOST REDIS_URL JWT"]
+
+  subgraph AppConsumers["Services consuming config"]
+    LLMService["service/openai_client.ts<br/>LLM_BASE_URL<br/>LLM_MODEL<br/>LLM_API_KEY"]
+    TranslationUtil["utils/translation.ts<br/>config.Models.chatModel.name<br/>LLM_MODEL"]
+    RAGServiceConfig["rag/pipeline/ragPipeline.ts<br/>config.RAG.Backend<br/>config.RAG.VectorStore<br/>config.RAG.Retrieval"]
+    MySQLDB["mysql/db/index.ts<br/>config.MySQL"]
+    RedisClient["clients/redis.ts<br/>config.Redis.host<br/>config.Redis.port"]
+    SolrService["service/solrService.ts<br/>config.ApacheSolr.url"]
+  end
+
+  subgraph Propagation["Config propagation"]
+    InitApp["api/src/main.ts<br/>imports config"]
+    Service["All services import<br/>from @config/index"]
+  end
+
+  ConfigFile --> ConfigLoader
+  ConfigSchema --> ConfigLoader
+  RuntimeEnv --> ConfigLoader
+  ConfigLoader --> InitApp
+  InitApp --> Service
+  Service --> AppConsumers
+
+  subgraph Secrets["Secrets & Sensitive"]
+    JWTSecret["jwtSecret<br/>jwtRefreshSecret<br/>from config/default.yml or env"]
+    DBPassword["MySQL password<br/>from config/default.yml"]
+    RedisPassword["Redis password<br/>from config/default.yml"]
+  end
+
+  ConfigLoader --> Secrets
+  Secrets --> MySQLDB
+  Secrets --> RedisClient
+
+  subgraph Example["Example flow"]
+    Ex1["config/default.yml has<br/>Ollama.url: http://localhost:11435<br/>Ollama.model: gpt-oss:20b"]
+    Ex2["ConfigLoader reads YAML<br/>validates with schema"]
+    Ex3["openai_client reads env/config<br/>uses LLM model<br/>calls gateway API"]
+  end
+
+  Ex1 --> Ex2 --> Ex3
