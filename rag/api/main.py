@@ -1,6 +1,7 @@
 import time
 
 from api.modeAPI import upload_router
+from config.index import config
 from core.logging import logger
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,11 @@ from models.schemas import (
     UpdateRequest,
 )
 from services.document_service import delete_collection
-from services.embedder import embed_text
+from services.embedder import (
+    embed_text,
+    get_active_embedding_cache_dir,
+    get_active_embedding_model_name,
+)
 from services.HybridRAGEngineFactory import hybrid_RAG_engine_factory
 from services.rag_service import search_rag
 from services.record_service import delete_document, update_document
@@ -50,6 +55,17 @@ async def add_process_time_header(request: Request, call_next):
 
 
 app.include_router(upload_router)
+
+
+@app.on_event("startup")
+def log_rag_runtime_config():
+    logger.info(
+        "[RAG] Startup runtime config: "
+        f"embedding_model={get_active_embedding_model_name()} "
+        f"embedding_cache_dir={get_active_embedding_cache_dir()} "
+        f"rerank_model={config.Models.ragRerankModel.name} "
+        f"vector_only_default={config.RAG.Retrieval.HybridSearch.vector_only}"
+    )
 
 
 @app.get("/healthz")
@@ -102,6 +118,10 @@ def delete_doc(req: DeleteRequest):
 def check_embedding_model():
     try:
         embed_text("基本給はどのように決まりますか？")
-        return {"message": "Embedding model is working correctly."}
+        return {
+            "message": "Embedding model is working correctly.",
+            "embedding_model": get_active_embedding_model_name(),
+            "embedding_cache_dir": get_active_embedding_cache_dir(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

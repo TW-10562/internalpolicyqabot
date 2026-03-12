@@ -77,6 +77,20 @@ class ConfigLoader:
         if backend_url:
             self.config.RAG.Backend.url = backend_url
 
+        embedding_model = os.getenv("RAG_EMBEDDING_MODEL")
+        if embedding_model:
+            self.config.Models.ragEmbeddingModel.name = embedding_model
+        embedding_cache_dir = os.getenv("RAG_EMBEDDING_CACHE_DIR")
+        if embedding_cache_dir:
+            self.config.Models.ragEmbeddingModel.cacheDir = embedding_cache_dir
+
+        rerank_model = os.getenv("RAG_RERANK_MODEL")
+        if rerank_model:
+            self.config.Models.ragRerankModel.name = rerank_model
+        rerank_cache_dir = os.getenv("RAG_RERANK_CACHE_DIR")
+        if rerank_cache_dir:
+            self.config.Models.ragRerankModel.cacheDir = rerank_cache_dir
+
         docs_root = os.getenv("DOCS_ROOT")
         if not docs_root:
             return

@@ -113,7 +113,10 @@ export const generateJapaneseQueryVariants = async (query: string): Promise<stri
     'User query:',
     source,
     '',
-    'Generate 3-5 Japanese HR terminology search phrases that could appear in policy documents.',
+    'Generate 4-6 Japanese HR terminology search phrases that could appear in internal policy documents.',
+    'Prefer official business-document wording rather than conversational Japanese.',
+    'If the query asks about a process, reporting flow, approval, or procedure, include at least two phrases with terms like 手続き, 手順, 報告, 届出, 申請, or フロー.',
+    'If the query is about violations, misconduct, discipline, or incidents, prefer policy terms such as 懲戒, 懲戒事案, 懲戒案件, 規程, and 報告.',
     '',
     'Return only phrases separated by newline.',
   ].join('\n');

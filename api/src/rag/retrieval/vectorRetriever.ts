@@ -151,8 +151,9 @@ export const retrieveVectorDocuments = async (
 
   const embeddingModel = String(
     process.env.RAG_VECTOR_EMBEDDING_MODEL ||
+      process.env.RAG_EMBEDDING_MODEL ||
       process.env.EMBEDDING_MODEL_NAME ||
-      'BAAI/bge-small-en-v1.5',
+      'BAAI/bge-m3',
   ).trim();
   const topK = Math.max(8, Number(process.env.RAG_VECTOR_TOP_K || 20));
 

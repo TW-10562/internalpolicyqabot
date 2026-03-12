@@ -96,7 +96,7 @@ function normalizeLegacyRole(roleKey: string | null, userName: string): RoleCode
 }
 
 export async function getAccessScopeByUserId(userId: number, fallbackUserName = ''): Promise<AccessScope> {
-  const res = await pgPool.query(
+  const appUserRes = await pgPool.query(
     `
     SELECT
       u.user_id,
@@ -119,7 +119,29 @@ export async function getAccessScopeByUserId(userId: number, fallbackUserName = 
     [userId],
   );
 
-  const row = res.rows[0];
+  const row = appUserRes.rows[0] || (await pgPool.query(
+    `
+    SELECT
+      su.user_id,
+      COALESCE(NULLIF(su.user_name, ''), CAST(su.user_id AS TEXT)) AS user_name,
+      COALESCE(NULLIF(su.department_code, ''), NULLIF(su.department, ''), 'HR') AS department_code,
+      NULLIF(su.role_code, '') AS role_code,
+      (
+        SELECT sr.role_key
+        FROM sys_user_role sur
+        INNER JOIN sys_role sr ON sr.role_id = sur.role_id
+        WHERE sur.user_id = su.user_id
+        ORDER BY CASE WHEN sr.role_key = 'admin' THEN 0 ELSE 1 END
+        LIMIT 1
+      ) AS legacy_role_key
+    FROM sys_user su
+    WHERE su.user_id = $1
+      AND COALESCE(su.del_flag, '0') = '0'
+    LIMIT 1
+    `,
+    [userId],
+  )).rows[0];
+
   if (!row) {
     const err: any = new Error('unauthorized');
     err.code = 'unauthorized';

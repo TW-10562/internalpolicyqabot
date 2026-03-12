@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 
+import torch
+from core.logging import logger
+
 # GPU configuration -------------------------------------------------------
 # legacy environment variable support (user exported it earlier but code
 # didn't honour it)
@@ -17,10 +20,8 @@ if FORCE_GPU and not torch.cuda.is_available():
 
 
 import jaconv
-import torch
 from config.index import config
 from config.schema import HFModelConfig, OllamaModelConfig
-from core.logging import logger
 from huggingface_hub import snapshot_download
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaEmbeddings
@@ -36,6 +37,16 @@ if config.RAG.Retrieval.throwErrorWhenCUDAUnavailable:
 else:
     EMBEDDING_MODEL_DEVICE = "cuda" if CUDA_AVAILABLE else "cpu"
 logger.info(f"Embedding model device: {EMBEDDING_MODEL_DEVICE}")
+
+
+def get_active_embedding_model_name() -> str:
+    model = config.Models.ragEmbeddingModel
+    return str(getattr(model, "name", "") or "").strip()
+
+
+def get_active_embedding_cache_dir() -> str:
+    model = config.Models.ragEmbeddingModel
+    return str(getattr(model, "cacheDir", "") or "").strip()
 
 
 def process_text(text):
@@ -75,13 +86,20 @@ def ensure_local_HF_model(
 
 def load_embeddings():
     if isinstance(config.Models.ragEmbeddingModel, HFModelConfig):
+        model_name = get_active_embedding_model_name()
+        cache_dir = get_active_embedding_cache_dir()
+        model_source = "env" if os.getenv("RAG_EMBEDDING_MODEL") else "config"
+        logger.info(
+            f"Active embedding model: {model_name} "
+            f"(source={model_source}, cache_dir={cache_dir})"
+        )
 
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
         model_dir = ensure_local_HF_model(
-            model_name=config.Models.ragEmbeddingModel.name,
-            cache_dir=config.Models.ragEmbeddingModel.cacheDir,
+            model_name=model_name,
+            cache_dir=cache_dir,
         )
 
         emb = HuggingFaceEmbeddings(
@@ -95,6 +113,9 @@ def load_embeddings():
         return emb
 
     elif isinstance(config.Models.ragEmbeddingModel, OllamaModelConfig):
+        logger.info(
+            f"Active embedding model: {config.Models.ragEmbeddingModel.name} (source=config:ollama)"
+        )
 
         ollama_base_url = config.Ollama.url[0] or None
         if not ollama_base_url:

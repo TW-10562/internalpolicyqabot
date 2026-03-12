@@ -222,6 +222,16 @@ const RAG_FAST_EXTRACTIVE_REQUIRED_TOP_TERM_HITS = Math.max(
   Number(process.env.RAG_FAST_EXTRACTIVE_REQUIRED_TOP_TERM_HITS || 3),
 );
 const RAG_CHUNK_ARTICLE_BOOST = Math.max(0, Number(process.env.RAG_CHUNK_ARTICLE_BOOST || 0.2));
+const RAG_CHUNK_TERM_WEIGHT = Math.max(0, Number(process.env.RAG_CHUNK_TERM_WEIGHT || 3));
+const RAG_CHUNK_SEMANTIC_WEIGHT = Math.max(0, Number(process.env.RAG_CHUNK_SEMANTIC_WEIGHT || 10));
+const RAG_CHUNK_CROSS_LANGUAGE_TERM_WEIGHT = Math.max(
+  0,
+  Number(process.env.RAG_CHUNK_CROSS_LANGUAGE_TERM_WEIGHT || 1),
+);
+const RAG_CHUNK_CROSS_LANGUAGE_SEMANTIC_WEIGHT = Math.max(
+  0,
+  Number(process.env.RAG_CHUNK_CROSS_LANGUAGE_SEMANTIC_WEIGHT || 15),
+);
 const RAG_DOMAIN_FILTER_ENABLED = String(process.env.RAG_DOMAIN_FILTER_ENABLED || '1') !== '0';
 
 const CLOCK_IN_CORRECTION_QUERY_RE =
@@ -478,6 +488,8 @@ type RetrievedChunk = {
   termOverlap: number;
   semanticScore: number;
   sectionMismatch: boolean;
+  crossLanguageMatch: boolean;
+  docLanguage: 'ja' | 'en';
 };
 
 type RetrieveChunksResult = {
@@ -495,6 +507,51 @@ type FilterChunksResult = {
 type SelectEvidenceResult = {
   chunks: RetrievedChunk[];
   fallbackTriggered: boolean;
+};
+
+const inferRowLanguage = (row: any): 'ja' | 'en' => {
+  const title = Array.isArray(row?.title) ? String(row.title[0] || '') : String(row?.title || '');
+  const content = Array.isArray(row?.content_txt)
+    ? String(row.content_txt.join(' ') || '')
+    : String(row?.content_txt || row?.content_txt_ja || row?.content || '');
+  return hasJapaneseChars(`${title}\n${content}`) ? 'ja' : 'en';
+};
+
+const scoreChunkRelevance = (args: {
+  row: any;
+  queryLanguage?: 'ja' | 'en';
+  termOverlap: number;
+  semanticScore: number;
+  sectionMismatch: boolean;
+}): {
+  chunkRelevanceScore: number;
+  crossLanguageMatch: boolean;
+  docLanguage: 'ja' | 'en';
+  termWeight: number;
+  semanticWeight: number;
+  lowInfoPenalty: number;
+} => {
+  const docLanguage = inferRowLanguage(args.row);
+  const crossLanguageMatch = Boolean(args.queryLanguage) && args.queryLanguage !== docLanguage;
+  const termWeight = crossLanguageMatch ? RAG_CHUNK_CROSS_LANGUAGE_TERM_WEIGHT : RAG_CHUNK_TERM_WEIGHT;
+  const semanticWeight = crossLanguageMatch
+    ? RAG_CHUNK_CROSS_LANGUAGE_SEMANTIC_WEIGHT
+    : RAG_CHUNK_SEMANTIC_WEIGHT;
+  const articleBoost = hasPolicyArticleMarker(args.row) ? RAG_CHUNK_ARTICLE_BOOST : 0;
+  const lowInfoPenalty = isLowInformationChunk(args.row) ? -4 : 0;
+  return {
+    chunkRelevanceScore:
+      (args.termOverlap * termWeight) +
+      (args.semanticScore * semanticWeight) +
+      (args.sectionMismatch ? -2 : 0) +
+      articleBoost +
+      lowInfoPenalty,
+    crossLanguageMatch,
+    docLanguage,
+    termWeight,
+    semanticWeight,
+    lowInfoPenalty,
+  };
 };
 
 const collectResponseCacheFingerprint = (docs: any[]): {
@@ -546,6 +603,7 @@ export const retrieveChunks = (args: {
   docs: any[];
   query: string;
   topScore: number;
+  queryLanguage?: 'ja' | 'en';
   maxDocuments?: number;
   logger?: (line: string) => void;
 }): RetrieveChunksResult => {
@@ -561,19 +619,24 @@ export const retrieveChunks = (args: {
     const termOverlap = computeTokenOverlap(queryTerms, row);
     const semanticScore = getSemanticSimilarityScore(row, args.topScore);
     const sectionMismatch = detectSectionMismatch(queryTerms, row);
-    const articleBoost = hasPolicyArticleMarker(row) ? RAG_CHUNK_ARTICLE_BOOST : 0;
-    const lowInfoPenalty = isLowInformationChunk(row) ? -4 : 0;
-    const chunkRelevanceScore =
-      (termOverlap * 3) + (semanticScore * 10) + (sectionMismatch ? -2 : 0) + articleBoost + lowInfoPenalty;
+    const relevance = scoreChunkRelevance({
+      row,
+      queryLanguage: args.queryLanguage,
+      termOverlap,
+      semanticScore,
+      sectionMismatch,
+    });
     const item: RetrievedChunk = {
       row,
       docId,
       chunkId,
       docRelevanceScore: 0,
-      chunkRelevanceScore,
+      chunkRelevanceScore: relevance.chunkRelevanceScore,
       termOverlap,
       semanticScore,
       sectionMismatch,
+      crossLanguageMatch: relevance.crossLanguageMatch,
+      docLanguage: relevance.docLanguage,
     };
     if (!grouped.has(docId)) grouped.set(docId, []);
     grouped.get(docId)!.push(item);
@@ -618,39 +681,43 @@ export const filterChunks = (args: {
   const queryTerms = Array.from(new Set(toNormalizedTokens(args.query))).slice(0, 20);
   const minTermOverlap = Math.max(0, Number(args.minTermOverlap ?? RAG_MIN_TERM_OVERLAP_STRICT));
   const minSemanticSimilarity = Math.max(0, Number(args.minSemanticSimilarity || RAG_MIN_SEMANTIC_SIMILARITY));
-  const inferRowLanguage = (row: any): 'ja' | 'en' => {
-    const title = Array.isArray(row?.title) ? String(row.title[0] || '') : String(row?.title || '');
-    const content = Array.isArray(row?.content_txt)
-      ? String(row.content_txt.join(' ') || '')
-      : String(row?.content_txt || row?.content_txt_ja || row?.content || '');
-    return hasJapaneseChars(`${title}\n${content}`) ? 'ja' : 'en';
-  };
   let lowInformationFiltered = 0;
   let crossLanguageChunkCount = 0;
+  let effectiveTermWeight = RAG_CHUNK_TERM_WEIGHT;
+  let effectiveSemanticWeight = RAG_CHUNK_SEMANTIC_WEIGHT;
   const scored: RetrievedChunk[] = rows.map((row) => {
     const docId = getDocId(row);
     const chunkId = getChunkId(row);
     const termOverlap = computeTokenOverlap(queryTerms, row);
     const semanticScore = getSemanticSimilarityScore(row, args.topScore);
     const sectionMismatch = detectSectionMismatch(queryTerms, row);
-    const articleBoost = hasPolicyArticleMarker(row) ? RAG_CHUNK_ARTICLE_BOOST : 0;
-    const lowInfoPenalty = isLowInformationChunk(row) ? -4 : 0;
+    const relevance = scoreChunkRelevance({
+      row,
+      queryLanguage: args.queryLanguage,
+      termOverlap,
+      semanticScore,
+      sectionMismatch,
+    });
+    if (relevance.crossLanguageMatch) {
+      effectiveTermWeight = RAG_CHUNK_CROSS_LANGUAGE_TERM_WEIGHT;
+      effectiveSemanticWeight = RAG_CHUNK_CROSS_LANGUAGE_SEMANTIC_WEIGHT;
+    }
     return {
       row,
       docId,
       chunkId,
       docRelevanceScore: 0,
-      chunkRelevanceScore:
-        (termOverlap * 3) + (semanticScore * 10) + (sectionMismatch ? -2 : 0) + articleBoost + lowInfoPenalty,
+      chunkRelevanceScore: relevance.chunkRelevanceScore,
       termOverlap,
       semanticScore,
       sectionMismatch,
+      crossLanguageMatch: relevance.crossLanguageMatch,
+      docLanguage: relevance.docLanguage,
     };
   });
   const filtered = scored.filter((chunk) => {
     if (!chunk.docId || !chunk.chunkId) return false;
-    const docLanguage = inferRowLanguage(chunk.row);
-    const crossLanguageMatch = Boolean(args.queryLanguage) && args.queryLanguage !== docLanguage;
+    const crossLanguageMatch = chunk.crossLanguageMatch;
     const effectiveMinTermOverlap = crossLanguageMatch ? 0 : minTermOverlap;
     if (crossLanguageMatch) crossLanguageChunkCount += 1;
     if (chunk.termOverlap < effectiveMinTermOverlap) return false;
@@ -674,6 +741,10 @@ export const filterChunks = (args: {
       min_term_overlap: minTermOverlap,
       min_semantic_similarity: Number(minSemanticSimilarity.toFixed(3)),
       cross_language_chunks: crossLanguageChunkCount,
+      term_weight: effectiveTermWeight,
+      semantic_weight: effectiveSemanticWeight,
+      cross_language_term_weight: RAG_CHUNK_CROSS_LANGUAGE_TERM_WEIGHT,
+      cross_language_semantic_weight: RAG_CHUNK_CROSS_LANGUAGE_SEMANTIC_WEIGHT,
       filtered_chunks: scored.length - filtered.length,
       low_information_filtered: lowInformationFiltered,
       final_kept_chunk_count: filtered.length,
@@ -1569,6 +1640,7 @@ export const runRagPipeline = async (
     docs,
     query: retrievalSignalQuery,
     topScore,
+    queryLanguage: userLanguage,
     maxDocuments: RAG_MAX_DOCUMENTS,
     logger: log,
   });

@@ -54,6 +54,50 @@ const JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS = new Set([
   '規則',
 ]);
 const JA_PROCEDURAL_HINT_PATTERN = /(申請|手続|手続き|手順|方法|届出|提出|承認|申告|申込み|申し込み)/;
+type SemanticBridgeVariants = {
+  englishVariants: string[];
+  japaneseVariants: string[];
+};
+
+type SemanticBridgeRule = {
+  key: 'disciplinary' | 'incident' | 'reporting' | 'procedure' | 'workplace';
+  pattern: RegExp;
+  englishVariants: string[];
+  japaneseVariants: string[];
+};
+
+const EN_SEMANTIC_BRIDGE_RULES: SemanticBridgeRule[] = [
+  {
+    key: 'disciplinary',
+    pattern: /\bdisciplin(?:ary|e)?\b|\bmisconduct\b|\bsanction\b|\bpunish(?:ment|ive)?\b|\bviolation\b/i,
+    englishVariants: ['disciplinary case', 'disciplinary action', 'employee misconduct'],
+    japaneseVariants: ['懲戒', '懲戒事案', '懲戒案件', '懲戒処分', '服務規律違反'],
+  },
+  {
+    key: 'incident',
+    pattern: /\bincident(s)?\b|\bcase(s)?\b|\bmatter(s)?\b/i,
+    englishVariants: ['incident case', 'case handling'],
+    japaneseVariants: ['事案', '案件'],
+  },
+  {
+    key: 'reporting',
+    pattern: /\breport(?:ing)?\b|\bnotify\b|\bnotification\b|\breportable\b|\bescalat(?:e|ion)\b/i,
+    englishVariants: ['reporting process', 'notification workflow', 'report submission'],
+    japaneseVariants: ['報告', '報告手続き', '報告フロー', '届出', '申告'],
+  },
+  {
+    key: 'procedure',
+    pattern: /\bprocess\b|\bprocedure\b|\bworkflow\b|\bsteps?\b|\bflow\b|\bhow\s+to\b/i,
+    englishVariants: ['procedure', 'workflow', 'step-by-step process'],
+    japaneseVariants: ['手続き', '手順', 'フロー', '方法'],
+  },
+  {
+    key: 'workplace',
+    pattern: /\bworkplace\b|\binternal\b|\bemployee\b|\bstaff\b|\bcompany\b/i,
+    englishVariants: ['internal company process', 'employee procedure'],
+    japaneseVariants: ['社内', '職場', '従業員'],
+  },
+];
 
 const prioritizeJapaneseVariants = (variants: string[], limit: number): string[] => {
   const unique = uniqueStringList(
@@ -86,6 +130,71 @@ const prioritizeEnglishCrossLanguageQueries = (variants: string[], limit: number
       return right.length - left.length;
     })
     .slice(0, limit);
+};
+
+const buildSemanticBridgeVariants = (canonicalQuery: string): SemanticBridgeVariants => {
+  const canonical = normalizeSpacing(canonicalQuery.toLowerCase());
+  if (!canonical || containsJapanese(canonical)) {
+    return { englishVariants: [], japaneseVariants: [] };
+  }
+
+  const matchedRules = EN_SEMANTIC_BRIDGE_RULES.filter((rule) => rule.pattern.test(canonical));
+  if (!matchedRules.length) {
+    return { englishVariants: [], japaneseVariants: [] };
+  }
+
+  const matchedKeys = new Set(matchedRules.map((rule) => rule.key));
+  const englishVariants = uniqueStringList(
+    matchedRules.flatMap((rule) => rule.englishVariants),
+    8,
+  );
+  const japaneseTerms = uniqueStringList(
+    matchedRules.flatMap((rule) => rule.japaneseVariants),
+    12,
+  );
+
+  const japaneseComposites: string[] = [];
+  const disciplinaryTerm = japaneseTerms.find((term) => /懲戒|服務規律違反/.test(term)) || '';
+  const incidentTerm = japaneseTerms.find((term) => /事案|案件/.test(term)) || '';
+  const reportingTerm = japaneseTerms.find((term) => /報告|届出|申告/.test(term)) || '';
+  const procedureTerm = japaneseTerms.find((term) => /手続|手順|フロー|方法/.test(term)) || '';
+  const workplaceTerm = japaneseTerms.find((term) => /社内|職場|従業員/.test(term)) || '';
+
+  if (disciplinaryTerm && reportingTerm && procedureTerm) {
+    japaneseComposites.push(`${disciplinaryTerm} ${reportingTerm} ${procedureTerm}`);
+  }
+  if (disciplinaryTerm && incidentTerm && reportingTerm) {
+    japaneseComposites.push(`${disciplinaryTerm} ${incidentTerm} ${reportingTerm}`);
+  }
+  if (disciplinaryTerm && incidentTerm && procedureTerm) {
+    japaneseComposites.push(`${disciplinaryTerm} ${incidentTerm} ${procedureTerm}`);
+  }
+  if (workplaceTerm && disciplinaryTerm && reportingTerm) {
+    japaneseComposites.push(`${workplaceTerm} ${disciplinaryTerm} ${reportingTerm}`);
+  }
+
+  const englishComposites: string[] = [];
+  if (matchedKeys.has('disciplinary') && matchedKeys.has('reporting') && matchedKeys.has('procedure')) {
+    englishComposites.push(
+      'disciplinary incident reporting procedure',
+      'employee misconduct reporting process',
+      'disciplinary case reporting workflow',
+    );
+  }
+  if (matchedKeys.has('disciplinary') && matchedKeys.has('incident')) {
+    englishComposites.push('disciplinary incident case handling');
+  }
+  if (matchedKeys.has('reporting') && matchedKeys.has('procedure')) {
+    englishComposites.push('incident reporting procedure');
+  }
+
+  return {
+    englishVariants: uniqueStringList([...englishComposites, ...englishVariants], 6),
+    japaneseVariants: prioritizeEnglishCrossLanguageQueries(
+      [...japaneseComposites, ...japaneseTerms],
+      6,
+    ),
+  };
 };
 
 const normalizeSpacing = (value: string): string =>
@@ -438,12 +547,17 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   const emailSignatureOnly = buildEmailSignatureVariants(canonical);
   const domainOnly = buildDomainVariants(rawQuery, normalizedQuery, canonical, input.userLanguage);
   const attendanceCorrectionOnly = buildAttendanceCorrectionVariants(canonical);
+  const semanticBridgeVariants =
+    input.userLanguage === 'en'
+      ? buildSemanticBridgeVariants(canonical)
+      : { englishVariants: [], japaneseVariants: [] };
   let translatedKeywords: string[] = [];
   let queryTranslationApplied = false;
   let translateCallsCount = 0;
   let translateMs = 0;
   let queryTranslationStatus: 'termbase' | 'term_map' | 'llm_bridge' | 'none' = 'none';
   let generatedJapaneseQueries: string[] = [];
+  let semanticEnglishVariants: string[] = [];
 
   if (translationExpansionEnabled && canonical) {
     const translateStart = Date.now();
@@ -468,12 +582,20 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   if (translationExpansionEnabled && canonical && input.userLanguage === 'en') {
     const llmGeneratedVariants = await generateQueryVariants(canonical, 'en').catch(() => []);
     const heuristicVariants = await generateJapaneseQueryVariants(canonical).catch(() => []);
+    semanticEnglishVariants = uniqueStringList(
+      [
+        ...semanticBridgeVariants.englishVariants,
+        ...llmGeneratedVariants.filter((variant) => !containsJapanese(variant)),
+      ],
+      4,
+    );
     generatedJapaneseQueries = prioritizeEnglishCrossLanguageQueries(
       [
+        ...semanticBridgeVariants.japaneseVariants,
         ...llmGeneratedVariants,
         ...heuristicVariants,
       ],
-      5,
+      6,
     );
     if (generatedJapaneseQueries.length > 0) {
       queryTranslationApplied = true;
@@ -508,6 +630,7 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   const expandedQueries = uniqueStringList(
     [
       canonical,
+      ...semanticEnglishVariants,
       ...generatedJapaneseQueries,
       ...intentOnly,
       ...emailSignatureOnly,
