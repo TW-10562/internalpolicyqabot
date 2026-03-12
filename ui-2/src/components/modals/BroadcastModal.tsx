@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { X, Send, CheckCircle, Users } from 'lucide-react';
 import { getToken } from '../../api/auth';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateJP, formatTimeJP } from '../../lib/dateTime';
 
 interface BroadcastModalProps {
   isOpen: boolean;
@@ -9,7 +10,7 @@ interface BroadcastModalProps {
 }
 
 export default function BroadcastModal({ isOpen, onClose }: BroadcastModalProps) {
-  const { t, lang } = useLang();
+  const { t } = useLang();
   const [subject, setSubject] = useState('');
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
@@ -46,8 +47,8 @@ export default function BroadcastModal({ isOpen, onClose }: BroadcastModalProps)
           subject: subject,
           text: content,
           message: content,
-          time: now.toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
-          date: now.toLocaleDateString(lang === 'ja' ? 'ja-JP' : 'en-US'),
+          time: formatTimeJP(now),
+          date: formatDateJP(now),
           timestamp: now.getTime(),
           read: true,
         };

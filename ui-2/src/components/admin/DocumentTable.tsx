@@ -8,6 +8,7 @@ import {
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { getToken } from '../../api/auth';
+import { formatDateJP } from '../../lib/dateTime';
 
 interface DocumentHistory {
   id: number;
@@ -39,7 +40,7 @@ export default function DocumentTable({
   searchQuery: controlledSearchQuery,
   onSearchQueryChange,
 }: DocumentTableProps) {
-  const { t, lang } = useLang();
+  const { t } = useLang();
   const toast = useToast();
   const [localSearchQuery, setLocalSearchQuery] = useState('');
   const [selectedDocIds, setSelectedDocIds] = useState<Set<number>>(new Set());
@@ -394,7 +395,7 @@ export default function DocumentTable({
                     {doc.create_by || t('documentTable.system')}
                   </td>
                   <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
-                    {new Date(doc.created_at).toLocaleDateString(lang === 'ja' ? 'ja-JP' : 'en-US')}
+                    {formatDateJP(doc.created_at)}
                   </td>
                   <td className="px-4 py-3">
                     <span

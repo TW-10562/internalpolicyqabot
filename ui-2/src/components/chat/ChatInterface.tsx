@@ -9,6 +9,7 @@ import { useLang } from '../../context/LanguageContext';
 import { listTask, listTaskOutput, addTask, deleteTaskOutput, sendFeedbackToCache } from '../../api/task';
 import { getToken } from '../../api/auth';
 import { listTriageAssignees } from '../../api/triage';
+import { formatTimeJP } from '../../lib/dateTime';
 import ChatExport from './ChatExport';
 import { ConfirmDialog } from '../ui/FeedbackComponents';
 import { useToast } from '../../context/ToastContext';
@@ -1579,7 +1580,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     <div className="flex h-full flex-col md:flex-row mac-root">
       {showExportDialog && (
         <ChatExport
-          messages={messages.map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content, timestamp: m.timestamp?.toLocaleTimeString() }))}
+          messages={messages.map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content, timestamp: formatTimeJP(m.timestamp, '') }))}
           chatTitle={chatList.find(c => c.id === currentChatId)?.title || 'Chat Export'}
           onClose={() => setShowExportDialog(false)}
         />
@@ -1755,7 +1756,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                   )}
 
                   <span className="text-xs text-slate-500 dark:text-slate-400 px-2 hidden sm:inline">
-                    {message.timestamp.toLocaleTimeString()}
+                    {formatTimeJP(message.timestamp, '')}
                   </span>
                 </div>
               </div>

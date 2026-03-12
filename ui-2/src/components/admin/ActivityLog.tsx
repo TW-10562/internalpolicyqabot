@@ -3,6 +3,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 
 interface ActivityLog {
   id: string;
@@ -43,7 +44,7 @@ export default function ActivityLogComponent({ activities, showTitle = true }: A
                 <p className="text-sm text-[#6E7680] dark:text-dark-text-muted mb-2 transition-colors">{activity.detail}</p>
                 <div className="flex items-center gap-1 text-xs text-[#9CA3AF] dark:text-dark-text-muted transition-colors">
                   <Clock className="w-3 h-3" />
-                  <span>{activity.timestamp.toLocaleString()}</span>
+                  <span>{formatDateTimeJP(activity.timestamp)}</span>
                 </div>
               </div>
             </div>

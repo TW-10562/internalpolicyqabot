@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Clock, Trash2, ChevronRight, User } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 import {
   deleteHistoryConversation,
   getHistoryConversation,
@@ -72,7 +73,7 @@ const areMessagesEqual = (a: HistoryMessage[], b: HistoryMessage[]) => {
 };
 
 export default function HistoryPage({ user }: HistoryPageProps) {
-  const { t, lang } = useLang();
+  const { t } = useLang();
   const toast = useToast();
   const getDepartmentLabel = (departmentCode?: string | null) => {
     const normalized = String(departmentCode || '').toUpperCase();
@@ -385,7 +386,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
                       </p>
                       <div className="mt-2 flex items-center gap-2 text-[11px] text-muted dark:text-dark-text-muted">
                         <Clock className="w-3 h-3" />
-                        <span>{new Date(row.updated_at).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')}</span>
+                        <span>{formatDateTimeJP(row.updated_at)}</span>
                       </div>
                       {isSuperAdmin && (
                         <div className="mt-1 flex items-center gap-2 text-[11px] text-muted dark:text-dark-text-muted">
@@ -466,7 +467,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
                       <span>{resolvedYouLabel}</span>
                       <span>
                         {turn.askedAt
-                          ? new Date(turn.askedAt).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')
+                          ? formatDateTimeJP(turn.askedAt)
                           : '-'}
                       </span>
                     </p>
@@ -480,7 +481,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
                       <span>{t('history.hrBotResponse')}</span>
                       <span>
                         {turn.answeredAt
-                          ? new Date(turn.answeredAt).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')
+                          ? formatDateTimeJP(turn.answeredAt)
                           : '-'}
                       </span>
                     </p>

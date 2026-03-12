@@ -230,6 +230,10 @@
     "title": "ユーザー管理",
     "uploadCsv": "CSVをアップロード",
     "addUser": "ユーザーを追加",
+    "search": {
+      "placeholder": "名前またはメールで検索",
+      "clear": "クリア"
+    },
     "table": {
       "selectAll": "すべて選択",
       "selectUser": "ユーザーを選択",
@@ -261,14 +265,15 @@
     },
     "delete": {
       "adminPassword": "管理者パスワードを入力",
-      "confirmTitle": "変更を確認",
-      "confirmMessage": "この変更を保存してもよろしいですか？",
+      "confirmTitle": "削除を確認",
+      "confirmMessage": "このユーザーを削除してもよろしいですか？",
       "confirmButton": "削除",
       "deleting": "削除中...",
       "deleted": "削除完了"
     },
     "bulkDelete": {
       "button": "一括削除",
+      "selectUsersHint": "削除するユーザーを選択してから、一括削除を押してください。",
       "confirmTitle": "一括削除の確認",
       "confirmMessage": "選択した{{count}}人のユーザーを削除しますか？",
       "confirmButton": "削除",

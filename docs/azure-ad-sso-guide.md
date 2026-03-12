@@ -32,7 +32,7 @@
 AZURE_AD_TENANT_ID=<Tenant ID>
 AZURE_AD_CLIENT_ID=<Client ID>
 AZURE_AD_CLIENT_SECRET=<後で生成>
-AZURE_AD_REDIRECT_URI=http://localhost:8080/user/auth/callback
+AZURE_AD_REDIRECT_URI=http://hrbot.corp.twave:7001/dev-api/user/auth/callback
 ```
 
 ### (2) クライアントシークレットの作成

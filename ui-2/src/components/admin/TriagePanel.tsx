@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, Trash2, X } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 import {
   listTriageTickets,
   purgeTriageTickets,
@@ -26,7 +27,7 @@ interface TriagePanelProps {
 }
 
 export default function TriagePanel({ currentUser }: TriagePanelProps) {
-  const { t, lang } = useLang();
+  const { t } = useLang();
   const toast = useToast();
   const [loading, setLoading] = useState(false);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
@@ -204,7 +205,7 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
                   </span>
                 </div>
                 <div className="text-xs text-muted dark:text-dark-text-muted">
-                  {new Date(ticket.updated_at).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')}
+                  {formatDateTimeJP(ticket.updated_at)}
                 </div>
               </div>
 

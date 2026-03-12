@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Send } from 'lucide-react';
 import { getToken } from '../../api/auth';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 
 interface InlineContactAdminProps {
   userId?: string;
@@ -77,7 +78,7 @@ export default function InlineContactAdmin({ userId }: InlineContactAdminProps) 
           <div className="p-4 bg-[#F6F6F6] dark:bg-dark-border border border-[#E8E8E8] dark:border-dark-border rounded-xl text-[#232333] dark:text-dark-text text-sm transition-colors">
             <div className="flex items-center justify-between">
               <span className="text-[#232333] font-semibold">{t('inlineContactAdmin.yourMessage')}</span>
-              <span className="text-xs text-[#9CA3AF]">{new Date(justSent.timestamp).toLocaleString()}</span>
+              <span className="text-xs text-[#9CA3AF]">{formatDateTimeJP(justSent.timestamp)}</span>
             </div>
             {justSent.subject && (
               <div className="mt-1 text-xs text-[#6E7680]">

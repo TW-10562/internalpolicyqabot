@@ -3,6 +3,7 @@ import UserRole from '@/mysql/model/user_role.model';
 import { detectDbMode } from '@/db/adapter';
 import { pgPool } from '@/clients/postgres';
 import { hashPassword } from '@/service/user';
+import { createHash } from '@/utils';
 import seq from '@/mysql/db/seq.db';
 import fs from 'node:fs/promises';
 import Papa from 'papaparse';
@@ -180,11 +181,12 @@ export async function createAdminUser(input: AdminUserInput, actorScope: AccessS
   const employeeId = String(input.employeeId || '').trim() || (normalizedEmail || '');
   const firstName = String(input.firstName || '').trim();
   const lastName = String(input.lastName || '').trim();
-  const password = String(input.password || '');
+  const generatedPassword = createHash(24);
+  const password = String(input.password || generatedPassword);
   const providedUserName = String(input.userName || '').trim();
   const resolvedUserName = providedUserName || buildUserName(firstName, lastName, employeeId);
 
-  if (!employeeId || !firstName || !lastName || !resolvedUserName || !password) {
+  if (!employeeId || !firstName || !lastName || !resolvedUserName) {
     throw new Error('validation_error');
   }
 
@@ -228,7 +230,7 @@ export async function createAdminUser(input: AdminUserInput, actorScope: AccessS
       password: await hashPassword(password),
       email: normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : null),
       status: input.isActive === false ? '0' : '1',
-      sso_bound: 0,
+      sso_bound: 1,
       create_by: actorScope.userId,
       department: departmentCode,
       department_code: departmentCode,

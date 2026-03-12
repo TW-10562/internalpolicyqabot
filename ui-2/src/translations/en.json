@@ -227,9 +227,13 @@
     "bulkDeletePartial": "{{success}} deleted, {{failed}} failed"
   },
   "userManagement": {
-    "title": "User Management",
+    "title": "uermanagement",
     "uploadCsv": "Upload CSV",
     "addUser": "Add User",
+    "search": {
+      "placeholder": "Search by name or email",
+      "clear": "Clear"
+    },
     "table": {
       "selectAll": "Select All",
       "selectUser": "Select User",
@@ -261,14 +265,15 @@
     },
     "delete": {
       "adminPassword": "Enter Admin Password",
-      "confirmTitle": "Confirm Save",
-      "confirmMessage": "Are you sure you want to save this change?",
+      "confirmTitle": "Confirm Delete",
+      "confirmMessage": "Are you sure you want to delete this user?",
       "confirmButton": "Delete",
       "deleting": "Deleting...",
       "deleted": "Deleted"
     },
     "bulkDelete": {
       "button": "Bulk Delete",
+      "selectUsersHint": "Select the users to delete, then tap Bulk Delete.",
       "confirmTitle": "Confirm Bulk Delete",
       "confirmMessage": "Are you sure you want to delete {{count}} selected users?",
       "confirmButton": "Delete",

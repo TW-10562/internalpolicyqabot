@@ -9,6 +9,8 @@ import {
   Search,
   Upload,
   Plus,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
@@ -63,6 +65,12 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
   const [triggerUpload, setTriggerUpload] = useState(false);
   const [purgingNotifications, setPurgingNotifications] = useState(false);
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userToolbarState, setUserToolbarState] = useState({
+    canBulkDelete: false,
+    selectedCount: 0,
+    bulkDeleting: false,
+  });
   const userManagementRef = useRef<UserManagementHandle | null>(null);
 
   const loadAllDocuments = async (): Promise<DocumentHistory[]> => {
@@ -177,6 +185,15 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
     }
   };
 
+  const handleUserBulkDeleteClick = () => {
+    if (userToolbarState.bulkDeleting) return;
+    if (userToolbarState.selectedCount === 0) {
+      toast.info(t('userManagement.bulkDelete.button'), t('userManagement.bulkDelete.selectUsersHint'));
+      return;
+    }
+    userManagementRef.current?.openBulkDeleteModal();
+  };
+
   const tabs = [
     { id: 'documents' as Tab, label: t('admin.documents'), icon: FileText },
     { id: 'analytics' as Tab, label: t('admin.analytics'), icon: BarChart3 },
@@ -227,8 +244,8 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
       {activeTab !== 'chat' && (
         <div className="px-4 py-3 border-b border-default bg-surface dark:bg-dark-bg-primary transition-colors">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h2 className="app-page-title">{activeTabLabel}</h2>
+            <div className="flex shrink-0 items-center gap-3 flex-wrap lg:flex-nowrap">
+              <h2 className="app-page-title whitespace-nowrap">{activeTabLabel}</h2>
               {activeTab === 'analytics' && roleBadgeKey ? (
                 <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border border-blue-200 dark:border-blue-800/40">
                   {t('adminScope.currentRole')}: {t(roleBadgeKey)}
@@ -260,21 +277,68 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
               </div>
             ) : null}
             {activeTab === 'users' ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => userManagementRef.current?.openCsvUpload()}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg btn-success text-on-accent text-sm font-medium transition-colors"
-                >
-                  <Upload className="w-4 h-4 icon-current" />
-                  {t('userManagement.uploadCsv')}
-                </button>
-                <button
-                  onClick={() => userManagementRef.current?.openAddUserModal()}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg btn-primary text-on-accent text-sm font-medium transition-colors"
-                >
-                  <Plus className="w-4 h-4 icon-current" />
-                  {t('userManagement.form.addUserTitle')}
-                </button>
+              <div className="flex w-full min-w-0 flex-col gap-3 lg:w-auto lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
+                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-default bg-surface px-3 py-2 shadow-sm transition-all duration-200 focus-within:border-primary focus-within:shadow-[0_0_0_4px_rgba(29,32,137,0.08)] dark:border-default dark:bg-dark-surface lg:max-w-xl xl:max-w-2xl">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-alt text-muted transition-colors dark:bg-dark-bg-primary dark:text-dark-text-muted">
+                    <Search className="w-4 h-4 icon-current" />
+                  </div>
+                  <input
+                    type="text"
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    placeholder={t('userManagement.search.placeholder')}
+                    className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none transition-colors placeholder-muted dark:text-dark-text dark:placeholder-dark-text-muted"
+                  />
+                  {userSearchQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => setUserSearchQuery('')}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-alt hover:text-foreground dark:text-dark-text-muted dark:hover:bg-dark-bg-primary dark:hover:text-dark-text"
+                      aria-label={t('userManagement.search.clear')}
+                    >
+                      <X className="w-4 h-4 icon-current" />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    onClick={() => userManagementRef.current?.openAddUserModal()}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg btn-primary text-on-accent text-sm font-medium transition-colors"
+                  >
+                    <Plus className="w-4 h-4 icon-current" />
+                    {t('userManagement.form.addUserTitle')}
+                  </button>
+                  <button
+                    onClick={() => userManagementRef.current?.openCsvUpload()}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg btn-success text-on-accent text-sm font-medium transition-colors"
+                  >
+                    <Upload className="w-4 h-4 icon-current" />
+                    {t('userManagement.uploadCsv')}
+                  </button>
+                  {userToolbarState.canBulkDelete ? (
+                    <button
+                      onClick={handleUserBulkDeleteClick}
+                      disabled={userToolbarState.bulkDeleting}
+                      aria-disabled={userToolbarState.selectedCount === 0}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-on-accent text-sm font-medium transition-colors ${
+                        userToolbarState.selectedCount === 0
+                          ? 'bg-red-300 hover:bg-red-400'
+                          : 'btn-danger'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                      title={
+                        userToolbarState.selectedCount === 0
+                          ? t('userManagement.bulkDelete.selectUsersHint')
+                          : t('userManagement.bulkDelete.button')
+                      }
+                    >
+                      <Trash2 className="w-4 h-4 icon-current" />
+                      {t('userManagement.bulkDelete.button')}
+                      <span className="min-w-[1.75rem] rounded-full bg-white px-2 py-0.5 text-center text-xs font-bold text-red-600 shadow-sm">
+                        {userToolbarState.selectedCount}
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
           </div>
@@ -324,7 +388,16 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
         {activeTab === 'triage' && <TriagePanel currentUser={user} />}
 
         {activeTab === 'users' && (
-          <UserManagement ref={userManagementRef} showTitle={false} showControls={false} currentUser={user} />
+          <UserManagement
+            ref={userManagementRef}
+            showTitle={false}
+            showControls={false}
+            showToolbar={false}
+            currentUser={user}
+            searchQuery={userSearchQuery}
+            onSearchQueryChange={setUserSearchQuery}
+            onToolbarStateChange={setUserToolbarState}
+          />
         )}
 
         {activeTab === 'activity' && (

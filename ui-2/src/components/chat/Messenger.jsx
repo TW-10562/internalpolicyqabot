@@ -4,6 +4,7 @@ import MessageInput from './MessageInput';
 import { getMyTickets, createSupportTicket, replyToTicket } from '../../api/support';
 import { CheckCircle, X } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateJP, formatDateTimeJP, formatTimeJP } from '../../lib/dateTime';
  
 export default function Messenger({ user, onUnreadCountChange, onNotificationsChange })  {
   const { t, lang } = useLang();
@@ -28,7 +29,7 @@ export default function Messenger({ user, onUnreadCountChange, onNotificationsCh
   const prettyTime = (item) => {
     const d = safeDate(item);
     if (!d || isNaN(d.getTime())) return '';
-    return d.toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+    return formatTimeJP(d);
   };
  
   // Load messages from localStorage on mount AND sync with parent
@@ -130,8 +131,8 @@ export default function Messenger({ user, onUnreadCountChange, onNotificationsCh
       subject: subject || '',
       text: message || '',
       message: message || '',
-      time: now.toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
-      date: now.toLocaleDateString(lang === 'ja' ? 'ja-JP' : 'en-US'),
+      time: formatTimeJP(now),
+      date: formatDateJP(now),
       timestamp: now.getTime(),
       read: user?.role === 'admin' ? true : false,
     };
@@ -264,7 +265,7 @@ export default function Messenger({ user, onUnreadCountChange, onNotificationsCh
                       {ticket.user_name || t('user.role.user')}
                     </h4>
                     <p style={{ margin: 0, fontSize: '12px', color: '#999' }}>
-                      {new Date(ticket.created_at || ticket.createdAt || ticket.timestamp).toLocaleString()}
+                      {formatDateTimeJP(ticket.created_at || ticket.createdAt || ticket.timestamp)}
                     </p>
                   </div>
                 </div>
@@ -308,8 +309,8 @@ export default function Messenger({ user, onUnreadCountChange, onNotificationsCh
                           subject: `Re: ${ticket.subject || t('messenger.userQuery')}`,
                           text: reply,
                           message: reply,
-                          time: now.toLocaleTimeString(lang === 'ja' ? 'ja-JP' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
-                          date: now.toLocaleDateString(lang === 'ja' ? 'ja-JP' : 'en-US'),
+                          time: formatTimeJP(now),
+                          date: formatDateJP(now),
                           timestamp: now.getTime(),
                           read: true,
                         };

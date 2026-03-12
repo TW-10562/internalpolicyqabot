@@ -7,6 +7,7 @@
     "dev:all": "run-p dev worker",
     "lint": "npx eslint src/** --fix",
     "test:minimal": "ts-node-dev --transpile-only -r tsconfig-paths/register --exit-child --no-deps scripts/test_language_history_notifications.ts",
+    "test:moderation": "ts-node-dev --transpile-only -r tsconfig-paths/register --exit-child --no-deps scripts/test_moderation_gate.ts",
     "bench:rag": "node scripts/benchmark_rag.js",
     "bench:rag:load": "node scripts/load_rag_profiles.js",
     "test:rag:pipeline": "ts-node-dev --transpile-only -r tsconfig-paths/register --exit-child --no-deps scripts/test_rag_pipeline_regression.ts",

@@ -32,19 +32,19 @@ const parsePayload = (body: any) => {
     legacyEmployeeId ||
     '';
 
-  return ({
-  userName: String(body?.userName || body?.user_name || '').trim() || undefined,
-  firstName: String(body?.firstName || '').trim(),
-  lastName: String(body?.lastName || '').trim(),
-  email: email || undefined,
-  employeeId,
-  userJobRole: String(body?.userJobRole || '').trim(),
-  areaOfWork: String(body?.areaOfWork || '').trim(),
-  roleCode: normalizeRoleCode(body?.roleCode || body?.role || 'USER') as RoleCode,
-  departmentCode: normalizeDepartmentCode(body?.departmentCode || body?.department || 'HR'),
-  password: body?.password ? String(body.password) : undefined,
-  isActive: body?.isActive == null ? true : Boolean(body.isActive),
-});
+  return {
+    userName: String(body?.userName || body?.user_name || '').trim() || undefined,
+    firstName: String(body?.firstName || '').trim(),
+    lastName: String(body?.lastName || '').trim(),
+    email: email || undefined,
+    employeeId,
+    userJobRole: String(body?.userJobRole || '').trim(),
+    areaOfWork: String(body?.areaOfWork || '').trim(),
+    roleCode: normalizeRoleCode(body?.roleCode || body?.role || 'USER') as RoleCode,
+    departmentCode: normalizeDepartmentCode(body?.departmentCode || body?.department || 'HR'),
+    password: body?.password ? String(body.password) : undefined,
+    isActive: body?.isActive == null ? true : Boolean(body.isActive),
+  };
 };
 
 export const getAdminUsers = async (ctx: Context, next: () => Promise<void>) => {
@@ -58,7 +58,7 @@ export const getAdminUsers = async (ctx: Context, next: () => Promise<void>) => 
 export const createAdminUserController = async (ctx: Context, next: () => Promise<void>) => {
   try {
     const payload = parsePayload(ctx.request.body);
-    if (!payload.firstName || !payload.lastName || !payload.email || !payload.password) {
+    if (!payload.firstName || !payload.lastName || !payload.email) {
       return ctx.app.emit('error', { code: '400', message: '必須項目が不足しています' }, ctx);
     }
 

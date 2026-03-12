@@ -1,7 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Plus, Edit, Trash2, X, Save, Upload } from 'lucide-react';
+import { Plus, Edit, Trash2, X, Save, Upload, Search } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 import {
   bulkDeleteAdminUsers,
   createAdminUser,
@@ -32,7 +33,6 @@ interface FormData {
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
   isActive: boolean;
-  password: string;
 }
 
 type CsvErrorItem = {
@@ -63,22 +63,34 @@ const initialFormData: FormData = {
   roleCode: 'USER',
   departmentCode: 'HR',
   isActive: true,
-  password: '',
 };
 
 export interface UserManagementHandle {
   openCsvUpload: () => void;
   openAddUserModal: () => void;
+  openBulkDeleteModal: () => void;
 }
 
 interface UserManagementProps {
   showTitle?: boolean;
   showControls?: boolean;
+  showToolbar?: boolean;
   currentUser?: CurrentUser;
+  searchQuery?: string;
+  onSearchQueryChange?: (value: string) => void;
+  onToolbarStateChange?: (state: { canBulkDelete: boolean; selectedCount: number; bulkDeleting: boolean }) => void;
 }
 
 const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(function UserManagement(
-  { showTitle = true, showControls = true, currentUser }: UserManagementProps,
+  {
+    showTitle = true,
+    showControls = true,
+    showToolbar = true,
+    currentUser,
+    searchQuery: controlledSearchQuery,
+    onSearchQueryChange,
+    onToolbarStateChange,
+  }: UserManagementProps,
   ref,
 ) {
   const { t } = useLang();
@@ -89,19 +101,17 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
-  const [showConfirmSave, setShowConfirmSave] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const loadUsersRequestRef = useRef(0);
   const [csvLoading, setCsvLoading] = useState(false);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [userToDelete, setUserToDelete] = useState<string | null>(null);
-  const [adminPassword, setAdminPassword] = useState('');
-  const [editAdminPassword, setEditAdminPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [csvSummary, setCsvSummary] = useState<CsvSummary | null>(null);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [internalSearchQuery, setInternalSearchQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
 
   const getI18nLabel = (key: string, fallback: string) => {
@@ -115,17 +125,19 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const lastNameLabel = getI18nOrFallback('userManagement.table.lastName', 'Last name');
   const emailLabel = getI18nOrFallback('userManagement.table.email', 'Email');
   const employeeCodeLabel = getI18nOrFallback('userManagement.table.employeeCode', 'Employee Code');
-  const passwordLabel = getI18nOrFallback('userManagement.table.password', 'Password');
-  const optionalPasswordLabel = getI18nOrFallback('userManagement.password.changeOptional', 'Leave blank to keep');
 
   const uploadCsvLabel = getI18nLabel('userManagement.uploadCsv', 'Upload CSV');
   const addUserLabel = getI18nLabel('userManagement.form.addUserTitle', 'Add User');
+  const searchQuery = controlledSearchQuery ?? internalSearchQuery;
+  const setSearchQuery = onSearchQueryChange ?? setInternalSearchQuery;
 
   const loadUsers = async (query?: string) => {
     const q = String(query ?? activeSearch).trim();
+    const requestId = ++loadUsersRequestRef.current;
     setLoading(true);
     setErrorMessage('');
     const response = await fetchAdminUsers(q);
+    if (requestId !== loadUsersRequestRef.current) return;
     if (response.code !== 200) {
       setErrorMessage(response.message || 'Failed to fetch users');
       setLoading(false);
@@ -163,8 +175,19 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   };
 
   useEffect(() => {
-    loadUsers();
+    void loadUsers('');
   }, []);
+
+  useEffect(() => {
+    const normalizedQuery = searchQuery.trim();
+    if (normalizedQuery === activeSearch) return;
+
+    const timeoutId = window.setTimeout(() => {
+      void loadUsers(searchQuery);
+    }, 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery, activeSearch]);
 
   const handleCSVUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -219,41 +242,35 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     () => ({
       openCsvUpload: () => fileInputRef.current?.click(),
       openAddUserModal: () => handleAddUser(),
+      openBulkDeleteModal: () => handleBulkDelete(),
     }),
     [],
   );
 
-  const buildPayload = (passwordOptional = false) => {
+  const buildPayload = () => {
     const email = formData.email.trim();
     const employeeCode = formData.employeeCode.trim();
-    const payload: any = {
+    return {
       firstName: formData.firstName.trim(),
       lastName: formData.lastName.trim(),
       email,
       employeeCode,
-      // Backend still uses employeeId for emp_id (employee code). Send a fallback for compatibility.
       employeeId: employeeCode || email,
-      userJobRole: '',
-      areaOfWork: '',
       roleCode: formData.roleCode,
       departmentCode: formData.departmentCode,
       isActive: formData.isActive,
+      userJobRole: '',
+      areaOfWork: '',
     };
-
-    if (!passwordOptional || formData.password.trim()) {
-      payload.password = formData.password;
-    }
-
-    return payload;
   };
 
   const handleSaveNewUser = async () => {
-    if (!formData.firstName || !formData.lastName || !formData.email || !formData.password) {
+    if (!formData.firstName || !formData.lastName || !formData.email) {
       return;
     }
 
     setErrorMessage('');
-    const response = await createAdminUser(buildPayload(false));
+    const response = await createAdminUser(buildPayload());
     if (response.code !== 200) {
       setErrorMessage(response.message || 'Failed to create user');
       return;
@@ -275,61 +292,47 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         roleCode: user.roleCode,
         departmentCode: user.departmentCode,
         isActive: user.isActive,
-        password: '',
       });
       setEditingUser(userId);
     }
   };
 
-  const handleSaveEdit = () => {
-    if (editingUser) {
-      setShowConfirmSave(true);
+  const handleSaveEdit = async () => {
+    if (!editingUser) return;
+    setErrorMessage('');
+    const response = await updateAdminUser(editingUser, buildPayload());
+    if (response.code !== 200) {
+      setErrorMessage(response.message || 'Failed to update user');
+      return;
     }
-  };
 
-  const confirmSaveEdit = async () => {
-    if (editingUser && editAdminPassword.trim()) {
-      setErrorMessage('');
-      const response = await updateAdminUser(editingUser, buildPayload(true));
-      if (response.code !== 200) {
-        setErrorMessage(response.message || 'Failed to update user');
-        return;
-      }
-
-      setEditingUser(null);
-      setShowConfirmSave(false);
-      setEditAdminPassword('');
-      setFormData(initialFormData);
-      await loadUsers();
-    }
+    setEditingUser(null);
+    setFormData(initialFormData);
+    await loadUsers();
   };
 
   const handleCancelEdit = () => {
     setEditingUser(null);
-    setEditAdminPassword('');
     setFormData(initialFormData);
   };
 
   const handleDeleteUser = (userId: string) => {
     setUserToDelete(userId);
     setShowDeleteModal(true);
-    setAdminPassword('');
   };
 
   const confirmDelete = async () => {
-    if (userToDelete && adminPassword.trim()) {
-      setErrorMessage('');
-      const response = await deleteAdminUser(userToDelete);
-      if (response.code !== 200) {
-        setErrorMessage(response.message || 'Failed to delete user');
-        return;
-      }
-
-      setShowDeleteModal(false);
-      setUserToDelete(null);
-      setAdminPassword('');
-      await loadUsers();
+    if (!userToDelete) return;
+    setErrorMessage('');
+    const response = await deleteAdminUser(userToDelete);
+    if (response.code !== 200) {
+      setErrorMessage(response.message || 'Failed to delete user');
+      return;
     }
+
+    setShowDeleteModal(false);
+    setUserToDelete(null);
+    await loadUsers();
   };
 
   const selectedCount = selectedUserIds.size;
@@ -341,6 +344,10 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       selectAllRef.current.indeterminate = selectedCount > 0 && !allSelected;
     }
   }, [selectedCount, allSelected]);
+
+  useEffect(() => {
+    onToolbarStateChange?.({ canBulkDelete, selectedCount, bulkDeleting });
+  }, [onToolbarStateChange, canBulkDelete, selectedCount, bulkDeleting]);
 
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -395,9 +402,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   };
 
   const formatDateTime = (value: string) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value || '-';
-    return date.toLocaleString();
+    return formatDateTimeJP(value, value || '-');
   };
 
   return (
@@ -409,54 +414,86 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         onChange={handleCSVUpload}
         className="hidden"
       />
-      <div
-        className={`flex items-center gap-2 ${
-          showTitle ? 'justify-between' : 'justify-end'
-        }`}
-      >
-        {showTitle ? (
-          <h3 className="app-page-title transition-colors">
-            {t('userManagement.title')}
-          </h3>
-        ) : null}
-        {!editingUser && (
-          <div className="flex items-center gap-2">
-            {showControls && (
-              <>
+      {showTitle || (!editingUser && showToolbar) ? (
+        <div
+          className={`flex flex-wrap items-center gap-4 ${
+            showTitle ? 'justify-between' : 'justify-end'
+          }`}
+        >
+          {showTitle ? (
+            <h3 className="app-page-title shrink-0 transition-colors">
+              {t('userManagement.title')}
+            </h3>
+          ) : null}
+          {!editingUser && showToolbar ? (
+            <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+              <div className="flex min-w-[280px] flex-1 items-center gap-3 rounded-2xl border border-default bg-surface px-3 py-3 shadow-sm transition-all duration-200 focus-within:border-primary focus-within:shadow-[0_0_0_4px_rgba(29,32,137,0.08)] dark:border-default dark:bg-dark-surface md:max-w-lg xl:max-w-xl">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-alt text-muted transition-colors dark:bg-dark-bg-primary dark:text-dark-text-muted">
+                  <Search className={`h-4 w-4 ${loading ? 'animate-pulse' : ''}`} />
+                </div>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder={getI18nOrFallback('userManagement.search.placeholder', 'Search by name or email')}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none transition-colors placeholder:text-muted dark:text-dark-text dark:placeholder:text-dark-text-muted"
+                />
+                {searchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-muted transition-colors hover:bg-surface-alt hover:text-foreground dark:text-dark-text-muted dark:hover:bg-dark-bg-primary dark:hover:text-dark-text"
+                    aria-label={getI18nOrFallback('userManagement.search.clear', 'Clear')}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+
+              {canBulkDelete && (
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={csvLoading}
-                  data-state={csvLoading ? 'loading' : 'idle'}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg btn-success disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors"
-                  title={uploadCsvLabel}
+                  type="button"
+                  onClick={handleBulkDelete}
+                  disabled={selectedCount === 0 || bulkDeleting}
+                  className="inline-flex shrink-0 items-center gap-2 rounded-xl btn-danger px-4 py-2.5 text-sm font-semibold text-on-accent transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                  title={getI18nOrFallback('userManagement.bulkDelete.button', 'Bulk Delete')}
                 >
-                  <Upload className={`w-4 h-4 icon-current ${csvLoading ? 'animate-pulse text-accent-strong' : ''}`} />
-                  {csvLoading ? t('common.loading') : uploadCsvLabel}
+                  <Trash2 className={`h-4 w-4 icon-current ${bulkDeleting ? 'animate-pulse' : ''}`} />
+                  <span>{getI18nOrFallback('userManagement.bulkDelete.button', 'Bulk Delete')}</span>
+                  {selectedCount > 0 ? (
+                    <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-semibold">
+                      {selectedCount}
+                    </span>
+                  ) : null}
                 </button>
-                <button
-                  onClick={handleAddUser}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg btn-primary text-on-accent text-sm font-medium transition-colors"
-                >
-                  <Plus className="w-4 h-4 icon-current" />
-                  {addUserLabel}
-                </button>
-              </>
-            )}
-            {canBulkDelete && (
-              <button
-                onClick={handleBulkDelete}
-                disabled={selectedCount === 0 || bulkDeleting}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg btn-danger disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors"
-                title={getI18nOrFallback('userManagement.bulkDelete.button', 'Bulk Delete')}
-              >
-                <Trash2 className={`w-4 h-4 icon-current ${bulkDeleting ? 'animate-pulse' : ''}`} />
-                {getI18nOrFallback('userManagement.bulkDelete.button', 'Bulk Delete')}
-                {selectedCount > 0 ? ` (${selectedCount})` : ''}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+              {showControls && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={csvLoading}
+                    data-state={csvLoading ? 'loading' : 'idle'}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl btn-success px-4 py-2.5 text-sm font-semibold text-on-accent transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                    title={uploadCsvLabel}
+                  >
+                    <Upload className={`h-4 w-4 icon-current ${csvLoading ? 'animate-pulse text-accent-strong' : ''}`} />
+                    {csvLoading ? t('common.loading') : uploadCsvLabel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddUser}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl btn-primary px-4 py-2.5 text-sm font-semibold text-on-accent transition-colors"
+                  >
+                    <Plus className="h-4 w-4 icon-current" />
+                    {addUserLabel}
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {errorMessage && (
         <div className="px-4 py-3 rounded-lg bg-red-50 text-red-700 border border-red-200 text-sm">
@@ -520,12 +557,10 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{t('userManagement.table.firstName')}</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{t('userManagement.table.lastName')}</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{t('userManagement.table.employeeId')}</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{t('userManagement.table.userJobRole')}</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{t('userManagement.table.areaOfWork')}</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{emailLabel}</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">{employeeCodeLabel}</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('userManagement.table.role')}</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('userManagement.table.department')}</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('userManagement.table.password')}</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('userManagement.table.lastUpdated')}</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('userManagement.table.actions')}</th>
             </tr>
@@ -533,13 +568,13 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted dark:text-dark-text-muted transition-colors">
+                <td colSpan={9} className="px-4 py-8 text-center text-muted dark:text-dark-text-muted transition-colors">
                   {t('common.loading')}
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted dark:text-dark-text-muted transition-colors">
+                <td colSpan={9} className="px-4 py-8 text-center text-muted dark:text-dark-text-muted transition-colors">
                   {t('userManagement.empty')}
                 </td>
               </tr>
@@ -565,23 +600,10 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                         <input type="text" value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
                       </td>
                       <td className="px-4 py-3">
-                        <input type="text" value={formData.employeeId} onChange={(e) => setFormData({ ...formData, employeeId: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
+                        <input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
                       </td>
                       <td className="px-4 py-3">
-                        <select value={formData.userJobRole} onChange={(e) => setFormData({ ...formData, userJobRole: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default dark:border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors">
-                          <option value="">{selectJobRoleLabel}</option>
-                          {JOB_ROLE_OPTIONS.map((option) => (
-                            <option key={option.key} value={option.key}>{getJobRoleLabel(option.key)}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-4 py-3">
-                        <select value={formData.areaOfWork} onChange={(e) => setFormData({ ...formData, areaOfWork: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default dark:border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors">
-                          <option value="">{selectAreaLabel}</option>
-                          {AREA_OF_WORK_OPTIONS.map((option) => (
-                            <option key={option.key} value={option.key}>{getAreaLabel(option.key)}</option>
-                          ))}
-                        </select>
+                        <input type="text" value={formData.employeeCode} onChange={(e) => setFormData({ ...formData, employeeCode: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
                       </td>
                       <td className="px-4 py-3">
                         <select value={formData.roleCode} onChange={(e) => setFormData({ ...formData, roleCode: e.target.value as FormData['roleCode'] })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors">
@@ -600,12 +622,9 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                           <option value="SYSTEMS">SYSTEMS</option>
                         </select>
                       </td>
-                      <td className="px-4 py-3">
-                        <input type="password" value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} placeholder={optionalPasswordLabel} className="w-full bg-white dark:bg-dark-surface border border-[#E8E8E8] dark:border-dark-border rounded px-2 py-1 text-[#232333] dark:text-dark-text text-sm focus:outline-none focus:ring-2 focus:ring-[#1d2089] dark:focus:ring-dark-accent-blue transition-colors" />
-                      </td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted text-sm transition-colors">{formatDateTime(user.lastUpdated)}</td>
                       <td className="px-4 py-3 flex gap-2">
-                        <button onClick={handleSaveEdit} className="p-1 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-500/20 rounded transition-colors" title={t('userManagement.form.save')}><Save className="w-4 h-4" /></button>
+                        <button onClick={() => void handleSaveEdit()} className="p-1 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-500/20 rounded transition-colors" title={t('userManagement.form.save')}><Save className="w-4 h-4" /></button>
                         <button onClick={handleCancelEdit} className="p-1 text-icon-muted dark:text-dark-text-muted hover:bg-surface hover:dark:bg-white/10 rounded transition-colors" title={t('userManagement.form.cancel')}><X className="w-4 h-4" /></button>
                       </td>
                     </>
@@ -623,16 +642,14 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                       </td>
                       <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors">{user.firstName}</td>
                       <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors">{user.lastName}</td>
-                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.employeeId}</td>
-                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{getJobRoleLabel(user.userJobRole)}</td>
-                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{getAreaLabel(user.areaOfWork)}</td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.email || '-'}</td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.employeeCode || '-'}</td>
                       <td className="px-4 py-3">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${user.roleCode !== 'USER' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'} transition-colors`}>
                           {user.roleCode}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.departmentCode}</td>
-                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">••••••</td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted text-sm transition-colors">{formatDateTime(user.lastUpdated)}</td>
                       <td className="px-4 py-3 flex gap-2">
                         <button onClick={() => handleEditUser(user.id)} className="p-1 text-blue-600 dark:text-dark-accent-blue hover:bg-blue-50 dark:hover:bg-blue-500/20 rounded transition-colors" title={t('userManagement.form.edit')}><Edit className="w-4 h-4" /></button>
@@ -655,19 +672,8 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
             <div className="space-y-3">
               <input type="text" placeholder={firstNameLabel} value={formData.firstName} onChange={(e) => setFormData({ ...formData, firstName: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
               <input type="text" placeholder={lastNameLabel} value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
-              <input type="text" placeholder={employeeIdLabel} value={formData.employeeId} onChange={(e) => setFormData({ ...formData, employeeId: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
-              <select value={formData.userJobRole} onChange={(e) => setFormData({ ...formData, userJobRole: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text focus:outline-none focus-ring-accent transition-colors">
-                <option value="">{selectJobRoleLabel}</option>
-                {JOB_ROLE_OPTIONS.map((option) => (
-                  <option key={option.key} value={option.key}>{getJobRoleLabel(option.key)}</option>
-                ))}
-              </select>
-              <select value={formData.areaOfWork} onChange={(e) => setFormData({ ...formData, areaOfWork: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text focus:outline-none focus-ring-accent transition-colors">
-                <option value="">{selectAreaLabel}</option>
-                {AREA_OF_WORK_OPTIONS.map((option) => (
-                  <option key={option.key} value={option.key}>{getAreaLabel(option.key)}</option>
-                ))}
-              </select>
+              <input type="email" placeholder={emailLabel} value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
+              <input type="text" placeholder={employeeCodeLabel} value={formData.employeeCode} onChange={(e) => setFormData({ ...formData, employeeCode: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
               <select value={formData.roleCode} onChange={(e) => setFormData({ ...formData, roleCode: e.target.value as FormData['roleCode'] })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text focus:outline-none focus-ring-accent transition-colors">
                 <option value="USER">USER</option>
                 <option value="HR_ADMIN">HR_ADMIN</option>
@@ -681,7 +687,6 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                 <option value="ACC">ACC</option>
                 <option value="SYSTEMS">SYSTEMS</option>
               </select>
-              <input type="password" placeholder={passwordLabel} value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
             </div>
 
             <div className="flex gap-3 justify-end pt-4 border-t border-default dark:border-default transition-colors">
@@ -692,33 +697,15 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         </div>
       )}
 
-      {showConfirmSave && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-surface dark:bg-dark-surface border border-default dark:border-default rounded-2xl p-6 max-w-md w-full mx-4 space-y-4 shadow-xl transition-colors">
-            <h3 className="text-xl font-semibold text-foreground dark:text-white transition-colors">{t('userManagement.delete.confirmTitle')}</h3>
-            <p className="text-muted dark:text-dark-text-muted text-sm transition-colors">{t('userManagement.form.editUserTitle')}</p>
-
-            <input type="password" placeholder={t('userManagement.delete.adminPassword')} value={editAdminPassword} onChange={(e) => setEditAdminPassword(e.target.value)} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
-
-            <div className="flex gap-3 justify-end pt-4 border-t border-default dark:border-default transition-colors">
-              <button onClick={() => { setShowConfirmSave(false); setEditAdminPassword(''); }} className="px-4 py-2 rounded-lg bg-surface dark:bg-dark-surface-alt hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text text-sm font-medium transition-colors">{t('userManagement.form.cancel')}</button>
-              <button onClick={confirmSaveEdit} disabled={!editAdminPassword.trim()} className="px-4 py-2 rounded-lg btn-success text-on-accent text-sm font-medium transition-colors">{t('userManagement.form.save')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface dark:bg-dark-surface border border-default dark:border-default rounded-2xl p-6 max-w-md w-full mx-4 space-y-4 shadow-xl transition-colors">
-            <h3 className="text-xl font-semibold text-foreground dark:text-white transition-colors">{t('userManagement.delete.adminPassword')}</h3>
+            <h3 className="text-xl font-semibold text-foreground dark:text-white transition-colors">{getI18nOrFallback('userManagement.delete.confirmTitle', 'Confirm Delete')}</h3>
             <p className="text-muted dark:text-dark-text-muted text-sm transition-colors">{t('userManagement.delete.confirmMessage')}</p>
 
-            <input type="password" placeholder={t('userManagement.delete.adminPassword')} value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors" />
-
             <div className="flex gap-3 justify-end pt-4 border-t border-default dark:border-default transition-colors">
-              <button onClick={() => { setShowDeleteModal(false); setUserToDelete(null); setAdminPassword(''); }} className="px-4 py-2 rounded-lg bg-surface dark:bg-dark-surface-alt hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text text-sm font-medium transition-colors">{t('userManagement.form.cancel')}</button>
-              <button onClick={confirmDelete} disabled={!adminPassword.trim()} className="px-4 py-2 rounded-lg btn-danger disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors">{t('userManagement.delete.confirmButton')}</button>
+              <button onClick={() => { setShowDeleteModal(false); setUserToDelete(null); }} className="px-4 py-2 rounded-lg bg-surface dark:bg-dark-surface-alt hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text text-sm font-medium transition-colors">{t('userManagement.form.cancel')}</button>
+              <button onClick={() => void confirmDelete()} className="px-4 py-2 rounded-lg btn-danger disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors">{t('userManagement.delete.confirmButton')}</button>
             </div>
           </div>
         </div>

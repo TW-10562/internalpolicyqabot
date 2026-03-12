@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, Mail, MailOpen, Send } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 
 interface NotificationItem {
   id: string;
@@ -118,10 +119,7 @@ export default function NotificationsPanel({
   const [isInitialized, setIsInitialized] = useState(false);
 
   const formatTimestamp = (value?: number | string | Date) => {
-    if (!value) return '';
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleString();
+    return formatDateTimeJP(value, '');
   };
 
   /* ---------- INIT ---------- */

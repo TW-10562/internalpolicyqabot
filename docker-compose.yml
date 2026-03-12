@@ -165,6 +165,7 @@ services:
       FRONTEND_PORT: 7001
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
+      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
       NODE_ENV: "production"
     volumes:
       - ./config:/app/config:ro
@@ -219,6 +220,7 @@ services:
       FRONTEND_PORT: 7001
       PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
+      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
       NODE_ENV: "production"
     volumes:
       - ./config:/app/config:ro

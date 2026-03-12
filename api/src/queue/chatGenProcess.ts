@@ -12,7 +12,7 @@ import { put, queryList } from '../utils/mapper';
 import redis from '@/clients/redis';
 
 import { loadRagProcessor } from '@/service/loadRagProcessor';
-import { analyzeModerationRulesOnly } from '@/service/contentModeration';
+import { moderateUserQuery } from '@/service/contentModeration';
 import {
   formatSingleLanguageOutput,
   translateText,
@@ -3701,24 +3701,6 @@ export const chatGenProcess = async (job) => {
       }
       await publishLive('status', { status, message });
     };
-    await publishLiveStatus('Retrieving documents...', 'IN_PROCESS');
-
-    const outputs = await queryList(KrdGenTaskOutput, {
-      task_id: { [Op.eq]: taskId },
-      status: { [Op.ne]: 'IN_PROCESS' },
-    });
-
-    const recentOutputs = [...outputs]
-      .sort((a: any, b: any) => Number(a?.id || 0) - Number(b?.id || 0))
-      .slice(-CHAT_HISTORY_TURNS);
-    const messages = recentOutputs.flatMap((op) => {
-      const userMessage = parseHistoryUserText(op.metadata);
-      const assistantMessage = String(op.content || '').trim();
-      return [
-        ...(userMessage ? [{ role: 'user', content: userMessage }] : []),
-        ...(assistantMessage ? [{ role: 'assistant', content: assistantMessage }] : []),
-      ];
-    });
 
     const data = parseMetadataSafe(metadata);
     const departmentCode = normalizeDepartmentCode(data.departmentCode);
@@ -3745,22 +3727,20 @@ export const chatGenProcess = async (job) => {
       `[CHAT PROCESS] Query intent: ${sharedQueryIntent.intent} (confidence=${sharedQueryIntent.confidence.toFixed(2)}, matchedRule=${sharedQueryIntent.matchedRule || 'default'})`,
     );
 
-    // NG words / abusive content: return a static response immediately (skip RAG + LLM) to keep UX snappy.
-    const moderation = analyzeModerationRulesOnly(originalQueryText, '');
-    if (moderation.flagged) {
-      const staticReply =
-        earlyUserLanguage === 'ja'
-          ? '不適切な表現が含まれているため回答できません。暴力・自傷・脅迫・侮辱表現を含まない形で言い換えてください。'
-          : "I can't help with that message because it contains inappropriate language. Please rephrase without abusive, threatening, self-harm, or violent content.";
-      const finalAnswer = staticReply;
-      const content = formatSingleLanguageOutput(finalAnswer, earlyUserLanguage as LanguageCode, {
+    const moderation = moderateUserQuery(originalQueryText);
+    if (moderation.blocked) {
+      const finalAnswer = moderation.reply;
+      const content = formatSingleLanguageOutput(finalAnswer, moderation.language as LanguageCode, {
+        moderation_blocked: true,
         moderation_flagged: true,
         moderation_score: moderation.score,
-        moderation_categories: Array.from(new Set(moderation.reasons.map((r) => r.category))),
+        moderation_skip_search: true,
+        moderation_categories: moderation.categories,
+        moderation_rule_ids: moderation.matchedRuleIds,
       });
       const finalStatus = 'FINISHED';
 
-      kpiMetrics.userLanguage = earlyUserLanguage;
+      kpiMetrics.userLanguage = moderation.language;
       kpiMetrics.endTime = Date.now();
       kpiMetrics.totalTime = kpiMetrics.endTime - kpiMetrics.startTime;
       kpiMetrics.responseLength = content.length;
@@ -3788,7 +3768,7 @@ export const chatGenProcess = async (job) => {
         conversationId: String(taskId),
         outputId: Number(outputId),
         userText: originalQueryText,
-        userLanguage: earlyUserLanguage,
+        userLanguage: moderation.language,
         workingQuery: undefined,
         assistantText: finalAnswer,
         ragUsed: false,
@@ -3796,8 +3776,12 @@ export const chatGenProcess = async (job) => {
         tokenInput: 0,
         tokenOutput: Math.ceil(finalAnswer.length / 4),
         metadata: {
+          moderation_blocked: true,
           moderation_flagged: true,
           moderation_score: moderation.score,
+          moderation_skip_search: true,
+          moderation_categories: moderation.categories,
+          moderation_rule_ids: moderation.matchedRuleIds,
           moderation_reasons: moderation.reasons,
         },
       }).catch(() => undefined);
@@ -3814,9 +3798,12 @@ export const chatGenProcess = async (job) => {
         queryText: originalQueryText,
         answerText: finalAnswer,
         metadata: {
+          moderation_blocked: true,
           moderation_flagged: true,
           moderation_score: moderation.score,
-          moderation_categories: Array.from(new Set(moderation.reasons.map((r) => r.category))),
+          moderation_skip_search: true,
+          moderation_categories: moderation.categories,
+          moderation_rule_ids: moderation.matchedRuleIds,
         },
       })
         .then(() =>
@@ -3835,6 +3822,25 @@ export const chatGenProcess = async (job) => {
 
       return { outputId, isOk: true, content };
     }
+
+    await publishLiveStatus('Retrieving documents...', 'IN_PROCESS');
+
+    const outputs = await queryList(KrdGenTaskOutput, {
+      task_id: { [Op.eq]: taskId },
+      status: { [Op.ne]: 'IN_PROCESS' },
+    });
+
+    const recentOutputs = [...outputs]
+      .sort((a: any, b: any) => Number(a?.id || 0) - Number(b?.id || 0))
+      .slice(-CHAT_HISTORY_TURNS);
+    const messages = recentOutputs.flatMap((op) => {
+      const userMessage = parseHistoryUserText(op.metadata);
+      const assistantMessage = String(op.content || '').trim();
+      return [
+        ...(userMessage ? [{ role: 'user', content: userMessage }] : []),
+        ...(assistantMessage ? [{ role: 'assistant', content: assistantMessage }] : []),
+      ];
+    });
 
     // Check if files are uploaded
     const explicitFileIds = Array.isArray(data.fileId) ? data.fileId : [];

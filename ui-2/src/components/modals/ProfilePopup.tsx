@@ -1,9 +1,8 @@
-import { useState } from 'react';
-import { User, Building, Calendar, Key, LogOut, Shield } from 'lucide-react';
+import { User, Building, Calendar, LogOut, Shield } from 'lucide-react';
 import { User as UserType } from '../../types';
 import { useLang } from '../../context/LanguageContext';
 import { getBrandDisplayName } from '../../lib/branding';
-import ContactHRPopup from './ContactHRPopup';
+import { formatDateTimeJP } from '../../lib/dateTime';
 
 interface ProfilePopupProps {
   user: UserType;
@@ -12,7 +11,6 @@ interface ProfilePopupProps {
 
 export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
   const { t, lang } = useLang();
-  const [showContactHR, setShowContactHR] = useState(false);
   const brandName = getBrandDisplayName(lang);
 
   return (
@@ -63,7 +61,7 @@ export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
               <div className="flex-1">
                 <p className="text-xs text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('profile.lastLogin') || 'Last Login'}</p>
                 <p className="text-[#232333] dark:text-dark-text font-medium transition-colors">
-                  {new Date(user.lastLogin).toLocaleString()}
+                  {formatDateTimeJP(user.lastLogin)}
                 </p>
               </div>
             </div>
@@ -72,30 +70,6 @@ export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
 
         <div className="bg-white dark:bg-dark-bg-primary border border-[#E8E8E8] dark:border-dark-border rounded-2xl p-6 space-y-3 shadow-sm transition-colors">
           <h3 className="text-lg font-semibold text-[#232333] dark:text-dark-text mb-4 transition-colors">{t('profile.actions') || 'Account Actions'}</h3>
-
-          <button
-            onClick={() => setShowContactHR(true)}
-            className="w-full flex items-center gap-3 px-4 py-3
-                       bg-amber-50 dark:bg-amber-900/30
-                       hover:bg-amber-100 dark:hover:bg-amber-800/40
-                       border border-amber-200 dark:border-amber-500/40
-                       rounded-xl transition-colors group"
-          >
-            <div className="w-10 h-10
-                            bg-amber-100 dark:bg-amber-500/40
-                            rounded-xl flex items-center justify-center
-                            transition-colors">
-              <Key className="w-5 h-5 text-amber-500 dark:text-amber-400" />
-            </div>
-            <div className="flex-1 text-left">
-              <p className="text-[#232333] dark:text-dark-text font-medium transition-colors">
-                {t('profile.changePassword') || 'Change Password'}
-              </p>
-              <p className="text-xs text-[#6E7680] dark:text-dark-text-muted transition-colors">
-                {t('profile.updatePassword') || 'Update your account password'}
-              </p>
-            </div>
-          </button>
 
           <button
             onClick={onLogout}
@@ -117,27 +91,6 @@ export default function ProfilePopup({ user, onLogout }: ProfilePopupProps) {
           </p>
         </div>
       </div>
-
-      {/* Centered popup with blurred background */}
-      {showContactHR && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          {/* Background overlay */}
-          <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-            onClick={() => setShowContactHR(false)}
-          ></div>
-
-          {/* Popup box */}
-          <div className="relative z-10">
-            <ContactHRPopup
-              isOpen={showContactHR}
-              onClose={() => setShowContactHR(false)}
-              title={t('contactHR.changePasswordTitle')}
-              message={t('contactHR.changePasswordMessage')}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

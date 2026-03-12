@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { Download, FileText, File, X, Loader2, Copy, Check } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -27,7 +28,7 @@ export default function ChatExport({
   const [copied, setCopied] = useState(false);
 
   const formatMessages = () => {
-    const header = `# ${chatTitle}\n${t('chatExport.exportedOn')}: ${new Date().toLocaleString()}\n${'='.repeat(50)}\n\n`;
+    const header = `# ${chatTitle}\n${t('chatExport.exportedOn')}: ${formatDateTimeJP(new Date())}\n${'='.repeat(50)}\n\n`;
 
     const content = messages
       .map((msg) => {
@@ -69,7 +70,7 @@ export default function ChatExport({
     try {
       const header = `# ${chatTitle}\n\n*${t(
         'chatExport.exportedOn'
-      )}: ${new Date().toLocaleString()}*\n\n---\n\n`;
+      )}: ${formatDateTimeJP(new Date())}*\n\n---\n\n`;
 
       const content = messages
         .map((msg) => {

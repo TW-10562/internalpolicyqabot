@@ -4,6 +4,8 @@ import User from '@/mysql/model/user.model';
 import File from '@/mysql/model/file.model';
 import { analyzeModeration, ModerationReason } from '@/service/contentModeration';
 import { normalizeDepartmentCode } from '@/service/rbac';
+import { noEvidenceReply } from '@/rag/generation/promptBuilder';
+import { parseDualLanguageOutput } from '@/utils/translation';
 
 type TimeRange = '7d' | '30d' | '90d';
 
@@ -75,6 +77,61 @@ const extractOrganicRetrievalMsFromMeta = (metaRaw: unknown): number | undefined
   return undefined;
 };
 
+const compactLatin = (value: string) => value.toLowerCase().replace(/[^a-z]/g, '');
+
+const compactJa = (value: string) => value.replace(/[\s。、，,.:;!?！？「」『』【】（）()]/g, '');
+
+const extractAnswerBody = (raw: unknown): string => {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+
+  const parsed = parseDualLanguageOutput(text);
+  if (!parsed.isDualLanguage && parsed.singleContent) return String(parsed.singleContent || '').trim();
+  if (parsed.isDualLanguage && parsed.translated) return String(parsed.translated || '').trim();
+  if (parsed.isDualLanguage && parsed.japanese) return String(parsed.japanese || '').trim();
+  return text;
+};
+
+const isNoEvidenceStyleAnswer = (raw: unknown): boolean => {
+  const text = extractAnswerBody(raw);
+  if (!text) return false;
+
+  const lower = text.toLowerCase();
+  const latin = compactLatin(text);
+  const ja = compactJa(text);
+  const strictNoEvidenceEn = noEvidenceReply('en').toLowerCase();
+  const strictNoEvidenceJa = noEvidenceReply('ja');
+  const compactStrictNoEvidenceEn = compactLatin(strictNoEvidenceEn);
+  const compactStrictNoEvidenceJa = compactJa(strictNoEvidenceJa);
+
+  return (
+    lower.includes(strictNoEvidenceEn) ||
+    lower.includes('i can’t confirm from the provided documents') ||
+    lower.includes("i can't confirm from the provided documents") ||
+    lower.includes('i could not find a matching section in internal policy documents') ||
+    lower.includes('i could not find relevant information in the available company documents') ||
+    /i could not find relevant information in the available .*internal documents/.test(lower) ||
+    lower.includes('the requested information was not found in the available company documents') ||
+    /the requested information was not found in the available .*internal documents/.test(lower) ||
+    text.includes(strictNoEvidenceJa) ||
+    text.includes('提供された文書から確認できません') ||
+    text.includes('社内文書から該当する記載を確認できません') ||
+    text.includes('利用可能な社内文書内で、要求された情報は見つかりませんでした') ||
+    /利用可能な.+社内文書内で、要求された情報は見つかりませんでした/.test(text) ||
+    latin.includes(compactStrictNoEvidenceEn) ||
+    latin.includes('icouldnotfindrelevantinformationintheavailablecompanydocuments') ||
+    /icouldnotfindrelevantinformationintheavailable[a-z]+internaldocuments/.test(latin) ||
+    latin.includes('therequestedinformationwasnotfoundintheavailablecompanydocuments') ||
+    /therequestedinformationwasnotfoundintheavailable[a-z]+internaldocuments/.test(latin) ||
+    ja.includes(compactStrictNoEvidenceJa) ||
+    /利用可能な.+社内文書内で要求された情報は見つかりませんでした/.test(ja) ||
+    ja.includes('利用可能な社内文書内で要求された情報は見つかりませんでした')
+  );
+};
+
+const isFailedQueryForAnalytics = (status: unknown, answerText: unknown): boolean =>
+  String(status || '').toUpperCase() === 'FAILED' || isNoEvidenceStyleAnswer(answerText);
+
 function getRangeStart(range: TimeRange): Date {
   const days = range === '90d' ? 90 : range === '30d' ? 30 : 7;
   const d = new Date();
@@ -144,6 +201,13 @@ const buildScopedEventWhere = (baseWhere: Record<string, unknown>, scope: Depart
 };
 
 export async function recordQueryEvent(input: QueryEventInput) {
+  const analyticsFailure = isFailedQueryForAnalytics(input.status, input.answerText);
+  const normalizedStatus: QueryEventInput['status'] = analyticsFailure ? 'FAILED' : 'FINISHED';
+  const metadata = {
+    ...(input.metadata || {}),
+    ...(analyticsFailure && input.status !== 'FAILED' ? { analyticsFailureReason: 'NO_RELIABLE_INFORMATION' } : {}),
+  };
+
   await AnalyticsEvent.create({
     event_type: QUERY_EVENT,
     task_id: input.taskId || null,
@@ -151,12 +215,12 @@ export async function recordQueryEvent(input: QueryEventInput) {
     user_id: input.userId || null,
     user_name: input.userName || null,
     department_code: normalizeStoredDepartmentCode(input.departmentCode),
-    status: input.status,
+    status: normalizedStatus,
     response_ms: Number.isFinite(input.responseMs) ? Number(input.responseMs) : null,
     rag_used: !!input.ragUsed,
     query_text: input.queryText || null,
     answer_text: input.answerText || null,
-    metadata_json: input.metadata ? JSON.stringify(input.metadata) : null,
+    metadata_json: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
   } as any);
 }
 
@@ -252,21 +316,10 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const fileWhere: any = {};
   if (departmentCode) fileWhere.department_code = normalizeDepartmentCode(departmentCode);
 
-  const [totalQueries, failedRequests, successfulResponses, queryUserRows, finishedQueryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
-    AnalyticsEvent.count({ where: queryWhere }),
-    AnalyticsEvent.count({ where: { ...queryWhere, status: 'FAILED' } }),
-    AnalyticsEvent.count({ where: { ...queryWhere, status: 'FINISHED' } }),
+  const [queryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
     AnalyticsEvent.findAll({
-      attributes: ['user_id', 'user_name'],
+      attributes: ['user_id', 'user_name', 'status', 'answer_text', 'response_ms', 'metadata_json'],
       where: queryWhere,
-      raw: true,
-    }),
-    AnalyticsEvent.findAll({
-      attributes: ['response_ms', 'metadata_json'],
-      where: {
-        ...queryWhere,
-        status: 'FINISHED',
-      },
       raw: true,
     }),
     AnalyticsEvent.findAll({
@@ -305,6 +358,21 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
     }),
   ]);
 
+  const queryRowsAny = queryRows as any[];
+  const totalQueries = queryRowsAny.length;
+  let failedRequests = 0;
+  let successfulResponses = 0;
+  const finishedQueryRows = [] as any[];
+
+  for (const row of queryRowsAny) {
+    if (isFailedQueryForAnalytics(row?.status, row?.answer_text)) {
+      failedRequests += 1;
+      continue;
+    }
+    successfulResponses += 1;
+    finishedQueryRows.push(row);
+  }
+
   let retrievalMsTotal = 0;
   let retrievalMsCount = 0;
   let responseMsTotal = 0;
@@ -329,7 +397,7 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const responseRate = totalQueries > 0 ? Number(((successfulResponses / totalQueries) * 100).toFixed(2)) : 0;
 
   const activeUserKeys = new Set<string>();
-  for (const row of queryUserRows as any[]) {
+  for (const row of queryRowsAny) {
     const userId = Number(row.user_id);
     if (Number.isFinite(userId) && userId > 0) {
       activeUserKeys.add(`id:${userId}`);

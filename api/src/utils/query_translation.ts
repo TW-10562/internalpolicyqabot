@@ -197,6 +197,16 @@ const extractJapaneseTerms = (...sources: string[]): string[] =>
     MAX_TRANSLATED_KEYWORDS * 2,
   );
 
+const PROCEDURAL_JA_HINT_PATTERN = /(申請|手続|手続き|手順|方法|払戻|払い戻し|返金|手数料|返還|精算)/;
+const scoreKeywordForRetrieval = (value: string): number => {
+  const keyword = normalizeKeyword(value);
+  if (!keyword) return -1;
+  const isJapanese = hasJapaneseChars(keyword);
+  const hasProceduralHint = isJapanese && PROCEDURAL_JA_HINT_PATTERN.test(keyword);
+  const lengthScore = Math.min(6, Math.max(0, keyword.length));
+  return (isJapanese ? 100 : 10) + (hasProceduralHint ? 25 : 0) + lengthScore;
+};
+
 const matchesJapaneseVariantLoosely = (
   queryTerms: string[],
   queryTexts: string[],
@@ -229,20 +239,55 @@ const findTermbaseKeywords = (query: string): string[] => {
 
   const out: string[] = [];
   const termbase = loadRetrievalTermbase();
+  const matchedEntries: Array<{ key: string; candidates: string[] }> = [];
   for (const [canonical, synonyms] of Object.entries(termbase)) {
     const candidates = uniqueKeywords([canonical, ...synonyms], MAX_TRANSLATED_KEYWORDS * 2);
     if (!candidates.some((candidate) => matchesPhrase(source, candidate))) continue;
-    out.push(...candidates);
+    matchedEntries.push({ key: canonical, candidates });
   }
 
   const sourceLower = source.toLowerCase();
-  return uniqueKeywords(
-    out
-      .filter(shouldKeepKeyword)
-      .filter((keyword) => keyword.toLowerCase() !== sourceLower)
-      .filter((keyword) => !matchesPhrase(source, keyword)),
-    MAX_TRANSLATED_KEYWORDS,
+  const filteredByQuery = (value: string) =>
+    shouldKeepKeyword(value) &&
+    normalizeKeyword(value).toLowerCase() !== sourceLower &&
+    !matchesPhrase(source, value);
+
+  const perEntryCap = Math.max(2, Math.min(4, Math.ceil(MAX_TRANSLATED_KEYWORDS / Math.max(1, matchedEntries.length))));
+  const scoredCandidates = matchedEntries.flatMap((entry) =>
+    entry.candidates
+      .filter(filteredByQuery)
+      .map((keyword, index) => ({
+        entryKey: entry.key,
+        keyword,
+        index,
+        score: scoreKeywordForRetrieval(keyword),
+      })),
   );
+
+  const picked: string[] = [];
+  const pickedByEntry = new Map<string, number>();
+  const tryPick = (cap: number) => {
+    const ranked = [...scoredCandidates].sort((a, b) =>
+      (b.score - a.score) || (a.index - b.index),
+    );
+    for (const row of ranked) {
+      if (picked.length >= MAX_TRANSLATED_KEYWORDS) break;
+      const count = pickedByEntry.get(row.entryKey) || 0;
+      if (count >= cap) continue;
+      if (picked.some((k) => normalizeKeyword(k).toLowerCase() === normalizeKeyword(row.keyword).toLowerCase())) continue;
+      picked.push(row.keyword);
+      pickedByEntry.set(row.entryKey, count + 1);
+    }
+  };
+
+  tryPick(perEntryCap);
+  if (picked.length < Math.max(2, Math.min(6, MAX_TRANSLATED_KEYWORDS))) {
+    // Relax cap if we couldn't fill enough keywords.
+    tryPick(Math.max(perEntryCap + 1, 6));
+  }
+
+  out.push(...picked);
+  return uniqueKeywords(out, MAX_TRANSLATED_KEYWORDS);
 };
 
 const findRuleMapKeywords = (query: string): string[] => {

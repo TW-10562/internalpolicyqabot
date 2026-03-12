@@ -13,6 +13,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
+import { formatDateTimeJP } from '../../lib/dateTime';
 import request from '../../api/request';
 import { User as UserType } from '../../types';
 
@@ -267,9 +268,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
   if (!data) return null;
 
   const categoryEntries = Object.entries(data.contentSafety.categoryCounts || {}).sort((a, b) => b[1] - a[1]);
-  const lastUpdatedLabel = lastUpdated
-    ? new Date(lastUpdated).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')
-    : '';
+  const lastUpdatedLabel = lastUpdated ? formatDateTimeJP(lastUpdated, '') : '';
 
   return (
     <div className="space-y-4 mac-tab-animate">
@@ -388,46 +387,22 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
             <AlertTriangle className="w-5 h-5 text-amber-500" />{t('analytics.errorFailureRate')}
           </h3>
 
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="flex justify-between items-center p-3 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
-                <span className="text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.successfulResponses')}</span>
-                <span className="text-[#232333] dark:text-dark-text font-semibold text-lg transition-colors">{data.successfulResponses}</span>
-              </div>
-
-              <div className="flex justify-between items-center p-3 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
-                <span className="text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.failedRequests')}</span>
-                <span className="text-[#232333] dark:text-dark-text font-semibold text-lg transition-colors">{data.failedRequests}</span>
-              </div>
-
-              <div className="flex justify-between items-center p-3 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
-                <span className="text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.responseRate')}</span>
-                <span className="text-[#232333] dark:text-dark-text font-semibold text-lg transition-colors">{data.responseRate}%</span>
-              </div>
-
-              <div className="flex justify-between items-center p-3 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
-                <span className="text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.errorRate')}</span>
-                <span className="text-[#232333] dark:text-dark-text font-semibold text-lg transition-colors">{data.errorRate}%</span>
-              </div>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center px-4 py-5 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
+              <span className="text-sm text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.failedRequests')}</span>
+              <span className="text-[#232333] dark:text-dark-text font-semibold text-lg leading-none transition-colors">{data.failedRequests}</span>
             </div>
 
-            <div className="h-3 bg-[#F6F6F6] dark:bg-dark-border rounded-full transition-colors">
-              <div
-                className="h-3 bg-emerald-500 rounded-full"
-                style={{ width: `${Math.min(data.responseRate, 100)}%` }}
-              />
+            <div className="flex justify-between items-center px-4 py-5 bg-[#F6F6F6] dark:bg-dark-border rounded-xl transition-colors">
+              <span className="text-sm text-[#6E7680] dark:text-dark-text-muted transition-colors">{t('analytics.errorRate')}</span>
+              <span className="text-[#232333] dark:text-dark-text font-semibold text-lg leading-none transition-colors">{data.errorRate}%</span>
             </div>
 
-            <div className="h-3 bg-[#F6F6F6] dark:bg-dark-border rounded-full transition-colors">
-              <div
-                className="h-3 bg-amber-500 rounded-full"
-                style={{ width: `${Math.min(data.errorRate, 100)}%` }}
-              />
+            <div className="border-t border-[#E8E8E8] dark:border-dark-border pt-3 transition-colors">
+              <p className="text-xs text-[#6E7680] dark:text-dark-text-muted transition-colors">
+                {t('analytics.errorRateDescription')}
+              </p>
             </div>
-
-            <p className="text-xs text-[#6E7680]">
-              {t('analytics.errorRateDescription')}
-            </p>
           </div>
         </div>
       </div>
@@ -481,7 +456,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
                         {incident.userName} · {incident.departmentCode}
                       </span>
                       <span className="text-xs text-[#6E7680] dark:text-dark-text-muted">
-                        {new Date(incident.createdAt).toLocaleString(lang === 'ja' ? 'ja-JP' : 'en-US')}
+                        {formatDateTimeJP(incident.createdAt)}
                       </span>
                     </div>
                     {user ? (
