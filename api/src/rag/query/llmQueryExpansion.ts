@@ -5,6 +5,13 @@ const DEFAULT_TIMEOUT_MS = 7000;
 const normalizeBaseUrl = (value: string): string =>
   String(value || '').trim().replace(/\/+$/, '');
 
+type QueryRewriteResult = {
+  language?: 'en' | 'ja' | 'mixed';
+  answer_language?: 'en' | 'ja';
+  queries?: string[];
+  keywords?: string[];
+};
+
 const extractTextFromContent = (content: any): string => {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -38,13 +45,33 @@ const uniqueLines = (values: string[], limit: number): string[] => {
   return out;
 };
 
+const extractFirstJsonObject = (value: string): string => {
+  const source = String(value || '').trim();
+  const start = source.indexOf('{');
+  const end = source.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return '';
+  return source.slice(start, end + 1);
+};
+
+const parseQueryRewriteResult = (value: string): QueryRewriteResult | null => {
+  const jsonText = extractFirstJsonObject(value);
+  if (!jsonText) return null;
+  try {
+    return JSON.parse(jsonText) as QueryRewriteResult;
+  } catch {
+    return null;
+  }
+};
+
 const callGateway = async ({
-  prompt,
+  systemPrompt,
+  userPrompt,
   temperature = 0.1,
   maxTokens = 180,
   timeoutMsOverride,
 }: {
-  prompt: string;
+  systemPrompt: string;
+  userPrompt: string;
   temperature?: number;
   maxTokens?: number;
   timeoutMsOverride?: number;
@@ -75,8 +102,8 @@ const callGateway = async ({
   const payload = {
     model,
     messages: [
-      { role: 'system', content: 'You help retrieval query expansion for enterprise HR documents.' },
-      { role: 'user', content: prompt },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
     ],
     temperature,
     max_tokens: maxTokens,
@@ -111,24 +138,55 @@ export const generateQueryVariants = async (
   const source = String(query || '').trim();
   if (!source) return [];
 
-  const prompt = [
-    'You are helping a search system retrieve documents.',
+  const systemPrompt = [
+    'You are a retrieval query rewriter for a RAG system whose documents are mostly in Japanese.',
     '',
-    'Generate 5 short search queries that could retrieve relevant HR policy documents.',
+    "Task:",
+    "Rewrite the user's query into Japanese retrieval queries optimized for searching Japanese internal policy/HR documents.",
     '',
-    `Query: ${source}`,
+    'Rules:',
+    '1. Preserve important named entities, acronyms, system names, team names, and policy terms.',
+    '2. Keep the meaning exact.',
+    '3. Do not answer the question.',
+    '4. Produce compact retrieval-oriented queries, not conversational text.',
+    '5. If the user query is already Japanese, normalize it lightly instead of rewriting heavily.',
+    '6. If the query is English, generate natural Japanese search formulations suitable for Japanese business documents.',
+    '7. Output JSON only.',
     '',
-    'Return only search queries separated by newline.',
-    `User language: ${language}`,
+    'Return format:',
+    '{',
+    '  "language": "en|ja|mixed",',
+    '  "answer_language": "en|ja",',
+    '  "queries": [',
+    '    "query variant 1",',
+    '    "query variant 2",',
+    '    "query variant 3"',
+    '  ],',
+    '  "keywords": [',
+    '    "important term 1",',
+    '    "important term 2"',
+    '  ]',
+    '}',
   ].join('\n');
+  const userPrompt = ['User query:', source].join('\n');
 
   const content = await callGateway({
-    prompt,
+    systemPrompt,
+    userPrompt,
     temperature: 0.1,
-    maxTokens: 180,
+    maxTokens: 240,
     timeoutMsOverride: Number(process.env.RAG_LLM_QUERY_EXPANSION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
   });
   if (!content) return [];
+
+  const parsed = parseQueryRewriteResult(content);
+  if (parsed?.queries?.length) {
+    const parsedQueries = uniqueLines(
+      parsed.queries.map((line) => String(line || '').replace(/^["'`]|["'`]$/g, '').trim()),
+      5,
+    ).filter((line) => line.toLowerCase() !== source.toLowerCase());
+    if (parsedQueries.length) return parsedQueries;
+  }
 
   const rawLines = String(content)
     .split(/\r?\n/)
@@ -146,14 +204,13 @@ export const generateQueryVariants = async (
 export const translateQueryToJapaneseHR = async (query: string): Promise<string> => {
   const source = String(query || '').trim();
   if (!source) return '';
-  const prompt = [
-    'Translate the following search query into Japanese HR terminology.',
-    '',
-    'Query:',
-    source,
-  ].join('\n');
+  const translatedVariants = await generateQueryVariants(source, 'en');
+  if (translatedVariants.length > 0) return translatedVariants[0];
+  const systemPrompt = 'Translate the following search query into Japanese HR terminology. Return only the translated query.';
+  const userPrompt = ['Query:', source].join('\n');
   const translated = await callGateway({
-    prompt,
+    systemPrompt,
+    userPrompt,
     temperature: 0,
     maxTokens: 80,
     timeoutMsOverride: Number(process.env.RAG_LLM_QUERY_TRANSLATION_TIMEOUT_MS || 5000),
@@ -167,14 +224,13 @@ export const translateQueryToJapaneseHR = async (query: string): Promise<string>
 export const repairQueryForHrRetrieval = async (query: string): Promise<string> => {
   const source = String(query || '').trim();
   if (!source) return '';
-  const prompt = [
-    'Rewrite this search query so it can retrieve HR policy documents.',
-    '',
-    'Query:',
-    source,
-  ].join('\n');
+  const repairedVariants = await generateQueryVariants(source, /[\u3040-\u30ff\u4e00-\u9faf]/.test(source) ? 'ja' : 'en');
+  if (repairedVariants.length > 0) return repairedVariants[0];
+  const systemPrompt = 'Rewrite this search query so it can retrieve HR policy documents. Return only the rewritten query.';
+  const userPrompt = ['Query:', source].join('\n');
   const repaired = await callGateway({
-    prompt,
+    systemPrompt,
+    userPrompt,
     temperature: 0.1,
     maxTokens: 80,
     timeoutMsOverride: Number(process.env.RAG_LLM_QUERY_REPAIR_TIMEOUT_MS || 5000),

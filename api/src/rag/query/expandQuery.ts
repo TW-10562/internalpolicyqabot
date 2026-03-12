@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { translateQueryForRetrievalDetailed } from '@/utils/query_translation';
+import { generateJapaneseQueryVariants } from '@/rag/query/crossLanguageBridge';
+import { generateQueryVariants } from '@/rag/query/llmQueryExpansion';
 import { canonicalizeQuery } from './canonicalizeQuery';
 import { normalizeQuery } from './normalizeQuery';
 
@@ -16,11 +18,12 @@ export type ExpandQueryOutput = {
   normalizedQuery: string;
   canonicalQuery: string;
   expandedQueries: string[];
+  generatedJapaneseQueries: string[];
   intentVariants: string[];
   queryForRAG: string;
   multilingualRetrievalQueries: string[];
   queryTranslationApplied: boolean;
-  queryTranslationStatus: 'termbase' | 'term_map' | 'none';
+  queryTranslationStatus: 'termbase' | 'term_map' | 'llm_bridge' | 'none';
   translateCallsCount: number;
   translateMs: number;
 };
@@ -66,6 +69,22 @@ const prioritizeJapaneseVariants = (variants: string[], limit: number): string[]
   const source = substantial.length > 0 ? substantial : unique;
   return [...source]
     .sort((left, right) => right.length - left.length)
+    .slice(0, limit);
+};
+
+const prioritizeEnglishCrossLanguageQueries = (variants: string[], limit: number): string[] => {
+  const japaneseVariants = prioritizeJapaneseVariants(variants, 32);
+  if (!japaneseVariants.length) return [];
+  return [...japaneseVariants]
+    .sort((left, right) => {
+      const leftProcedural = JA_PROCEDURAL_HINT_PATTERN.test(left) ? 1 : 0;
+      const rightProcedural = JA_PROCEDURAL_HINT_PATTERN.test(right) ? 1 : 0;
+      if (leftProcedural !== rightProcedural) return rightProcedural - leftProcedural;
+      const leftComposite = left.split(/\s+/).length > 1 ? 1 : 0;
+      const rightComposite = right.split(/\s+/).length > 1 ? 1 : 0;
+      if (leftComposite !== rightComposite) return rightComposite - leftComposite;
+      return right.length - left.length;
+    })
     .slice(0, limit);
 };
 
@@ -423,7 +442,8 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   let queryTranslationApplied = false;
   let translateCallsCount = 0;
   let translateMs = 0;
-  let queryTranslationStatus: 'termbase' | 'term_map' | 'none' = 'none';
+  let queryTranslationStatus: 'termbase' | 'term_map' | 'llm_bridge' | 'none' = 'none';
+  let generatedJapaneseQueries: string[] = [];
 
   if (translationExpansionEnabled && canonical) {
     const translateStart = Date.now();
@@ -442,6 +462,24 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
       queryTranslationStatus = 'none';
     } finally {
       translateMs = Date.now() - translateStart;
+    }
+  }
+
+  if (translationExpansionEnabled && canonical && input.userLanguage === 'en') {
+    const llmGeneratedVariants = await generateQueryVariants(canonical, 'en').catch(() => []);
+    const heuristicVariants = await generateJapaneseQueryVariants(canonical).catch(() => []);
+    generatedJapaneseQueries = prioritizeEnglishCrossLanguageQueries(
+      [
+        ...llmGeneratedVariants,
+        ...heuristicVariants,
+      ],
+      5,
+    );
+    if (generatedJapaneseQueries.length > 0) {
+      queryTranslationApplied = true;
+      if (queryTranslationStatus === 'none') {
+        queryTranslationStatus = 'llm_bridge';
+      }
     }
   }
 
@@ -470,6 +508,7 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   const expandedQueries = uniqueStringList(
     [
       canonical,
+      ...generatedJapaneseQueries,
       ...intentOnly,
       ...emailSignatureOnly,
       ...prioritizedJapaneseKeywords,
@@ -486,6 +525,7 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
     normalizedQuery,
     canonicalQuery: canonical,
     expandedQueries,
+    generatedJapaneseQueries,
     intentVariants: uniqueStringList([canonical, ...intentOnly, ...emailSignatureOnly, ...attendanceCorrectionOnly], nonWildcardLimit),
     queryForRAG: canonical,
     multilingualRetrievalQueries: expandedQueries,

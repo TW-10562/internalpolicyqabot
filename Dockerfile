@@ -105,8 +105,22 @@ server {
     proxy_read_timeout 3600;
   }
 
+  location /assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    try_files $uri =404;
+  }
+
+  location = /index.html {
+    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+  }
+
+  location @spa {
+    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+    rewrite ^ /index.html break;
+  }
+
   location / {
-    try_files $uri /index.html;
+    try_files $uri @spa;
   }
 }
 __NGINX__

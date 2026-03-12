@@ -389,7 +389,6 @@
     "generation": "生成が停止されました",
     "like": "フィードバックありがとうございます！",
     "dislike": "改善します！",
-    "regen": "再生成中...",
     "kpiMetrics": "KPI 指標",
     "status": "ステータス",
     "kpi": {
@@ -455,7 +454,6 @@
     "good": "良い回答",
     "bad": "悪い回答",
     "share": "共有",
-    "regenerate": "再生成",
     "shareTitle": "回答を共有",
     "shareMessage": "この回答を送信します",
     "sharePreview": "プレビュー",

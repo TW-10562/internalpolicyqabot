@@ -488,6 +488,8 @@ type RetrieveChunksResult = {
 type FilterChunksResult = {
   chunks: RetrievedChunk[];
   filteredCount: number;
+  mode: 'strict_same_language' | 'cross_language_relaxed' | 'mixed';
+  keptCount: number;
 };
 
 type SelectEvidenceResult = {
@@ -606,6 +608,7 @@ export const filterChunks = (args: {
   docs: any[];
   query: string;
   topScore: number;
+  queryLanguage?: 'ja' | 'en';
   minTermOverlap?: number;
   minSemanticSimilarity?: number;
   logger?: (line: string) => void;
@@ -613,9 +616,17 @@ export const filterChunks = (args: {
   const log = args.logger || (() => undefined);
   const rows = Array.isArray(args.docs) ? args.docs : [];
   const queryTerms = Array.from(new Set(toNormalizedTokens(args.query))).slice(0, 20);
-  const minTermOverlap = Math.max(1, Number(args.minTermOverlap || RAG_MIN_TERM_OVERLAP_STRICT));
+  const minTermOverlap = Math.max(0, Number(args.minTermOverlap ?? RAG_MIN_TERM_OVERLAP_STRICT));
   const minSemanticSimilarity = Math.max(0, Number(args.minSemanticSimilarity || RAG_MIN_SEMANTIC_SIMILARITY));
+  const inferRowLanguage = (row: any): 'ja' | 'en' => {
+    const title = Array.isArray(row?.title) ? String(row.title[0] || '') : String(row?.title || '');
+    const content = Array.isArray(row?.content_txt)
+      ? String(row.content_txt.join(' ') || '')
+      : String(row?.content_txt || row?.content_txt_ja || row?.content || '');
+    return hasJapaneseChars(`${title}\n${content}`) ? 'ja' : 'en';
+  };
   let lowInformationFiltered = 0;
+  let crossLanguageChunkCount = 0;
   const scored: RetrievedChunk[] = rows.map((row) => {
     const docId = getDocId(row);
     const chunkId = getChunkId(row);
@@ -638,7 +649,11 @@ export const filterChunks = (args: {
   });
   const filtered = scored.filter((chunk) => {
     if (!chunk.docId || !chunk.chunkId) return false;
-    if (chunk.termOverlap < minTermOverlap) return false;
+    const docLanguage = inferRowLanguage(chunk.row);
+    const crossLanguageMatch = Boolean(args.queryLanguage) && args.queryLanguage !== docLanguage;
+    const effectiveMinTermOverlap = crossLanguageMatch ? 0 : minTermOverlap;
+    if (crossLanguageMatch) crossLanguageChunkCount += 1;
+    if (chunk.termOverlap < effectiveMinTermOverlap) return false;
     if (chunk.semanticScore < minSemanticSimilarity) return false;
     if (chunk.sectionMismatch) return false;
     if (isLowInformationChunk(chunk.row)) {
@@ -647,19 +662,28 @@ export const filterChunks = (args: {
     }
     return true;
   });
+  const chunkFilterMode =
+    crossLanguageChunkCount > 0
+      ? (crossLanguageChunkCount === scored.length ? 'cross_language_relaxed' : 'mixed')
+      : 'strict_same_language';
   log(
     `[RAG] chunk_relevance_score ${JSON.stringify({
       before_count: scored.length,
       after_count: filtered.length,
+      chunk_filter_mode: chunkFilterMode,
       min_term_overlap: minTermOverlap,
       min_semantic_similarity: Number(minSemanticSimilarity.toFixed(3)),
+      cross_language_chunks: crossLanguageChunkCount,
       filtered_chunks: scored.length - filtered.length,
       low_information_filtered: lowInformationFiltered,
+      final_kept_chunk_count: filtered.length,
     })}`,
   );
   return {
     chunks: filtered.sort((a, b) => b.chunkRelevanceScore - a.chunkRelevanceScore),
     filteredCount: Math.max(0, scored.length - filtered.length),
+    mode: chunkFilterMode,
+    keptCount: filtered.length,
   };
 };
 
@@ -1206,9 +1230,13 @@ export const runRagPipeline = async (
     applied: expanded.queryTranslationApplied ? 1 : 0,
     llm_calls: expanded.translateCallsCount,
   });
+  log(`[RAG PIPELINE] detected_query_language="${userLanguage}"`);
   log(`[RAG PIPELINE] query_normalized="${expanded.normalizedQuery}"`);
   log(`[RAG PIPELINE] canonical_query="${expanded.canonicalQuery}"`);
   log(`[RAG PIPELINE] expanded_queries=${expanded.expandedQueries.join(' | ')}`);
+  if (expanded.generatedJapaneseQueries.length > 0) {
+    log(`[RAG PIPELINE] generated_japanese_retrieval_queries=${expanded.generatedJapaneseQueries.join(' | ')}`);
+  }
   const synonymExpandedQueries = expanded.expandedQueries
     .map((query) => String(query || '').trim())
     .filter(Boolean)
@@ -1650,6 +1678,7 @@ export const runRagPipeline = async (
       docs,
       query: retrievalSignalQuery,
       topScore,
+      queryLanguage: userLanguage,
       minTermOverlap: RAG_MIN_TERM_OVERLAP_STRICT,
       minSemanticSimilarity: RAG_MIN_SEMANTIC_SIMILARITY,
       logger: log,
@@ -1661,6 +1690,8 @@ export const runRagPipeline = async (
           before_count: filtered.filteredCount + docs.length,
           after_count: docs.length,
           removed_count: filtered.filteredCount,
+          chunk_filter_mode: filtered.mode,
+          final_kept_chunk_count: filtered.keptCount,
           min_term_overlap: RAG_MIN_TERM_OVERLAP_STRICT,
           min_semantic_similarity: Number(RAG_MIN_SEMANTIC_SIMILARITY.toFixed(3)),
         })}`,

@@ -12,6 +12,7 @@ const normalizeDocKey = (doc: any, fallbackIndex = 0): string => {
 
 export type HybridRetrievalInput = {
   query: string;
+  queries?: string[];
   solrDocs: any[];
   ragBackendUrl?: string;
   ragBackendCollectionName?: string;
@@ -41,6 +42,13 @@ export const retrieveDocumentsWithHybrid = async (
 ): Promise<HybridRetrievalResult> => {
   const log = input.onLog || (() => undefined);
   const query = String(input.query || '').trim();
+  const queries = Array.from(
+    new Set(
+      [query, ...(Array.isArray(input.queries) ? input.queries : [])]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 4);
   const solrDocs = (Array.isArray(input.solrDocs) ? input.solrDocs : []).slice(0, 20);
 
   if (!query) {
@@ -54,31 +62,46 @@ export const retrieveDocumentsWithHybrid = async (
 
   log('hybrid_retrieval_enabled', {
     query,
+    queries,
     solr_candidate_docs: solrDocs.length,
   });
 
-  const vectorResult = await retrieveVectorDocuments({
-    query,
-    ragBackendUrl: input.ragBackendUrl,
-    ragBackendCollectionName: input.ragBackendCollectionName,
-    fileScopeIds: input.fileScopeIds,
-    metadataFilters: input.metadataFilters,
-    onLog: log,
-  });
-  const vectorDocs = (Array.isArray(vectorResult.docs) ? vectorResult.docs : []).slice(0, 20);
+  const vectorResults = await Promise.all(
+    queries.map(async (candidate) => ({
+      query: candidate,
+      result: await retrieveVectorDocuments({
+        query: candidate,
+        ragBackendUrl: input.ragBackendUrl,
+        ragBackendCollectionName: input.ragBackendCollectionName,
+        fileScopeIds: input.fileScopeIds,
+        metadataFilters: input.metadataFilters,
+        onLog: log,
+      }),
+    })),
+  );
+  const vectorByKey = new Map<string, any>();
+  for (const { result } of vectorResults) {
+    const docs = Array.isArray(result.docs) ? result.docs : [];
+    for (let idx = 0; idx < docs.length; idx += 1) {
+      const doc = docs[idx];
+      const key = normalizeDocKey(doc, idx);
+      const existing = vectorByKey.get(key);
+      const nextSimilarity = Number(doc?.vector_similarity ?? doc?.score ?? 0);
+      const existingSimilarity = Number(existing?.vector_similarity ?? existing?.score ?? 0);
+      if (!existing || nextSimilarity > existingSimilarity) {
+        vectorByKey.set(key, doc);
+      }
+    }
+  }
+  const vectorDocs = Array.from(vectorByKey.values())
+    .sort((left, right) => Number(right?.vector_similarity || right?.score || 0) - Number(left?.vector_similarity || left?.score || 0))
+    .slice(0, 20);
 
   const solrWeight = Math.max(0, Number(process.env.RAG_HYBRID_SOLR_WEIGHT || 0.6));
   const vectorWeight = Math.max(0, Number(process.env.RAG_HYBRID_VECTOR_WEIGHT || 0.4));
   const totalWeight = Math.max(0.0001, solrWeight + vectorWeight);
   const normalizedSolrWeight = solrWeight / totalWeight;
   const normalizedVectorWeight = vectorWeight / totalWeight;
-
-  const vectorByKey = new Map<string, any>();
-  for (let idx = 0; idx < vectorDocs.length; idx += 1) {
-    const doc = vectorDocs[idx];
-    const key = normalizeDocKey(doc, idx);
-    if (!vectorByKey.has(key)) vectorByKey.set(key, doc);
-  }
 
   const mergedMap = new Map<string, any>();
   for (let idx = 0; idx < solrDocs.length; idx += 1) {
@@ -132,7 +155,11 @@ export const retrieveDocumentsWithHybrid = async (
   return {
     docs: merged.slice(0, 8),
     vectorDocs,
-    vectorSimilarityScores: vectorResult.similarityScores,
+    vectorSimilarityScores: vectorDocs.slice(0, 20).map((doc, idx) => ({
+      id: String(doc?.id || `vector_${idx + 1}`),
+      title: String((Array.isArray(doc?.title) ? doc.title[0] : doc?.title) || doc?.file_name_s || ''),
+      vector_similarity: Number(doc?.vector_similarity || doc?.score || 0),
+    })),
     mergedScores,
   };
 };

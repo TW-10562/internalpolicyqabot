@@ -254,6 +254,7 @@ export type RetrieveDocumentsResult = {
   usedSemanticFallback: boolean;
   queryTranslationApplied: boolean;
   translatedQuery: string;
+  japaneseRetrievalQueries: string[];
   topScore: number;
   topTermHits: number;
   solrCallsCount: number;
@@ -283,6 +284,15 @@ export const retrieveDocumentsWithSolr = async (
   const vectorRetrievalEnabled = readBooleanEnv('RAG_VECTOR_RETRIEVAL_ENABLED', true);
   const intentReconstructionEnabled = readBooleanEnv('RAG_INTENT_RECONSTRUCTION_ENABLED', false);
   const crossLanguageBridgeEnabled = readBooleanEnv('RAG_CROSS_LANGUAGE_BRIDGE_ENABLED', false);
+  const forceEnglishCrossLanguageBridge =
+    input.userLanguage === 'en' &&
+    input.retrievalIndexLanguage !== 'en';
+  const effectiveCrossLanguageBridgeEnabled =
+    crossLanguageBridgeEnabled || forceEnglishCrossLanguageBridge;
+  const effectiveLlmExpansionEnabled =
+    llmExpansionEnabled || forceEnglishCrossLanguageBridge;
+  const effectiveQueryRepairEnabled =
+    queryRepairEnabled || forceEnglishCrossLanguageBridge;
   const lexicalStrictFirst = readBooleanEnv('RAG_LEXICAL_STRICT_FIRST', true);
   const lexicalFallbackStrongBreakEnabled = readBooleanEnv('RAG_LEXICAL_FALLBACK_STRONG_BREAK_ENABLED', false);
   const domainPrefilterEnabled = readBooleanEnv('RAG_DOMAIN_PREFILTER_ENABLED', true);
@@ -322,9 +332,9 @@ export const retrieveDocumentsWithSolr = async (
     vector_trigger_confidence: vectorTriggerConfidence,
     vector_trigger_max_term_hits: vectorTriggerMaxTermHits,
     intent_reconstruction_enabled: intentReconstructionEnabled,
-    cross_language_bridge_enabled: crossLanguageBridgeEnabled,
-    llm_query_expansion_enabled: llmExpansionEnabled,
-    llm_query_repair_enabled: queryRepairEnabled,
+    cross_language_bridge_enabled: effectiveCrossLanguageBridgeEnabled,
+    llm_query_expansion_enabled: effectiveLlmExpansionEnabled,
+    llm_query_repair_enabled: effectiveQueryRepairEnabled,
     hyde_enabled: hydeEnabled,
     lexical_strict_first: lexicalStrictFirst,
     lexical_fallback_strong_break_enabled: lexicalFallbackStrongBreakEnabled,
@@ -362,8 +372,14 @@ export const retrieveDocumentsWithSolr = async (
   let lexicalBestTopTermHits = 0;
   let queryTranslationApplied = false;
   let translatedQuery = '';
+  let japaneseRetrievalQueries: string[] = [];
   let translateCallsCount = 0;
   let translateMs = 0;
+  log('query_language_detected', {
+    detected_query_language: input.userLanguage,
+    retrieval_index_language: input.retrievalIndexLanguage,
+    force_cross_language_bridge: forceEnglishCrossLanguageBridge ? 1 : 0,
+  });
 
   const runSolr = async (
     queryText: string,
@@ -452,18 +468,33 @@ export const retrieveDocumentsWithSolr = async (
   let domainPrefilterMetadataFilters: Record<string, any> | undefined;
   let domainPrefilterActive = false;
 
-  if (crossLanguageBridgeEnabled && canonicalQuery) {
-    const generatedTerms = await generateJapaneseQueryVariants(canonicalQuery);
-    if (generatedTerms.length > 0) {
-      expandedQueries = uniqueStrings([canonicalQuery, ...expandedQueries, ...generatedTerms], 9);
+  if (effectiveCrossLanguageBridgeEnabled && canonicalQuery && input.userLanguage === 'en') {
+    const existingJapaneseQueries = expandedQueries.filter((query) => hasJapaneseChars(query));
+    const llmGeneratedTerms =
+      existingJapaneseQueries.length >= 3
+        ? []
+        : await generateQueryVariants(canonicalQuery, input.userLanguage);
+    const heuristicGeneratedTerms = await generateJapaneseQueryVariants(canonicalQuery);
+    japaneseRetrievalQueries = uniqueStrings(
+      [...existingJapaneseQueries, ...llmGeneratedTerms, ...heuristicGeneratedTerms].filter((query) => hasJapaneseChars(query)),
+      6,
+    );
+    if (japaneseRetrievalQueries.length > 0) {
+      expandedQueries = uniqueStrings([canonicalQuery, ...japaneseRetrievalQueries, ...expandedQueries], 12);
+      translatedQuery = japaneseRetrievalQueries[0] || translatedQuery;
+      queryTranslationApplied = true;
       log('cross_language_bridge_applied', {
         query: canonicalQuery,
-        generated_count: generatedTerms.length,
+        generated_count: japaneseRetrievalQueries.length,
       });
-      log('generated_terms', {
-        terms: generatedTerms,
+      log('generated_japanese_retrieval_queries', {
+        queries: japaneseRetrievalQueries,
       });
     }
+    log('translation_applied', {
+      applied: queryTranslationApplied ? 1 : 0,
+      translated_query: translatedQuery || '',
+    });
   }
 
   const synonymExpandedQueries = expandedQueries
@@ -572,7 +603,13 @@ export const retrieveDocumentsWithSolr = async (
     Math.min(8, Math.max(1, maxSolrCalls - reservedSolrCallsForIntentReconstruction)),
   );
   const maxNonWildcardCandidates = wildcardFallback ? Math.max(1, maxLexicalCandidates - 1) : maxLexicalCandidates;
-  for (const candidate of expandedQueries) {
+  const prioritizedExpandedQueries = input.userLanguage === 'en'
+    ? uniqueStrings([
+        ...expandedQueries.filter((query) => hasJapaneseChars(query)),
+        ...expandedQueries.filter((query) => !hasJapaneseChars(query)),
+      ], 12)
+    : expandedQueries;
+  for (const candidate of prioritizedExpandedQueries) {
     if (lexicalCandidates.length >= maxNonWildcardCandidates) break;
     const value = String(candidate || '').trim();
     if (!value || lexicalCandidates.includes(value)) continue;
@@ -808,6 +845,7 @@ export const retrieveDocumentsWithSolr = async (
       usedSemanticFallback: false,
       queryTranslationApplied,
       translatedQuery,
+      japaneseRetrievalQueries,
       topScore: lexicalBestTopScore,
       topTermHits: lexicalBestTopTermHits,
       solrCallsCount,
@@ -835,6 +873,17 @@ export const retrieveDocumentsWithSolr = async (
 
     const hybridResult = await retrieveDocumentsWithHybrid({
       query: canonicalQuery,
+      queries: uniqueStrings(
+        input.userLanguage === 'en'
+          ? [
+              canonicalQuery,
+              translatedQuery,
+              ...japaneseRetrievalQueries,
+              ...expandedQueries.filter((query) => hasJapaneseChars(query)),
+            ]
+          : [canonicalQuery, lexicalBestQuery, ...expandedQueries],
+        4,
+      ),
       solrDocs: lexicalBestDocs,
       ragBackendUrl: input.ragBackendUrl,
       ragBackendCollectionName: input.ragBackendCollectionName,
@@ -936,7 +985,7 @@ export const retrieveDocumentsWithSolr = async (
   }
 
   const shouldApplyLlmExpansion =
-    llmExpansionEnabled &&
+    effectiveLlmExpansionEnabled &&
     (lexicalBestDocs.length === 0 || confidenceForExpansion < lowConfidenceThreshold);
   let llmExpansionApplied = false;
   if (shouldApplyLlmExpansion) {
@@ -995,7 +1044,7 @@ export const retrieveDocumentsWithSolr = async (
   }
 
   if (
-    queryRepairEnabled &&
+    effectiveQueryRepairEnabled &&
     lexicalBestDocs.length === 0 &&
     llmExpansionApplied &&
     solrCallsCount < maxSolrCalls
@@ -1036,6 +1085,7 @@ export const retrieveDocumentsWithSolr = async (
       usedSemanticFallback: false,
       queryTranslationApplied,
       translatedQuery,
+      japaneseRetrievalQueries,
       topScore: lexicalBestTopScore,
       topTermHits: lexicalBestTopTermHits,
       solrCallsCount,
@@ -1056,6 +1106,7 @@ export const retrieveDocumentsWithSolr = async (
       usedSemanticFallback: false,
       queryTranslationApplied,
       translatedQuery,
+      japaneseRetrievalQueries,
       topScore: lexicalBestTopScore,
       topTermHits: lexicalBestTopTermHits,
       solrCallsCount,
@@ -1072,10 +1123,19 @@ export const retrieveDocumentsWithSolr = async (
 
   // Keep semantic/vector fallback anchored to the original user-language query.
   // This avoids drifting into unrelated translated terms.
-  let semanticQuery = String(canonicalQuery || input.queryForRAG || '').trim();
+  const semanticQueryCandidates = uniqueStrings(
+    input.userLanguage === 'en'
+      ? [translatedQuery, ...japaneseRetrievalQueries, canonicalQuery, input.queryForRAG]
+      : [canonicalQuery, input.queryForRAG, translatedQuery, ...japaneseRetrievalQueries],
+    4,
+  );
+  let semanticQuery = String(semanticQueryCandidates[0] || '').trim();
   if (!semanticQuery && queryTranslationApplied && translatedQuery) {
     semanticQuery = translatedQuery;
   }
+  log('semantic_fallback_queries', {
+    queries: semanticQueryCandidates,
+  });
 
   const semanticVectorOnly = readBooleanEnv(
     'RAG_SEMANTIC_VECTOR_ONLY',
@@ -1136,6 +1196,7 @@ export const retrieveDocumentsWithSolr = async (
         usedSemanticFallback: true,
         queryTranslationApplied,
         translatedQuery,
+        japaneseRetrievalQueries,
         topScore: lexicalBestTopScore,
         topTermHits: lexicalBestTopTermHits,
         solrCallsCount,
@@ -1164,6 +1225,7 @@ export const retrieveDocumentsWithSolr = async (
       usedSemanticFallback: true,
       queryTranslationApplied,
       translatedQuery,
+      japaneseRetrievalQueries,
       topScore,
       topTermHits,
       solrCallsCount,
@@ -1184,6 +1246,7 @@ export const retrieveDocumentsWithSolr = async (
       usedSemanticFallback: true,
       queryTranslationApplied,
       translatedQuery,
+      japaneseRetrievalQueries,
       topScore: lexicalBestTopScore,
       topTermHits: lexicalBestTopTermHits,
       solrCallsCount,

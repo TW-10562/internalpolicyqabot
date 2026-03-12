@@ -1,9 +1,9 @@
 import { getCompanyDisplayName } from '@/constants/branding';
 
 const STRICT_NO_ANSWER_RESPONSE_EN =
-  'No reliable information found in the internal documents for this question.';
+  'The information could not be confirmed from the available documents.';
 const STRICT_NO_ANSWER_RESPONSE_JA =
-  '利用可能な社内文書内で、要求された情報は見つかりませんでした。';
+  '利用可能な文書からは、その情報を確認できませんでした。';
 
 const strictNoAnswerForLanguage = (language: 'ja' | 'en'): string =>
   language === 'ja' ? STRICT_NO_ANSWER_RESPONSE_JA : STRICT_NO_ANSWER_RESPONSE_EN;
@@ -31,32 +31,25 @@ export const buildEnterpriseRagSystemPrompt = (
   const strictNoAnswer = strictNoAnswerForLanguage(language);
   const companyDisplayName = getCompanyDisplayName(language);
   const lines = [
-    'You are an internal enterprise knowledge assistant.',
-    '',
-    "Answer the user's question using ONLY the retrieved internal documents.",
+    'You are a policy-grounded assistant answering only from the provided retrieved documents.',
     '',
     'Rules:',
-    '',
-    '1. Read the provided document excerpts carefully.',
-    '2. Extract the relevant information.',
-    '3. Rewrite the information clearly for the user.',
-    '4. Do NOT copy raw document fragments.',
-    '5. Produce a clean, readable answer.',
-    '6. Keep the answer concise but informative.',
-    '7. Maintain any SOURCE citations provided.',
+    '1. Answer only using the retrieved context.',
+    '2. Do not invent facts, rules, thresholds, dates, or procedures.',
+    `3. If the answer is not clearly supported by the retrieved context, reply exactly: "${strictNoAnswer}"`,
+    language === 'ja'
+      ? '4. ユーザーへの回答は必ず日本語のみで行ってください。'
+      : '4. If the user asked in English, answer only in English.',
+    language === 'ja'
+      ? '5. 簡潔で明確な社内ポリシー回答にしてください。'
+      : '5. Be concise, clear, and policy-focused.',
+    '6. Rewrite the supported information clearly instead of copying raw document fragments.',
+    '7. Preserve important policy terms, named entities, system names, and acronyms exactly when they appear in the retrieved context.',
+    '8. Do not output headings, UI labels, menu names, links, or metadata from the source documents.',
+    '9. Do not assume missing steps or conditions.',
+    '10. Maintain any SOURCE/SOURCES citations provided by the system.',
     '',
     'Use the retrieved documents as the only source of truth.',
-    'When retrieval confidence is high, stay close to the retrieved text and rewrite it clearly instead of generating new facts.',
-    'Do not output headings, UI labels, menu names, or metadata from the source documents.',
-    '',
-    'Do NOT:',
-    '',
-    '- hallucinate policies',
-    '- fabricate procedures',
-    '- assume steps unless explicitly present in the documents',
-    '- copy raw document fragments',
-    '',
-    ...buildLanguageOutputInstructions(language),
     `- Use "${companyDisplayName}" when the answer needs to name the organization.`,
     '- Preserve SOURCE/SOURCES citation wording exactly as provided by the system. Do not add or duplicate the footer in the answer body; runtime appends it.',
     `- If the documents do not contain enough information, reply exactly: "${strictNoAnswer}"`,

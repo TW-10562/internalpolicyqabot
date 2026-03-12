@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import {
   Send, Bot, User, Globe, Languages, Copy, ThumbsUp, ThumbsDown,
-  RefreshCw, Check, Plus, Trash2, StopCircle,
+  Check, Plus, Trash2, StopCircle, PenSquare,
   Download
 } from 'lucide-react';
 import { Message } from '../../types';
@@ -578,11 +578,9 @@ interface MessageActionsProps {
   content: string;
   messageId: string;
   onFeedback?: (messageId: string, feedback: 'like' | 'dislike') => void;
-  onRegenerate?: () => void;
-  onEditResend?: () => void;
 }
 
-function MessageActions({ content, messageId, onFeedback, onRegenerate, onEditResend }: MessageActionsProps) {
+function MessageActions({ content, messageId, onFeedback }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'like' | 'dislike' | null>(null);
   const { t } = useLang();
@@ -624,14 +622,6 @@ function MessageActions({ content, messageId, onFeedback, onRegenerate, onEditRe
           title={t('chatActions.bad')}
         >
           <ThumbsDown className="w-4 h-4" />
-        </button>
-
-        <button onClick={onRegenerate} className="mac-iconbtn" title={t('chatActions.regenerate')}>
-          <RefreshCw className="w-4 h-4" />
-        </button>
-
-        <button onClick={onEditResend} className="mac-iconbtn" title={t('chat.editResend')}>
-          <RefreshCw className="w-4 h-4" />
         </button>
       </div>
     </>
@@ -1566,16 +1556,6 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     typingTimerRef.current = setTimeout(() => onUserTyping?.(false), 800);
   };
 
-  const regenerateAt = (botMessageId: string) => {
-    if (isTyping) return;
-    const idx = messages.findIndex(m => m.id === botMessageId);
-    if (idx <= 0) return;
-    const prevUser = [...messages].slice(0, idx).reverse().find(m => m.type === 'user');
-    if (!prevUser) return;
-    showToast(t('chat.regen'), 'info');
-    handleSend(prevUser.content);
-  };
-
   return (
     <div className="flex h-full flex-col md:flex-row mac-root">
       {showExportDialog && (
@@ -1656,8 +1636,6 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                                       if (fb === 'dislike') openTriageForMessage(id, message.taskOutputId, message.content);
                                       showToast(fb === 'like' ? t('chat.like') : t('chat.dislike'), 'success');
                                     }}
-                                    onRegenerate={() => regenerateAt(message.id)}
-                                    onEditResend={() => { setInput(message.content); inputRef.current?.focus(); }}
                                   />
                                 )}
                               </>
@@ -1685,8 +1663,6 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                                       if (fb === 'dislike') openTriageForMessage(id, message.taskOutputId, message.content);
                                       showToast(fb === 'like' ? t('chat.like') : t('chat.dislike'), 'success');
                                     }}
-                                    onRegenerate={() => regenerateAt(message.id)}
-                                    onEditResend={() => { setInput(message.content); inputRef.current?.focus(); }}
                                   />
                                 )}
                               </>
@@ -1716,7 +1692,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                             className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-[#1e228a] hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors"
                             title={t('chat.editResend')}
                           >
-                            <RefreshCw className="w-3.5 h-3.5" />
+                            <PenSquare className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
