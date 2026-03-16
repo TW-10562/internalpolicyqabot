@@ -13,6 +13,11 @@ import {
 import { hasJapaneseChars } from '@/rag/language/detectLanguage';
 import { translateText } from '@/utils/translation';
 import { publishChatStreamEvent } from '@/service/chatStreamService';
+import {
+  scheduleInference,
+  markInferenceStreamStarted,
+  updateInferenceResultMetrics,
+} from '@/service/inferenceScheduler';
 
 const LLM_EMPTY_CIRCUIT_BREAKER_ENABLED =
   String(process.env.RAG_LLM_EMPTY_CIRCUIT_BREAKER || '1') !== '0';
@@ -61,8 +66,15 @@ const RAG_LLM_REASONING_EFFORT = String(
 let llmEmptyStreak = 0;
 let llmCircuitOpenUntil = 0;
 const outputTaskIdCache = new Map<number, string>();
+const outputSchedulerContextCache = new Map<number, {
+  taskId: string;
+  requestId: string;
+  traceId?: string;
+  userId?: number;
+  userName?: string;
+}>();
 const llmTtftByOutputId = new Map<number, number>();
-const ACTIVE_OUTPUT_STATUSES = new Set(['WAIT', 'IN_PROCESS', 'PROCESSING']);
+const ACTIVE_OUTPUT_STATUSES = new Set(['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING', 'GENERATING', 'STREAMING']);
 
 const buildRagLlmExtraBody = (): Record<string, any> | undefined => {
   const extraBody: Record<string, any> = {};
@@ -105,6 +117,42 @@ const resolveTaskIdForOutput = async (outputId?: number): Promise<string> => {
   }
 };
 
+const resolveSchedulerContextForOutput = async (outputId?: number): Promise<{
+  taskId: string;
+  requestId: string;
+  traceId?: string;
+  userId?: number;
+  userName?: string;
+}> => {
+  const id = Number(outputId || 0);
+  if (!Number.isFinite(id) || id <= 0) {
+    return { taskId: '', requestId: `llm-${Date.now()}` };
+  }
+  const cached = outputSchedulerContextCache.get(id);
+  if (cached) return cached;
+  try {
+    const [output] = await queryList(KrdGenTaskOutput, { id: { [Op.eq]: id } });
+    const taskId = String(output?.task_id || '').trim();
+    let parsed: Record<string, any> = {};
+    try {
+      parsed = JSON.parse(String(output?.metadata || '{}'));
+    } catch {
+      parsed = {};
+    }
+    const resolved = {
+      taskId,
+      requestId: String(parsed?.requestId || `llm-${id}`),
+      traceId: parsed?.traceId ? String(parsed.traceId) : undefined,
+      userId: Number.isFinite(Number(parsed?.userId)) ? Number(parsed.userId) : undefined,
+      userName: parsed?.userName ? String(parsed.userName) : undefined,
+    };
+    outputSchedulerContextCache.set(id, resolved);
+    return resolved;
+  } catch {
+    return { taskId: '', requestId: `llm-${id}` };
+  }
+};
+
 const isOutputStillWritable = async (outputId?: number): Promise<boolean> => {
   const id = Number(outputId || 0);
   if (!Number.isFinite(id) || id <= 0) return false;
@@ -144,170 +192,256 @@ export const callLLM = async ({
     const effectiveExtraBody = extraBody ?? buildRagLlmExtraBody();
 
     if (outputId) {
-      let content = '';
-      let cancelled = false;
-      let missingOutput = false;
-      let streamFailed = false;
-      let streamTimedOut = false;
       let taskIdForStream = await resolveTaskIdForOutput(outputId);
-      let charsSinceFlush = 0;
-      let lastFlushAt = Date.now();
-      let lastCancelCheckAt = 0;
-      const requestStartedAt = Date.now();
-      let ttftCaptured = false;
+      const schedulerContext = await resolveSchedulerContextForOutput(outputId);
+      taskIdForStream = taskIdForStream || schedulerContext.taskId;
+
       if (taskIdForStream) {
-        await publishChatStreamEvent(taskIdForStream, 'status', {
-          status: 'PROCESSING',
-          outputId,
-          message: 'Generating response...',
-        }).catch(() => undefined);
-      }
-
-      const flushProgress = async (opts?: { forceWrite?: boolean; forceCheckCancel?: boolean }) => {
-        if (cancelled || missingOutput) return;
-        const now = Date.now();
-        const forceWrite = Boolean(opts?.forceWrite);
-        const forceCheckCancel = Boolean(opts?.forceCheckCancel);
-        const shouldCheckCancel =
-          forceCheckCancel || (now - lastCancelCheckAt >= LLM_STREAM_CANCEL_CHECK_INTERVAL_MS);
-
-        if (shouldCheckCancel) {
-          lastCancelCheckAt = now;
-          const [curOutput] = await queryList(KrdGenTaskOutput, { id: { [Op.eq]: outputId } });
-          if (!curOutput) {
-            console.error(`[LLM] Output with ID ${outputId} not found.`);
-            missingOutput = true;
-            return;
-          }
-          const outputStatus = String(curOutput.status || '').trim().toUpperCase();
-          if (outputStatus === 'CANCEL') {
-            await put<IGenTaskOutputSer>(KrdGenTaskOutput, { id: outputId }, {
-              status: 'CANCEL',
-              update_by: 'JOB',
-            });
-            cancelled = true;
-            return;
-          }
-          if (!ACTIVE_OUTPUT_STATUSES.has(outputStatus)) {
-            cancelled = true;
-            return;
-          }
-        }
-
-        const shouldFlushBySize = charsSinceFlush >= LLM_STREAM_FLUSH_MIN_CHARS;
-        const shouldFlushByTime =
-          charsSinceFlush > 0 && (now - lastFlushAt >= LLM_STREAM_FLUSH_INTERVAL_MS);
-        const shouldWrite = forceWrite || shouldFlushBySize || shouldFlushByTime;
-        if (!shouldWrite || charsSinceFlush <= 0) return;
-
         await put<IGenTaskOutputSer>(
           KrdGenTaskOutput,
           { id: outputId },
-          {
-            content,
-            status: 'PROCESSING',
-            update_by: 'JOB',
-          },
-        );
-        charsSinceFlush = 0;
-        lastFlushAt = now;
-      };
+          { status: 'QUEUED', update_by: 'JOB' },
+        ).catch(() => undefined);
+        await publishChatStreamEvent(taskIdForStream, 'status', {
+          status: 'QUEUED',
+          outputId,
+          message: 'Queued for vLLM generation...',
+        }).catch(() => undefined);
+      }
 
-      try {
-        const stream = openaiClient.generateStream(messages, {
-          temperature,
-          max_tokens: maxTokens,
-          timeout_ms: MAX_LLM_STREAM_IDLE_TIMEOUT_MS,
-          extra_body: effectiveExtraBody,
-        });
-        for await (const chunk of stream) {
-          if (cancelled || missingOutput) break;
-          const delta = String(chunk || '');
-          if (!delta) continue;
-          if (!ttftCaptured) {
-            const ttft = Math.max(0, Date.now() - requestStartedAt);
-            llmTtftByOutputId.set(Number(outputId), ttft);
-            ttftCaptured = true;
-          }
-          content += delta;
-          charsSinceFlush += delta.length;
+      return await scheduleInference<string>({
+        requestId: schedulerContext.requestId,
+        traceId: schedulerContext.traceId,
+        taskId: taskIdForStream,
+        outputId: Number(outputId),
+        userId: schedulerContext.userId,
+        userName: schedulerContext.userName,
+        maxTokens,
+        timeoutMs: Math.max(MAX_LLM_STREAM_IDLE_TIMEOUT_MS, MAX_LLM_LATENCY_MS),
+        work: async ({ signal, queueMs }) => {
+          let content = '';
+          let cancelled = false;
+          let missingOutput = false;
+          let streamFailed = false;
+          let streamTimedOut = false;
+          let streamingStarted = false;
+          let charsSinceFlush = 0;
+          let lastFlushAt = Date.now();
+          let lastCancelCheckAt = 0;
+          const requestStartedAt = Date.now();
+          let ttftCaptured = false;
+
+          updateInferenceResultMetrics(Number(outputId), { queueMs });
+
           if (taskIdForStream) {
-            publishChatStreamEvent(taskIdForStream, 'chunk', {
-              status: 'PROCESSING',
+            await put<IGenTaskOutputSer>(
+              KrdGenTaskOutput,
+              { id: outputId },
+              { status: 'GENERATING', update_by: 'JOB' },
+            ).catch(() => undefined);
+            await publishChatStreamEvent(taskIdForStream, 'status', {
+              status: 'GENERATING',
               outputId,
-              delta,
+              message: 'Generating response...',
             }).catch(() => undefined);
           }
-          await flushProgress();
-        }
-      } catch (streamError) {
-        streamFailed = true;
-        streamTimedOut = isLikelyTimeoutError(streamError);
-        if (streamTimedOut) {
-          console.warn(`[LLM] Streaming request timed out after ${MAX_LLM_STREAM_IDLE_TIMEOUT_MS}ms`);
-        }
-        console.warn('[LLM] Streaming request failed, switching to non-stream fallback:', (streamError as any)?.message || streamError);
-        if (taskIdForStream) {
-          await publishChatStreamEvent(taskIdForStream, 'status', {
-            status: 'PROCESSING',
-            outputId,
-            message: 'Generating response... (fallback)',
-          }).catch(() => undefined);
-        }
-      }
 
-      if (!cancelled && !missingOutput) {
-        await flushProgress({ forceWrite: true, forceCheckCancel: true });
-      }
+          const flushProgress = async (opts?: { forceWrite?: boolean; forceCheckCancel?: boolean }) => {
+            if (cancelled || missingOutput) return;
+            const now = Date.now();
+            const forceWrite = Boolean(opts?.forceWrite);
+            const forceCheckCancel = Boolean(opts?.forceCheckCancel);
+            const shouldCheckCancel =
+              forceCheckCancel || (now - lastCancelCheckAt >= LLM_STREAM_CANCEL_CHECK_INTERVAL_MS);
 
-      if (!cancelled && !String(content || '').trim()) {
-        try {
-          const fallback = await openaiClient.generate(messages, {
-            temperature,
-            max_tokens: maxTokens,
-            retry_on_empty: retryOnEmpty,
-            timeout_ms: MAX_LLM_LATENCY_MS,
-            extra_body: effectiveExtraBody,
-          });
-          const fallbackContent = String(fallback?.content || '');
-          if (fallbackContent.trim()) {
-            if (!ttftCaptured) {
-              const ttft = Math.max(0, Date.now() - requestStartedAt);
-              llmTtftByOutputId.set(Number(outputId), ttft);
-              ttftCaptured = true;
+            if (signal.aborted) {
+              cancelled = true;
+              return;
             }
-            const fallbackPieces =
-              fallbackContent.match(new RegExp(`([\\s\\S]{1,${LLM_FALLBACK_STREAM_CHUNK_CHARS}})`, 'g')) ||
-              [fallbackContent];
-            for (const piece of fallbackPieces) {
-              if (cancelled || missingOutput) break;
-              content += piece;
-              charsSinceFlush += String(piece || '').length;
+
+            if (shouldCheckCancel) {
+              lastCancelCheckAt = now;
+              const [curOutput] = await queryList(KrdGenTaskOutput, { id: { [Op.eq]: outputId } });
+              if (!curOutput) {
+                console.error(`[LLM] Output with ID ${outputId} not found.`);
+                missingOutput = true;
+                return;
+              }
+              const outputStatus = String(curOutput.status || '').trim().toUpperCase();
+              if (outputStatus === 'CANCEL') {
+                await put<IGenTaskOutputSer>(KrdGenTaskOutput, { id: outputId }, {
+                  status: 'CANCEL',
+                  update_by: 'JOB',
+                });
+                cancelled = true;
+                return;
+              }
+              if (!ACTIVE_OUTPUT_STATUSES.has(outputStatus)) {
+                cancelled = true;
+                return;
+              }
+            }
+
+            const shouldFlushBySize = charsSinceFlush >= LLM_STREAM_FLUSH_MIN_CHARS;
+            const shouldFlushByTime =
+              charsSinceFlush > 0 && (now - lastFlushAt >= LLM_STREAM_FLUSH_INTERVAL_MS);
+            const shouldWrite = forceWrite || shouldFlushBySize || shouldFlushByTime;
+            if (!shouldWrite || charsSinceFlush <= 0) return;
+
+            await put<IGenTaskOutputSer>(
+              KrdGenTaskOutput,
+              { id: outputId },
+              {
+                content,
+                status: streamingStarted ? 'STREAMING' : 'GENERATING',
+                update_by: 'JOB',
+              },
+            );
+            charsSinceFlush = 0;
+            lastFlushAt = now;
+          };
+
+          try {
+            const stream = openaiClient.generateStream(messages, {
+              temperature,
+              max_tokens: maxTokens,
+              timeout_ms: MAX_LLM_STREAM_IDLE_TIMEOUT_MS,
+              extra_body: effectiveExtraBody,
+              abort_signal: signal,
+              request_id: schedulerContext.requestId,
+            });
+            for await (const chunk of stream) {
+              if (cancelled || missingOutput || signal.aborted) break;
+              const delta = String(chunk || '');
+              if (!delta) continue;
+              if (!ttftCaptured) {
+                const ttft = Math.max(0, Date.now() - requestStartedAt);
+                llmTtftByOutputId.set(Number(outputId), ttft);
+                ttftCaptured = true;
+              }
+              if (!streamingStarted) {
+                streamingStarted = true;
+                markInferenceStreamStarted(Number(outputId));
+                await put<IGenTaskOutputSer>(
+                  KrdGenTaskOutput,
+                  { id: outputId },
+                  { status: 'STREAMING', update_by: 'JOB' },
+                ).catch(() => undefined);
+                if (taskIdForStream) {
+                  await publishChatStreamEvent(taskIdForStream, 'status', {
+                    status: 'STREAMING',
+                    outputId,
+                    message: 'Streaming response...',
+                  }).catch(() => undefined);
+                }
+              }
+              content += delta;
+              charsSinceFlush += delta.length;
               if (taskIdForStream) {
                 publishChatStreamEvent(taskIdForStream, 'chunk', {
-                  status: 'PROCESSING',
+                  status: 'STREAMING',
                   outputId,
-                  delta: String(piece || ''),
+                  delta,
                 }).catch(() => undefined);
               }
               await flushProgress();
             }
-            if (!cancelled && !missingOutput) {
-              await flushProgress({ forceWrite: true, forceCheckCancel: true });
+          } catch (streamError) {
+            if (signal.aborted) {
+              cancelled = true;
+            } else {
+              streamFailed = true;
+              streamTimedOut = isLikelyTimeoutError(streamError);
+              if (streamTimedOut) {
+                console.warn(`[LLM] Streaming request timed out after ${MAX_LLM_STREAM_IDLE_TIMEOUT_MS}ms`);
+              }
+              console.warn('[LLM] Streaming request failed, switching to non-stream fallback:', (streamError as any)?.message || streamError);
+              if (taskIdForStream) {
+                await publishChatStreamEvent(taskIdForStream, 'status', {
+                  status: 'GENERATING',
+                  outputId,
+                  message: 'Generating response... (fallback)',
+                }).catch(() => undefined);
+              }
             }
           }
-        } catch (error) {
-          if (isLikelyTimeoutError(error)) {
-            console.warn(`[LLM] Non-stream fallback timed out after ${MAX_LLM_LATENCY_MS}ms`);
-          }
-          console.warn('[LLM] Empty stream fallback (non-stream generate) failed:', (error as any)?.message || error);
-        }
-      }
-      if (streamFailed && !String(content || '').trim()) {
-        console.warn('[LLM] Stream/fallback both produced empty content.');
-      }
 
-      return content;
+          if (!cancelled && !missingOutput) {
+            await flushProgress({ forceWrite: true, forceCheckCancel: true });
+          }
+
+          if (!cancelled && !String(content || '').trim()) {
+            try {
+              const fallback = await openaiClient.generate(messages, {
+                temperature,
+                max_tokens: maxTokens,
+                retry_on_empty: retryOnEmpty,
+                timeout_ms: MAX_LLM_LATENCY_MS,
+                extra_body: effectiveExtraBody,
+                abort_signal: signal,
+                request_id: schedulerContext.requestId,
+              });
+              const fallbackContent = String(fallback?.content || '');
+              if (fallbackContent.trim()) {
+                if (!ttftCaptured) {
+                  const ttft = Math.max(0, Date.now() - requestStartedAt);
+                  llmTtftByOutputId.set(Number(outputId), ttft);
+                  ttftCaptured = true;
+                }
+                if (!streamingStarted) {
+                  streamingStarted = true;
+                  markInferenceStreamStarted(Number(outputId));
+                  await put<IGenTaskOutputSer>(
+                    KrdGenTaskOutput,
+                    { id: outputId },
+                    { status: 'STREAMING', update_by: 'JOB' },
+                  ).catch(() => undefined);
+                }
+                const fallbackPieces =
+                  fallbackContent.match(new RegExp(`([\\s\\S]{1,${LLM_FALLBACK_STREAM_CHUNK_CHARS}})`, 'g')) ||
+                  [fallbackContent];
+                for (const piece of fallbackPieces) {
+                  if (cancelled || missingOutput || signal.aborted) break;
+                  content += piece;
+                  charsSinceFlush += String(piece || '').length;
+                  if (taskIdForStream) {
+                    publishChatStreamEvent(taskIdForStream, 'chunk', {
+                      status: 'STREAMING',
+                      outputId,
+                      delta: String(piece || ''),
+                    }).catch(() => undefined);
+                  }
+                  await flushProgress();
+                }
+                if (!cancelled && !missingOutput) {
+                  await flushProgress({ forceWrite: true, forceCheckCancel: true });
+                }
+              }
+            } catch (error) {
+              if (isLikelyTimeoutError(error)) {
+                console.warn(`[LLM] Non-stream fallback timed out after ${MAX_LLM_LATENCY_MS}ms`);
+              }
+              console.warn('[LLM] Empty stream fallback (non-stream generate) failed:', (error as any)?.message || error);
+            }
+          }
+          if (streamFailed && !String(content || '').trim()) {
+            console.warn('[LLM] Stream/fallback both produced empty content.');
+          }
+
+          const generationMs = Math.max(0, Date.now() - requestStartedAt);
+          const outputTokens = Math.max(1, Math.round(String(content || '').length / 4));
+          updateInferenceResultMetrics(Number(outputId), {
+            generationMs,
+            outputTokens,
+            tokensPerSecond: outputTokens / Math.max(generationMs / 1000, 0.001),
+            failureReason: streamFailed && !String(content || '').trim()
+              ? 'stream_fallback_empty'
+              : undefined,
+          });
+
+          return content;
+        },
+      });
     }
 
     try {

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Message } from '../../types';
 import { useLang } from '../../context/LanguageContext';
-import { listTask, listTaskOutput, addTask, deleteTaskOutput, sendFeedbackToCache } from '../../api/task';
+import { listTask, listTaskOutput, addTask, deleteTaskOutput, sendFeedbackToCache, stopTaskOutput } from '../../api/task';
 import { getToken } from '../../api/auth';
 import { listTriageAssignees } from '../../api/triage';
 import { formatTimeJP } from '../../lib/dateTime';
@@ -76,6 +76,26 @@ const stagePrefixSum = (stages: RagTraceStage[] | undefined, prefix: string) => 
 };
 const TERMINAL_OUTPUT_STATUS = new Set(['FINISHED', 'FAILED', 'CANCEL']);
 const TERMINAL_GENERATION_STATUS = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED OUT']);
+const createClientMessageId = (): string => {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0'));
+    return [
+      hex.slice(0, 4).join(''),
+      hex.slice(4, 6).join(''),
+      hex.slice(6, 8).join(''),
+      hex.slice(8, 10).join(''),
+      hex.slice(10, 16).join(''),
+    ].join('-');
+  }
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
 const isTerminalBotMessage = (message?: Message): boolean => {
   if (!message || message.type !== 'bot') return false;
   const outputStatus = String(message.status || '').toUpperCase();
@@ -815,7 +835,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     },
   ]);
   const [input, setInput] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [activeGenerationCount, setActiveGenerationCount] = useState(0);
   const [chatList, setChatList] = useState<ChatTask[]>([]);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [fieldSort, setFieldSort] = useState(0);
@@ -831,7 +851,9 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
   const [triageSubmitting, setTriageSubmitting] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingRefs = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  const activeRequestsRef = useRef<Map<string, { taskId?: string; fieldSort?: number }>>(new Map());
+  const latestActiveRequestRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -842,6 +864,38 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     if (type === 'success') toast.success(message);
     else if (type === 'error') toast.error(message);
     else toast.info(message);
+  };
+  const isTyping = activeGenerationCount > 0;
+
+  const startRequestTracking = (messageId: string) => {
+    if (activeRequestsRef.current.has(messageId)) return;
+    activeRequestsRef.current.set(messageId, {});
+    latestActiveRequestRef.current = messageId;
+    setActiveGenerationCount((count) => count + 1);
+  };
+
+  const attachRequestTracking = (
+    messageId: string,
+    patch: { taskId?: string; fieldSort?: number },
+  ) => {
+    const current = activeRequestsRef.current.get(messageId) || {};
+    activeRequestsRef.current.set(messageId, { ...current, ...patch });
+    latestActiveRequestRef.current = messageId;
+  };
+
+  const finishRequestTracking = (messageId: string) => {
+    const intervalId = pollingRefs.current.get(messageId);
+    if (intervalId) {
+      clearInterval(intervalId);
+      pollingRefs.current.delete(messageId);
+    }
+    if (activeRequestsRef.current.delete(messageId)) {
+      setActiveGenerationCount((count) => Math.max(0, count - 1));
+      if (latestActiveRequestRef.current === messageId) {
+        const remaining = [...activeRequestsRef.current.keys()];
+        latestActiveRequestRef.current = remaining.length ? remaining[remaining.length - 1] : null;
+      }
+    }
   };
 
   const scrollToBottom = () => {
@@ -856,7 +910,10 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
 
   useEffect(() => {
     loadChatList();
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+    return () => {
+      pollingRefs.current.forEach((intervalId) => clearInterval(intervalId));
+      pollingRefs.current.clear();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -959,12 +1016,17 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
   }, []);
 
   const startNewChat = () => {
+    pollingRefs.current.forEach((intervalId) => clearInterval(intervalId));
+    pollingRefs.current.clear();
+    activeRequestsRef.current.clear();
+    latestActiveRequestRef.current = null;
+    setActiveGenerationCount(0);
     setCurrentChatId(null);
     setMessages([{ id: '1', type: 'bot', content: t('chat.welcomeMessage'), timestamp: new Date() }]);
     setFieldSort(0);
   };
 
-  const pollForResponse = useCallback((taskId: string, newFieldSort: number) => {
+  const pollForResponse = useCallback((taskId: string, newFieldSort: number, messageId: string) => {
     let attempts = 0;
     let totalPollCycles = 0;
     let lastContentLength = 0;
@@ -981,7 +1043,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     );
     const maxAttempts = Math.max(1, Math.ceil(pollTimeoutMs / pollIntervalMs));
 
-    pollingRef.current = setInterval(async () => {
+    const intervalId = setInterval(async () => {
       attempts++;
       totalPollCycles++;
       try {
@@ -997,12 +1059,13 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
             const contentText = latestOutput.content || '';
             const contentLen = contentText.length;
             const statusTextRaw = String(latestOutput.status || 'WAIT').toUpperCase();
-            if ((statusTextRaw === 'IN_PROCESS' || statusTextRaw === 'PROCESSING') && firstInProcessAt == null) firstInProcessAt = Date.now();
+            if ((['IN_PROCESS', 'PROCESSING', 'RETRIEVING', 'GENERATING', 'STREAMING'].includes(statusTextRaw)) && firstInProcessAt == null) firstInProcessAt = Date.now();
             if (contentLen > 0 && firstTokenAt == null) firstTokenAt = Date.now();
 
             let generationStatus = t('chat.queuedProcessing');
-            if (statusTextRaw === 'WAIT') generationStatus = t('chat.queuedProcessing');
-            else if (statusTextRaw === 'IN_PROCESS' || statusTextRaw === 'PROCESSING') {
+            if (statusTextRaw === 'WAIT' || statusTextRaw === 'QUEUED') generationStatus = t('chat.queuedProcessing');
+            else if (statusTextRaw === 'RETRIEVING') generationStatus = 'Searching documents';
+            else if (statusTextRaw === 'GENERATING' || statusTextRaw === 'STREAMING' || statusTextRaw === 'IN_PROCESS' || statusTextRaw === 'PROCESSING') {
               if (contentLen > 0) generationStatus = t('chat.generatingAnswer');
               else generationStatus = progressSteps[Math.floor(((Date.now() - requestStartedAt) / 1500) % progressSteps.length)];
             } else if (statusTextRaw === 'FINISHED') generationStatus = t('chat.completed');
@@ -1015,15 +1078,15 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
               renderedContentText = contentText;
               lastSmoothFlushAt = Date.now();
               setMessages(prev => {
-                const updated = [...prev];
-                const lastIndex = updated.length - 1;
-                const current = updated[lastIndex];
-                if (current?.type === 'bot') {
+                const updated = prev.map((message) => ({ ...message }));
+                const targetIndex = updated.findIndex((message) => message.id === messageId);
+                const current = targetIndex >= 0 ? updated[targetIndex] : null;
+                if (current?.type === 'bot' && targetIndex >= 0) {
                   const canAdoptThisOutput = !current.taskOutputId
                     || current.taskOutputId === latestOutput.id
                     || !isTerminalBotMessage(current);
                   if (canAdoptThisOutput) {
-                    updated[lastIndex] = {
+                    updated[targetIndex] = {
                       ...current,
                       content: contentText,
                       status: latestOutput.status,
@@ -1039,8 +1102,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
             if (contentLen > lastContentLength) { lastContentLength = contentLen; attempts = 0; }
 
             if (latestOutput.status === 'FINISHED' || latestOutput.status === 'FAILED' || latestOutput.status === 'CANCEL') {
-              setIsTyping(false);
-              if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+              finishRequestTracking(messageId);
               const finishedAt = Date.now();
               const clientKpi = {
                 totalMs: finishedAt - requestStartedAt,
@@ -1061,15 +1123,15 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                 ? { ...backendFromTrace, totalMs: backendFromTrace.totalMs ?? backendFromKpi?.totalMs, ragMs: backendFromTrace.ragMs ?? backendFromKpi?.ragMs, llmMs: backendFromTrace.llmMs ?? backendFromKpi?.llmMs, titleMs: backendFromTrace.titleMs ?? backendFromKpi?.titleMs, retrievalMs: backendFromTrace.retrievalMs ?? backendFromKpi?.retrievalMs }
                 : (backendFromKpi || undefined);
               setMessages(prev => {
-                const updated = [...prev];
-                const lastIndex = updated.length - 1;
-                const current = updated[lastIndex];
-                if (current?.type === 'bot') {
+                const updated = prev.map((message) => ({ ...message }));
+                const targetIndex = updated.findIndex((message) => message.id === messageId);
+                const current = targetIndex >= 0 ? updated[targetIndex] : null;
+                if (current?.type === 'bot' && targetIndex >= 0) {
                   const canAdoptThisOutput = !current.taskOutputId
                     || current.taskOutputId === latestOutput.id
                     || !isTerminalBotMessage(current);
                   if (canAdoptThisOutput) {
-                    updated[lastIndex] = {
+                    updated[targetIndex] = {
                       ...current,
                       generationStatus: latestOutput.status === 'FINISHED' ? 'Completed' : current.generationStatus,
                       status: latestOutput.status,
@@ -1086,24 +1148,23 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
       } catch (error) { console.error('Polling error:', error); }
 
       if (attempts >= maxAttempts) {
-        setIsTyping(false);
-        if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+        finishRequestTracking(messageId);
         if (lastContentLength === 0) {
           setMessages(prev => {
-            const updated = [...prev];
-            const lastIndex = updated.length - 1;
-            if (updated[lastIndex]?.type === 'bot' && !updated[lastIndex].content) {
-              updated[lastIndex] = { ...updated[lastIndex], content: '⏱️ Response timeout. Please try again.', generationStatus: 'Timed out', kpi: { totalMs: Date.now() - requestStartedAt, ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : undefined, queueMs: firstInProcessAt ? firstInProcessAt - requestStartedAt : undefined, pollCycles: totalPollCycles } };
+            const updated = prev.map((message) => ({ ...message }));
+            const targetIndex = updated.findIndex((message) => message.id === messageId);
+            if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot' && !updated[targetIndex].content) {
+              updated[targetIndex] = { ...updated[targetIndex], content: '⏱️ Response timeout. Please try again.', generationStatus: 'Timed out', kpi: { totalMs: Date.now() - requestStartedAt, ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : undefined, queueMs: firstInProcessAt ? firstInProcessAt - requestStartedAt : undefined, pollCycles: totalPollCycles } };
             }
             return updated;
           });
         } else {
           setMessages(prev => {
-            const updated = [...prev];
-            const lastIndex = updated.length - 1;
-            if (updated[lastIndex]?.type === 'bot') {
-              updated[lastIndex] = {
-                ...updated[lastIndex],
+            const updated = prev.map((message) => ({ ...message }));
+            const targetIndex = updated.findIndex((message) => message.id === messageId);
+            if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot') {
+              updated[targetIndex] = {
+                ...updated[targetIndex],
                 generationStatus: 'Timed out',
                 kpi: {
                   totalMs: Date.now() - requestStartedAt,
@@ -1118,9 +1179,10 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
         }
       }
     }, pollIntervalMs);
+    pollingRefs.current.set(messageId, intervalId);
   }, [fetchKpiFallback, fetchTraceForOutput]);
 
-  const streamForResponse = useCallback(async (taskId: string, newFieldSort: number): Promise<boolean> => {
+  const streamForResponse = useCallback(async (taskId: string, newFieldSort: number, messageId: string): Promise<boolean> => {
     const requestStartedAt = Date.now();
     let totalPollCycles = 0;
     let firstTokenAt: number | null = null;
@@ -1136,14 +1198,14 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
 
     const updateBotMessage = (content: string, generationStatus = 'Generating answer', outputId?: number) => {
       setMessages(prev => {
-        const updated = [...prev];
-        const lastIndex = updated.length - 1;
-        if (updated[lastIndex]?.type === 'bot') {
-          updated[lastIndex] = {
-            ...updated[lastIndex],
+        const updated = prev.map((message) => ({ ...message }));
+        const targetIndex = updated.findIndex((message) => message.id === messageId);
+        if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot') {
+          updated[targetIndex] = {
+            ...updated[targetIndex],
             content,
             generationStatus,
-            taskOutputId: outputId || updated[lastIndex].taskOutputId,
+            taskOutputId: outputId || updated[targetIndex].taskOutputId,
           };
         }
         return updated;
@@ -1209,7 +1271,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
       const finalize = async (status: string) => {
         flushAllPending(currentOutputId);
         stopSmoothTicker();
-        setIsTyping(false);
+        finishRequestTracking(messageId);
         const finishedAt = Date.now();
         const clientKpi = { totalMs: finishedAt - requestStartedAt, ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : undefined, queueMs: firstInProcessAt ? firstInProcessAt - requestStartedAt : undefined, pollCycles: totalPollCycles };
         const trace = currentOutputId ? await fetchTraceForOutput(taskId, currentOutputId) : null;
@@ -1220,11 +1282,11 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
         const finalizedContent = String(storedOutput?.content || lastContent || renderedContent || '');
         const finalizedStatus = String(storedOutput?.status || status || '').toUpperCase();
         setMessages(prev => {
-          const updated = [...prev];
-          const lastIndex = updated.length - 1;
-          if (updated[lastIndex]?.type === 'bot') {
-            updated[lastIndex] = {
-              ...updated[lastIndex],
+          const updated = prev.map((message) => ({ ...message }));
+          const targetIndex = updated.findIndex((message) => message.id === messageId);
+          if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot') {
+            updated[targetIndex] = {
+              ...updated[targetIndex],
               content: finalizedContent,
               generationStatus:
                 finalizedStatus === 'FINISHED'
@@ -1233,9 +1295,9 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                     ? 'Failed'
                     : finalizedStatus === 'CANCEL'
                       ? 'Cancelled'
-                      : updated[lastIndex].generationStatus,
+                      : updated[targetIndex].generationStatus,
               taskOutputId:
-                storedOutput?.id || currentOutputId || updated[lastIndex].taskOutputId,
+                storedOutput?.id || currentOutputId || updated[targetIndex].taskOutputId,
               kpi: { ...clientKpi, backend },
             };
           }
@@ -1256,21 +1318,23 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
           const st = String(payload.status || 'WAIT').toUpperCase();
           const statusMessage = String(payload.message || '').trim();
           lastStatusEventAt = Date.now();
-          if ((st === 'IN_PROCESS' || st === 'PROCESSING') && firstInProcessAt == null) firstInProcessAt = Date.now();
+          if ((['IN_PROCESS', 'PROCESSING', 'RETRIEVING', 'GENERATING', 'STREAMING'].includes(st)) && firstInProcessAt == null) firstInProcessAt = Date.now();
           setMessages(prev => {
-            const updated = [...prev];
-            const lastIndex = updated.length - 1;
-            if (updated[lastIndex]?.type === 'bot') {
+            const updated = prev.map((message) => ({ ...message }));
+            const targetIndex = updated.findIndex((message) => message.id === messageId);
+            if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot') {
               const hasVisibleContent = String(renderedContent || pendingDelta || lastContent).trim().length > 0;
               const staleProcessingStatusMessage =
-                (st === 'IN_PROCESS' || st === 'PROCESSING') &&
+                (st === 'IN_PROCESS' || st === 'PROCESSING' || st === 'RETRIEVING' || st === 'GENERATING' || st === 'STREAMING') &&
                 Boolean(statusMessage) &&
                 !hasVisibleContent &&
                 (Date.now() - requestStartedAt > 5000);
               const generationStatus = (!staleProcessingStatusMessage ? statusMessage : '')
-                || (st === 'WAIT'
+                || (st === 'WAIT' || st === 'QUEUED'
                   ? 'Queued for processing'
-                  : st === 'IN_PROCESS' || st === 'PROCESSING'
+                  : st === 'RETRIEVING'
+                    ? 'Searching documents'
+                    : st === 'IN_PROCESS' || st === 'PROCESSING' || st === 'GENERATING' || st === 'STREAMING'
                     ? (lastContent ? 'Generating answer' : progressSteps[Math.floor(((Date.now() - requestStartedAt) / 1500) % progressSteps.length)])
                     : st === 'FINISHED'
                       ? 'Completed'
@@ -1278,8 +1342,8 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                         ? 'Failed'
                         : st === 'CANCEL'
                           ? 'Cancelled'
-                          : updated[lastIndex].generationStatus);
-              updated[lastIndex] = { ...updated[lastIndex], generationStatus, taskOutputId: currentOutputId || updated[lastIndex].taskOutputId };
+                          : updated[targetIndex].generationStatus);
+              updated[targetIndex] = { ...updated[targetIndex], generationStatus, taskOutputId: currentOutputId || updated[targetIndex].taskOutputId };
             }
             return updated;
           });
@@ -1348,14 +1412,14 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
         flushAllPending(currentOutputId);
         stopSmoothTicker();
         setMessages(prev => {
-          const updated = [...prev];
-          const lastIndex = updated.length - 1;
-          if (updated[lastIndex]?.type === 'bot') {
-            updated[lastIndex] = {
-              ...updated[lastIndex],
+          const updated = prev.map((message) => ({ ...message }));
+          const targetIndex = updated.findIndex((message) => message.id === messageId);
+          if (targetIndex >= 0 && updated[targetIndex]?.type === 'bot') {
+            updated[targetIndex] = {
+              ...updated[targetIndex],
               content: lastContent || renderedContent,
               generationStatus: 'Generating answer',
-              taskOutputId: currentOutputId || updated[lastIndex].taskOutputId,
+              taskOutputId: currentOutputId || updated[targetIndex].taskOutputId,
             };
           }
           return updated;
@@ -1371,16 +1435,17 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
 
   const handleSend = async (overrideInput?: string) => {
     const payload = (overrideInput ?? input).trim();
-    if (!payload || isTyping) return;
+    if (!payload) return;
     const greetingFastPath = isGreetingOnlyQuery(payload);
 
-    const userMessage: Message = { id: Date.now().toString(), type: 'user', content: payload, timestamp: new Date() };
-    const botPlaceholder: Message = { id: (Date.now() + 1).toString(), type: 'bot', content: greetingFastPath ? localGreetingReply(payload) : '', timestamp: new Date(), generationStatus: greetingFastPath ? 'Completed' : 'Queued for processing' };
+    const userMessage: Message = { id: createClientMessageId(), type: 'user', content: payload, timestamp: new Date() };
+    const botPlaceholderId = createClientMessageId();
+    const botPlaceholder: Message = { id: botPlaceholderId, type: 'bot', content: greetingFastPath ? localGreetingReply(payload) : '', timestamp: new Date(), generationStatus: greetingFastPath ? 'Completed' : 'Queued for processing' };
 
     setMessages(prev => [...prev, userMessage, botPlaceholder]);
     const currentInput = payload;
     if (overrideInput === undefined) setInput('');
-    setIsTyping(!greetingFastPath);
+    if (!greetingFastPath) startRequestTracking(botPlaceholderId);
     onUserTyping?.(false);
 
     try {
@@ -1406,17 +1471,26 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
         const taskId2 = response.result.taskId;
         if (!currentChatId) { setCurrentChatId(taskId2); loadChatList(); }
         if (!greetingFastPath) {
-          const streamed = await streamForResponse(taskId2, newFieldSort);
-          if (!streamed) pollForResponse(taskId2, newFieldSort);
+          attachRequestTracking(botPlaceholderId, { taskId: taskId2, fieldSort: newFieldSort });
+          const streamed = await streamForResponse(taskId2, newFieldSort, botPlaceholderId);
+          if (!streamed) pollForResponse(taskId2, newFieldSort, botPlaceholderId);
         }
       } else {
-        setIsTyping(false);
-        setMessages(prev => { const updated = [...prev]; updated[updated.length - 1].content = 'Sorry, there was an error processing your request.'; updated[updated.length - 1].generationStatus = 'Failed'; return updated; });
+        finishRequestTracking(botPlaceholderId);
+        setMessages(prev => prev.map((message) => (
+          message.id === botPlaceholderId
+            ? { ...message, content: 'Sorry, there was an error processing your request.', generationStatus: 'Failed' }
+            : message
+        )));
       }
     } catch (error) {
       console.error('Send error:', error);
-      setIsTyping(false);
-      setMessages(prev => { const updated = [...prev]; updated[updated.length - 1].content = 'Sorry, there was an error connecting to the server.'; updated[updated.length - 1].generationStatus = 'Failed'; return updated; });
+      finishRequestTracking(botPlaceholderId);
+      setMessages(prev => prev.map((message) => (
+        message.id === botPlaceholderId
+          ? { ...message, content: 'Sorry, there was an error connecting to the server.', generationStatus: 'Failed' }
+          : message
+      )));
     }
   };
 
@@ -1525,19 +1599,37 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
     } finally { setTriageSubmitting(false); }
   };
 
-  const stopGeneration = () => {
-    if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
-    setIsTyping(false);
-    setMessages(prev => {
-      const updated = [...prev];
-      const lastMsg = updated[updated.length - 1];
-      if (lastMsg?.type === 'bot' && !lastMsg.content) updated[updated.length - 1] = { ...lastMsg, content: t('chat.generationStopped'), generationStatus: 'Cancelled' };
-      return updated;
-    });
+  const stopGeneration = async () => {
+    const targetMessageId = latestActiveRequestRef.current;
+    if (!targetMessageId) return;
+    const tracked = activeRequestsRef.current.get(targetMessageId);
+    if (tracked?.taskId && tracked?.fieldSort) {
+      try {
+        await stopTaskOutput(tracked.taskId, tracked.fieldSort);
+      } catch (error) {
+        console.error('Failed to stop generation:', error);
+      }
+    }
+    finishRequestTracking(targetMessageId);
+    setMessages(prev => prev.map((message) => (
+      message.id === targetMessageId && message.type === 'bot'
+        ? {
+            ...message,
+            content: message.content || t('chat.generationStopped'),
+            generationStatus: 'Cancelled',
+            status: 'CANCEL',
+          }
+        : message
+    )));
     showToast(t('chat.generation'), 'info');
   };
 
   const clearChat = () => {
+    pollingRefs.current.forEach((intervalId) => clearInterval(intervalId));
+    pollingRefs.current.clear();
+    activeRequestsRef.current.clear();
+    latestActiveRequestRef.current = null;
+    setActiveGenerationCount(0);
     setMessages([{ id: '1', type: 'bot', content: t('chat.askQuestion'), timestamp: new Date() }]);
     setCurrentChatId(null);
     setFieldSort(0);
@@ -1796,7 +1888,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
             </div>
 
             {/* Send button */}
-            <button onClick={() => handleSend()} disabled={!input.trim() || isTyping} className="mac-sendbtn self-end">
+            <button onClick={() => handleSend()} disabled={!input.trim()} className="mac-sendbtn self-end">
               <Send className="w-5 h-5" />
               <span className="hidden sm:inline">{t('chat.send')}</span>
             </button>

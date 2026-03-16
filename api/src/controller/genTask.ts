@@ -1,4 +1,4 @@
-import { put, queryPage, queryList, queryConditionsDataByOrder } from '@/utils/mapper';
+import { put, queryById, queryPage, queryList, queryConditionsDataByOrder } from '@/utils/mapper';
 import KrdGenTask from '@/mysql/model/gen_task.model';
 import KrdGenTaskOutput from '@/mysql/model/gen_task_output.model';
 import { userType } from '@/types';
@@ -13,6 +13,9 @@ import { createChatStreamSubscriber } from '@/service/chatStreamService';
 import { recordFeedbackEvent } from '@/service/analyticsService';
 import { detectLanguage } from '@/utils/languageDetector';
 import { classifyQueryIntent, QueryIntent } from '@/utils/queryIntentClassifier';
+import { isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
+import { cancelScheduledInference } from '@/service/inferenceScheduler';
+import { ChatQueueOverloadedError } from '@/queue/queue';
 
 const GEN_TASK_VERBOSE = process.env.GEN_TASK_VERBOSE === '1';
 const genTaskLog = (...args: any[]) => {
@@ -26,6 +29,37 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const writeSseEvent = (ctx: Context, event: string, payload: Record<string, any>) => {
   ctx.res.write(`event: ${event}\n`);
   ctx.res.write(`data: ${JSON.stringify(payload)}\n\n`);
+};
+
+const canAccessTask = (
+  task: IGenTaskSer | null | undefined,
+  userName: string,
+  accessScope: { roleCode?: string; departmentCode?: string },
+): boolean => {
+  if (!task) return false;
+  const roleCode = String(accessScope.roleCode || '').toUpperCase();
+  const departmentCode = String(accessScope.departmentCode || '').toUpperCase();
+  const taskOwner = String(task.create_by || '').trim();
+  const taskDepartment = String(task.department_code || '').toUpperCase();
+  if (isSuperAdminRole(roleCode as any)) return true;
+  if (taskOwner && taskOwner === userName) return true;
+  return isDepartmentAdminRole(roleCode as any) && taskDepartment === departmentCode;
+};
+
+const loadAuthorizedTask = async (
+  taskId: string,
+  ctx: any,
+): Promise<IGenTaskSer | null> => {
+  const task = await queryById<IGenTaskSer>(KrdGenTask, { id: taskId });
+  const { userName } = ctx.state.user as userType;
+  const accessScope = (ctx.state?.accessScope || {}) as {
+    roleCode?: string;
+    departmentCode?: string;
+  };
+  if (!canAccessTask(task, userName, accessScope)) {
+    return null;
+  }
+  return task;
 };
 
 export const getAddMid = async (ctx: any, next: () => Promise<void>) => {
@@ -191,6 +225,14 @@ export const getAddMid = async (ctx: any, next: () => Promise<void>) => {
     await next();
   } catch (error) {
     console.error('❌ [GenTask] FATAL ERROR:', error);
+    if (error instanceof ChatQueueOverloadedError) {
+      ctx.status = 429;
+      ctx.body = {
+        code: 429,
+        message: error.message,
+      };
+      return;
+    }
     return ctx.app.emit(
       'error',
       {
@@ -231,9 +273,31 @@ export const getListMid = async (ctx: any, next: () => Promise<void>) => {
 
 export const getOutputListMid = async (ctx: any, next: () => Promise<void>) => {
   try {
+    const { userName } = ctx.state.user as userType;
+    const accessScope = (ctx.state?.accessScope || {}) as {
+      roleCode?: string;
+      departmentCode?: string;
+    };
     const { pageNum, pageSize, ...params } = ctx.query as unknown as IGenTaskOutputQueryType;
     const newParams = { pageNum, pageSize } as IGenTaskOutputQuerySerType;
-    if (params.taskId) newParams.task_id = params.taskId;
+    if (!params.taskId) {
+      ctx.state.formatData = { count: 0, rows: [] };
+      await next();
+      return;
+    }
+    const task = await queryById<IGenTaskSer>(KrdGenTask, { id: params.taskId });
+    if (!canAccessTask(task, userName, accessScope)) {
+      return ctx.app.emit(
+        'error',
+        {
+          code: '403',
+          message: 'アクセス権限がありません',
+        },
+        ctx,
+      );
+      return;
+    }
+    newParams.task_id = params.taskId;
     if (params.status) newParams.status = params.status;
     if (params.sort) newParams.sort = params.sort;
 
@@ -260,6 +324,12 @@ export const streamTaskOutputMid = async (ctx: Context) => {
   if (!taskId || !Number.isFinite(sortNum)) {
     ctx.status = 400;
     ctx.body = { code: 400, message: 'taskId and sort are required' };
+    return;
+  }
+  const authorizedTask = await loadAuthorizedTask(taskId, ctx);
+  if (!authorizedTask) {
+    ctx.status = 403;
+    ctx.body = { code: 403, message: 'Forbidden' };
     return;
   }
 
@@ -310,13 +380,13 @@ export const streamTaskOutputMid = async (ctx: Context) => {
   }));
 
   try {
-    writeSseEvent(ctx, 'status', { status: 'WAIT' });
+    writeSseEvent(ctx, 'status', { status: 'QUEUED' });
 
     while (!closed) {
       if (doneByPubSub) break;
       if (Date.now() - startedAt > CHAT_OUTPUT_STREAM_TIMEOUT_MS) {
         writeSseEvent(ctx, 'timeout', {
-          status: lastStatus || 'WAIT',
+          status: lastStatus || 'QUEUED',
           outputId,
           content: lastContent,
         });
@@ -332,7 +402,7 @@ export const streamTaskOutputMid = async (ctx: Context) => {
 
       if (current) {
         outputId = Number(current.id);
-        const status = String(current.status || 'WAIT').toUpperCase();
+        const status = String(current.status || 'QUEUED').toUpperCase();
         const content = String(current.content || '');
 
         if (status !== lastStatus) {
@@ -366,7 +436,7 @@ export const streamTaskOutputMid = async (ctx: Context) => {
 
       const now = Date.now();
       if (now - lastHeartbeatAt > 5000) {
-        writeSseEvent(ctx, 'status', { status: lastStatus || 'WAIT', outputId });
+        writeSseEvent(ctx, 'status', { status: lastStatus || 'QUEUED', outputId });
         lastHeartbeatAt = now;
       }
 
@@ -408,6 +478,11 @@ export const reNameTaskOutputMid = async (ctx: any, next: () => Promise<void>) =
   const { userName } = ctx.state.user as userType;
   const { taskId } = ctx.params;
   const { newName } = ctx.request.body;
+  const task = await loadAuthorizedTask(taskId, ctx);
+  if (!task) {
+    ctx.status = 403;
+    return;
+  }
 
   await put<IGenTaskOutputReNameSer>(KrdGenTask, { id: taskId }, {
     form_data: newName,
@@ -419,6 +494,11 @@ export const reNameTaskOutputMid = async (ctx: any, next: () => Promise<void>) =
 
 export const deleteTaskOutputMid = async (ctx: any, next: () => Promise<void>) => {
   const { taskId } = ctx.params;
+  const task = await loadAuthorizedTask(taskId, ctx);
+  if (!task) {
+    ctx.status = 403;
+    return;
+  }
 
   await KrdGenTask.destroy({
     where: { id: taskId },
@@ -447,6 +527,12 @@ export const stopTaskOutputMid = async (ctx: any, next: () => Promise<void>) => 
         ctx,
       );
     }
+    const task = await loadAuthorizedTask(String(taskId), ctx);
+    if (!task) {
+      ctx.status = 403;
+      await next();
+      return;
+    }
 
 
     const outputData = await queryConditionsData(KrdGenTaskOutput, {
@@ -469,6 +555,7 @@ export const stopTaskOutputMid = async (ctx: any, next: () => Promise<void>) => 
           update_by: userName,
         },
       );
+      cancelScheduledInference(Number(outputData[0].id || 0), 'cancelled_by_user');
 
       const outputs = await queryConditionsData(KrdGenTaskOutput, {
         task_id: outputData[0].task_id,
@@ -489,6 +576,11 @@ export const stopTaskOutputMid = async (ctx: any, next: () => Promise<void>) => 
 export const getChatTitleMid = async (ctx: any, next: () => Promise<void>) => {
   const { userName } = ctx.state.user as userType;
   const { chatId } = ctx.query;
+  const task = await loadAuthorizedTask(String(chatId || ''), ctx);
+  if (!task) {
+    ctx.status = 403;
+    return;
+  }
   const newParams = { id: chatId, pageNum: 1, pageSize: 1, create_By: userName } as IGenTaskQuerySerType;
 
   try {

@@ -22,7 +22,8 @@ import {
   getNotifications as getSupportNotifications,
   markNotificationRead as markSupportNotificationRead,
 } from './api/support';
-import { getToken } from './api/auth';
+import { getToken, logout } from './api/auth';
+import { logoutFromMicrosoft } from './auth/microsoftAuth';
  
  
 function AppContent() {
@@ -299,10 +300,12 @@ function AppContent() {
     setUser(userData);
   };
  
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await logout();
     setUser(null);
     setActiveFeature(null);
     setShowProfile(false);
+    logoutFromMicrosoft();
   };
 
   const handleNotificationBellClick = () => {

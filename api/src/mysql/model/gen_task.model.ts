@@ -22,7 +22,7 @@ const KrdGenTask = seq.define(
       comment: '',
     },
     status: {
-      type: DataTypes.CHAR(1),
+      type: DataTypes.STRING(32),
       defaultValue: '0',
       comment: '',
     },

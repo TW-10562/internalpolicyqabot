@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Plus, Edit, Trash2, X, Save, Upload, Search } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
@@ -232,20 +232,14 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     }
   };
 
-  const handleAddUser = () => {
+  const selectedCount = selectedUserIds.size;
+  const allSelected = users.length > 0 && users.every((user) => selectedUserIds.has(user.id));
+  const canBulkDelete = currentUser?.roleCode === 'SUPER_ADMIN';
+
+  const handleAddUser = useCallback(() => {
     setFormData(initialFormData);
     setShowAddModal(true);
-  };
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      openCsvUpload: () => fileInputRef.current?.click(),
-      openAddUserModal: () => handleAddUser(),
-      openBulkDeleteModal: () => handleBulkDelete(),
-    }),
-    [],
-  );
+  }, []);
 
   const buildPayload = () => {
     const email = formData.email.trim();
@@ -335,10 +329,6 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     await loadUsers();
   };
 
-  const selectedCount = selectedUserIds.size;
-  const allSelected = users.length > 0 && users.every((user) => selectedUserIds.has(user.id));
-  const canBulkDelete = currentUser?.roleCode === 'SUPER_ADMIN';
-
   useEffect(() => {
     if (selectAllRef.current) {
       selectAllRef.current.indeterminate = selectedCount > 0 && !allSelected;
@@ -369,10 +359,20 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     });
   };
 
-  const handleBulkDelete = () => {
+  const handleBulkDelete = useCallback(() => {
     if (!canBulkDelete || selectedUserIds.size === 0) return;
     setShowBulkDeleteModal(true);
-  };
+  }, [canBulkDelete, selectedUserIds]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      openCsvUpload: () => fileInputRef.current?.click(),
+      openAddUserModal: handleAddUser,
+      openBulkDeleteModal: handleBulkDelete,
+    }),
+    [handleAddUser, handleBulkDelete],
+  );
 
   const confirmBulkDelete = async () => {
     if (!canBulkDelete) return;

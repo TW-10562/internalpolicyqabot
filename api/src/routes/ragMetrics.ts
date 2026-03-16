@@ -2,13 +2,23 @@ import Router from 'koa-router';
 import { requireScopedAccess } from '@/controller/auth';
 import { findRagTraceByTaskOutput, getRagPerfSummary } from '@/service/ragPerf';
 import { getQueryEventMetricsByTaskOutput } from '@/service/analyticsService';
+import { getInferenceSchedulerSnapshot } from '@/service/inferenceScheduler';
+import { getChatQueueStats } from '@/queue/queue';
 
 const router = new Router({ prefix: '/api/rag' });
 
 router.get('/metrics', requireScopedAccess, async (ctx: any) => {
+  const [queue, scheduler] = await Promise.all([
+    getChatQueueStats().catch(() => null),
+    Promise.resolve(getInferenceSchedulerSnapshot()),
+  ]);
   ctx.body = {
     ok: true,
-    data: getRagPerfSummary(),
+    data: {
+      rag: getRagPerfSummary(),
+      queue,
+      scheduler,
+    },
     error: null,
   };
 });

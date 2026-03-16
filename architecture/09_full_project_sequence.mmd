@@ -1,0 +1,277 @@
+sequenceDiagram
+autonumber
+
+actor User
+participant Frontend as Frontend\nReact + Vite
+participant Api as API Layer\nKoa Routes + Auth/RBAC
+participant Services as Service Layer\nGenTask / File / Support / Triage / Analytics
+participant Worker as Processing Modules\nQueue Worker + Node RAG Pipeline
+participant Redis as External Services\nRedis + Bull + SSE
+participant External as External Services\nGraph / Solr / Python RAG / LLM / FAQ / File Storage
+participant Postgres as Database\nPostgreSQL
+
+note over Frontend,Postgres: The frontend calls the Koa API. The API authenticates the caller, routes requests, and delegates business operations to services. Long-running chat and file-processing work is executed by the worker through Redis and Bull. PostgreSQL is the system of record for users, tasks, files, history, notifications, analytics, triage, and audit data.
+
+User->>Frontend: Open app and submit login
+Frontend->>Api: POST /api/auth/login or /api/auth/sso/microsoft
+activate Api
+alt Employee ID login
+  Api->>Services: Validate credentials and resolve access scope
+  activate Services
+  Services->>Postgres: SELECT user, role, department, status
+  activate Postgres
+  Postgres-->>Services: User record + permissions
+  deactivate Postgres
+  Services->>Redis: Store session state in Redis
+  activate Redis
+  Redis-->>Services: Session created
+  deactivate Redis
+  Services-->>Api: JWT + access scope
+  deactivate Services
+else Microsoft SSO login
+  Api->>Services: Validate SSO token and map user
+  activate Services
+  Services->>External: GET Microsoft Graph profile
+  activate External
+  External-->>Services: Email + displayName + principalId
+  deactivate External
+  Services->>Postgres: UPSERT user + role mapping
+  activate Postgres
+  Postgres-->>Services: User record + permissions
+  deactivate Postgres
+  Services->>Redis: Store session state in Redis
+  activate Redis
+  Redis-->>Services: Session created
+  deactivate Redis
+  Services-->>Api: JWT + access scope
+  deactivate Services
+end
+Api-->>Frontend: Authentication response
+deactivate Api
+Frontend-->>User: Render permitted features
+
+loop Each authenticated user action
+  User->>Frontend: Trigger application feature
+
+  alt Chat and RAG workflow
+    Frontend->>Api: POST /api/gen-task with prompt payload
+    activate Api
+    Api->>Services: Validate request and create CHAT task
+    activate Services
+    Services->>Postgres: INSERT task row + output row
+    activate Postgres
+    Postgres-->>Services: taskId + outputId
+    deactivate Postgres
+    Services->>Redis: Enqueue Bull chat job with task metadata
+    activate Redis
+    Redis-->>Services: Job queued
+    deactivate Redis
+    Services-->>Api: Accepted task metadata
+    deactivate Services
+    Api-->>Frontend: 202 Accepted with taskId
+    deactivate Api
+
+    Redis->>Worker: Deliver chat job
+    activate Worker
+    Worker->>Postgres: SELECT task context, prior turns, scope, file filters
+    activate Postgres
+    Postgres-->>Worker: Persisted task metadata + history
+    deactivate Postgres
+
+    alt Prompt blocked by moderation
+      Worker->>Postgres: UPDATE output, history, analytics, notifications
+      activate Postgres
+      Postgres-->>Worker: Moderation result persisted
+      deactivate Postgres
+      Worker->>Redis: Publish final blocked response
+      activate Redis
+      Redis-->>Worker: Live event published
+      deactivate Redis
+    else Prompt can be processed
+      Worker->>Worker: Classify intent, resolve language, build retrieval plan
+      alt Company policy or enterprise knowledge query
+        Worker->>External: Search Solr and optional Python RAG backend
+        activate External
+        External-->>Worker: Ranked evidence, semantic candidates, chunks
+        deactivate External
+        Worker->>External: Generate grounded answer via LLM
+        activate External
+        External-->>Worker: Answer, title, translation fixups
+        deactivate External
+      else FAQ lookup
+        Worker->>External: Query FAQ cache
+        activate External
+        External-->>Worker: FAQ hit or miss
+        deactivate External
+        opt FAQ miss fallback
+          Worker->>External: Direct LLM completion
+          activate External
+          External-->>Worker: Generated answer
+          deactivate External
+        end
+      else General chat or translation request
+        Worker->>External: Direct LLM completion or translation
+        activate External
+        External-->>Worker: Generated answer
+        deactivate External
+      end
+
+      Worker->>Postgres: UPDATE output, title, history, notifications, analytics
+      activate Postgres
+      Postgres-->>Worker: Final response persisted
+      deactivate Postgres
+      Worker->>Redis: Publish status, chunk, and done events
+      activate Redis
+      Redis-->>Worker: Live events available
+      deactivate Redis
+    end
+    deactivate Worker
+
+    loop Until chat output reaches terminal status
+      Frontend->>Api: GET /api/gen-task-output/stream or /api/gen-task-output/list
+      activate Api
+      Api->>Services: Read live state for task output
+      activate Services
+      Services->>Redis: Read SSE or live channel state if available
+      activate Redis
+      Redis-->>Services: Latest live event or empty result
+      deactivate Redis
+      Services->>Postgres: SELECT latest output snapshot
+      activate Postgres
+      Postgres-->>Services: Status + partial or final content
+      deactivate Postgres
+      Services-->>Api: Response payload for frontend
+      deactivate Services
+      Api-->>Frontend: Chunk, status, or final answer
+      deactivate Api
+    end
+
+    opt User sends feedback or on-demand translation
+      Frontend->>Api: POST /api/gen-task/feedback or /api/gen-task/translate-on-demand
+      activate Api
+      Api->>Services: Record feedback or translate output
+      activate Services
+      alt Feedback path
+        Services->>Postgres: INSERT analytics feedback event
+        activate Postgres
+        Postgres-->>Services: Feedback stored
+        deactivate Postgres
+        Services->>External: Send FAQ feedback signal
+        activate External
+        External-->>Services: Cache feedback result
+        deactivate External
+      else Translation path
+        Services->>Postgres: SELECT saved output content
+        activate Postgres
+        Postgres-->>Services: Output text + language metadata
+        deactivate Postgres
+        Services->>External: Translate via LLM
+        activate External
+        External-->>Services: Translated text
+        deactivate External
+      end
+      Services-->>Api: Feature response
+      deactivate Services
+      Api-->>Frontend: Updated answer or feedback status
+      deactivate Api
+    end
+
+    Frontend-->>User: Display answer, citations, and status
+
+  else Document workflow
+    Frontend->>Api: Upload, list, preview, download, or delete document
+    activate Api
+    Api->>Services: Execute file operation
+    activate Services
+    alt Upload files
+      Services->>External: Write files to upload storage
+      activate External
+      External-->>Services: Storage key + physical path
+      deactivate External
+      Services->>Postgres: INSERT file metadata + document metadata
+      activate Postgres
+      Postgres-->>Services: Persisted file ids
+      deactivate Postgres
+      Services->>External: Index in Solr and optional Python RAG ingestion
+      activate External
+      External-->>Services: Indexing result
+      deactivate External
+      Services-->>Api: Upload response
+    else List, preview, or download
+      Services->>Postgres: SELECT authorized file records
+      activate Postgres
+      Postgres-->>Services: Filtered file rows
+      deactivate Postgres
+      Services->>External: Read preview or binary stream from file storage
+      activate External
+      External-->>Services: Preview content or file stream
+      deactivate External
+      Services-->>Api: File list or stream response
+    else Delete document
+      Services->>Postgres: SELECT file metadata and verify scope
+      activate Postgres
+      Postgres-->>Services: File key + ownership data
+      deactivate Postgres
+      Services->>External: Delete from Solr, Python RAG, and file storage
+      activate External
+      External-->>Services: Deletion confirmations
+      deactivate External
+      Services->>Postgres: DELETE file metadata row
+      activate Postgres
+      Postgres-->>Services: Deletion committed
+      deactivate Postgres
+      Services-->>Api: Delete response
+    end
+    Api-->>Frontend: File operation response
+    deactivate Services
+    deactivate Api
+    Frontend-->>User: Update document screen
+
+  else Support, history, notifications, analytics, and triage workflow
+    Frontend->>Api: Request support, inbox, history, analytics, or triage action
+    activate Api
+    Api->>Services: Execute business operation
+    activate Services
+    alt Read history, notifications, or analytics
+      Services->>Postgres: SELECT paged history, notifications, metrics, or activity
+      activate Postgres
+      Postgres-->>Services: Datasets + aggregates
+      deactivate Postgres
+      Services-->>Api: Response payload
+    else Create support ticket or direct message
+      Services->>Postgres: INSERT support ticket or message row
+      activate Postgres
+      Postgres-->>Services: Created id + status
+      deactivate Postgres
+      Services-->>Api: Success response
+    else Admin reply or broadcast
+      Services->>Postgres: UPDATE support ticket or INSERT admin message + notification
+      activate Postgres
+      Postgres-->>Services: Persisted reply or broadcast
+      deactivate Postgres
+      Services-->>Api: Response payload
+    else Create or update triage ticket
+      Services->>Postgres: Check duplicates and load routing context
+      activate Postgres
+      Postgres-->>Services: Duplicate state + prior context
+      deactivate Postgres
+      alt Auto-route escalation
+        Services->>External: Classify department, urgency, and sentiment via LLM
+        activate External
+        External-->>Services: Routing analysis
+        deactivate External
+      end
+      Services->>Postgres: INSERT or UPDATE triage ticket, payload, audit log, and notifications
+      activate Postgres
+      Postgres-->>Services: Ticket state persisted
+      deactivate Postgres
+      Services-->>Api: Triage response
+    end
+    Api-->>Frontend: JSON response
+    deactivate Services
+    deactivate Api
+    Frontend-->>User: Update current screen
+  end
+end
+
+note over Services,Worker: Recurring jobs can enqueue file upload work through Redis and Bull, and the worker reuses the same indexing path. Aviary-compatible routes reuse the same authentication, task, and audit service flows.

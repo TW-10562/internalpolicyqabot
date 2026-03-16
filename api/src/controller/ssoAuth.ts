@@ -12,19 +12,39 @@ import { hashPassword } from '@/service/user';
 import { inferDepartmentCodeFromRole, getRoleForEmail } from '@/service/ssoRoleStore';
 
 const normalizeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
+const splitDisplayName = (value: string) => {
+  const parts = String(value || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) {
+    return {
+      firstName: parts[0] || '',
+      lastName: '',
+    };
+  }
 
-export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<void>) => {
-  // NOTE: This is a temporary "mock" SSO endpoint so the UI can be switched to
-  // "Sign in via Microsoft" before Entra ID details are ready.
-  //
-  // TODO(EntraID): Replace this with a real OAuth2/OIDC flow using Microsoft Entra ID:
-  // - Start auth: redirect to the /authorize endpoint
-  // - Callback: exchange code for tokens, read the user's email from the ID token
-  // - Then call the same "email -> role -> session" logic below.
-  const rawEmail = (ctx.request.body as any)?.email ?? (ctx.query as any)?.email ?? process.env.SSO_MOCK_EMAIL;
-  const email = normalizeEmail(rawEmail);
+  return {
+    firstName: parts.slice(0, -1).join(' '),
+    lastName: parts.slice(-1).join(' '),
+  };
+};
+
+type MicrosoftGraphUserInfo = {
+  displayName?: string;
+  mail?: string | null;
+  userPrincipalName?: string;
+  id?: string;
+};
+
+const issueSessionForMicrosoftEmail = async (
+  ctx: Context,
+  next: () => Promise<void>,
+  params: { email: string; displayName?: string | null },
+) => {
+  const email = normalizeEmail(params.email);
+  const displayName = String(params.displayName || '').trim();
+  const { firstName, lastName } = splitDisplayName(displayName);
+
   if (!email) {
-    return ctx.app.emit('error', { code: '400', message: 'email is required for mock SSO login' }, ctx);
+    return ctx.app.emit('error', { code: '400', message: 'email is required for Microsoft SSO login' }, ctx);
   }
 
   const roleCode = await getRoleForEmail(email);
@@ -46,8 +66,8 @@ export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<v
     const created = (await User.create({
       user_name: email,
       emp_id: email,
-      first_name: '',
-      last_name: '',
+      first_name: firstName,
+      last_name: lastName,
       job_role_key: '',
       area_of_work_key: '',
       password: await hashPassword(createHash()),
@@ -74,6 +94,8 @@ export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<v
       {
         email,
         emp_id: empId || email,
+        first_name: firstName || existing.first_name || '',
+        last_name: lastName || existing.last_name || '',
         status: '1',
         sso_bound: 1,
         department: departmentCode,
@@ -109,6 +131,8 @@ export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<v
     token,
     userId,
     empId,
+    email,
+    displayName,
     roleCode,
     departmentCode,
   };
@@ -116,3 +140,37 @@ export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<v
   await next();
 };
 
+export const loginWithMicrosoft = async (ctx: Context, next: () => Promise<void>) => {
+  const accessToken = String((ctx.request.body as any)?.accessToken || '').trim();
+  if (!accessToken) {
+    return ctx.app.emit('error', { code: '400', message: 'accessToken is required for Microsoft SSO login' }, ctx);
+  }
+
+  const graphResponse = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName,id', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!graphResponse.ok) {
+    const errorBody = await graphResponse.text();
+    console.error('[loginWithMicrosoft] graph profile lookup failed:', graphResponse.status, errorBody);
+    return ctx.app.emit('error', { code: '401', message: 'Unable to validate Microsoft account' }, ctx);
+  }
+
+  const profile = (await graphResponse.json()) as MicrosoftGraphUserInfo;
+  const email = normalizeEmail(profile.mail || profile.userPrincipalName);
+
+  return issueSessionForMicrosoftEmail(ctx, next, {
+    email,
+    displayName: profile.displayName || email,
+  });
+};
+
+export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<void>) => {
+  const rawEmail = (ctx.request.body as any)?.email ?? (ctx.query as any)?.email ?? process.env.SSO_MOCK_EMAIL;
+  return issueSessionForMicrosoftEmail(ctx, next, {
+    email: normalizeEmail(rawEmail),
+    displayName: normalizeEmail(rawEmail),
+  });
+};

@@ -18,6 +18,10 @@ type AviaryCallbackFunctionRes = {
 
 type AviaryCallbackFunction = (outputId: number, metadata: string) => AviaryCallbackFunctionRes;
 
+type ExecuteOptions = {
+  outputId?: number;
+};
+
 const OUTPUT_PROCESS_TIMEOUT_MS = Math.max(60_000, Number(process.env.CHAT_PROCESS_TIMEOUT_MS || 60_000));
 const CHAT_OUTPUT_TIMEOUT_BUFFER_MS = Math.max(
   5_000,
@@ -66,10 +70,31 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 };
 
+const ACTIVE_OUTPUT_STATUSES = ['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING', 'GENERATING', 'STREAMING'];
+
+const resolveTaskStatusFromOutputs = (outputs: any[]): string => {
+  const statuses = outputs.map((output) => String(output?.status || '').trim().toUpperCase());
+  if (statuses.some((status) => ACTIVE_OUTPUT_STATUSES.includes(status))) return 'IN_PROCESS';
+  if (statuses.some((status) => status === 'FAILED')) return 'FAILED';
+  if (statuses.every((status) => status === 'CANCEL')) return 'CANCEL';
+  return 'FINISHED';
+};
+
+const syncTaskStatusFromOutputs = async (taskId: string) => {
+  const outputs = await queryList(KrdGenTaskOutput, { task_id: taskId });
+  if (!outputs.length) return;
+  await put<IGenTaskSer>(
+    KrdGenTask,
+    { id: taskId },
+    { status: resolveTaskStatusFromOutputs(outputs), update_by: 'JOB' },
+  );
+};
+
 const execute = async (
   type: string,
   taskId: string,
   callback: (outputId: number, metadata: string) => Promise<AviaryCallbackFunctionRes>,
+  options: ExecuteOptions = {},
 ) => {
   console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] job start, type: ${type}, taskId: ${taskId}`);
 
@@ -78,7 +103,7 @@ const execute = async (
     console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] error happen, task [${taskId}] not exist!`);
     await put<IGenTaskOutputSer>(
       KrdGenTaskOutput,
-      { task_id: taskId, status: { [Op.in]: ['WAIT', 'IN_PROCESS'] } } as any,
+      { task_id: taskId, status: { [Op.in]: ACTIVE_OUTPUT_STATUSES } } as any,
       {
         status: 'FAILED',
         content: 'Task not found',
@@ -93,11 +118,62 @@ const execute = async (
     );
     return;
   }
-  if (task.status !== 'WAIT') {
+  if (!['WAIT', 'QUEUED', 'IN_PROCESS', 'RETRIEVING', 'GENERATING', 'STREAMING', 'PROCESSING'].includes(String(task.status || ''))) {
     console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] stop! task [${taskId}] status is [${task.status}]`);
   }
 
   await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: 'IN_PROCESS', update_by: 'JOB' });
+
+  if (options.outputId) {
+    const [output] = await queryList(KrdGenTaskOutput, { id: { [Op.eq]: options.outputId }, task_id: taskId });
+    if (!output) {
+      console.warn(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] output [${options.outputId}] not found for task [${taskId}]`);
+      await syncTaskStatusFromOutputs(taskId);
+      return;
+    }
+    const currentStatus = String(output.status || '').trim().toUpperCase();
+    if (currentStatus === 'CANCEL') {
+      await syncTaskStatusFromOutputs(taskId);
+      return;
+    }
+
+    const timeoutMs = resolveOutputProcessTimeoutMs(type);
+    try {
+      await withTimeout(
+        callback(Number(output.id), String(output.metadata || '')),
+        timeoutMs,
+        `Task ${taskId} output ${output.id}`,
+      );
+    } catch (error: any) {
+      const reason = error?.message || String(error);
+      const cancelled =
+        String(reason || '').toLowerCase().includes('cancel') ||
+        String(reason || '').toLowerCase().includes('abort');
+      if (cancelled) {
+        await syncTaskStatusFromOutputs(taskId);
+        console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] job cancelled, type: ${type}, taskId: ${taskId}, outputId: ${output.id}`);
+        return;
+      }
+      if (type === 'CHAT') {
+        const fallbackLanguage = resolveChatFallbackLanguage(output.metadata);
+        const safeContent = buildChatFallbackContent(fallbackLanguage);
+        await put<IGenTaskOutputSer>(
+          KrdGenTaskOutput,
+          { id: output.id },
+          { status: 'FINISHED', content: safeContent, update_by: 'JOB' },
+        );
+      } else {
+        await put<IGenTaskOutputSer>(
+          KrdGenTaskOutput,
+          { id: output.id },
+          { status: 'FAILED', content: `Processing failed: ${reason}`, update_by: 'JOB' },
+        );
+      }
+    }
+    await syncTaskStatusFromOutputs(taskId);
+    console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] job end, type: ${type}, taskId: ${taskId}`);
+    return;
+  }
 
   let outputs = await queryList(KrdGenTaskOutput, { task_id: taskId, status: 'WAIT' });
 

@@ -2,6 +2,28 @@
 import Queue from 'bull';
 import { config } from '@config/index';
 
+export type ChatQueueJobPayload = {
+  taskId: string;
+  outputId: number;
+  sort?: number;
+  userId?: number;
+  userName?: string;
+  requestId: string;
+  traceId?: string;
+  enqueuedAt: number;
+  maxTokens: number;
+};
+
+export class ChatQueueOverloadedError extends Error {
+  queueDepth: number;
+
+  constructor(message: string, queueDepth: number) {
+    super(message);
+    this.name = 'ChatQueueOverloadedError';
+    this.queueDepth = queueDepth;
+  }
+}
+
 const commonQueueOptions = {
   redis: {
     port: config.Redis.port || Number(process.env.REDIS_PORT) || 6379,
@@ -36,8 +58,36 @@ const fileUploadQueue = new Queue('fileUpload', {
   ...commonQueueOptions,
 });
 
-const addChatGenTask = async (taskId: string) => {
-  await chatGenQueue.add({ taskId });
+const CHAT_QUEUE_MAX_DEPTH = Math.max(0, Number(process.env.CHAT_QUEUE_MAX_DEPTH || 256));
+
+export const getChatQueueStats = async () => {
+  const counts = await chatGenQueue.getJobCounts();
+  return {
+    waiting: Number(counts.waiting || 0),
+    active: Number(counts.active || 0),
+    delayed: Number(counts.delayed || 0),
+    completed: Number(counts.completed || 0),
+    failed: Number(counts.failed || 0),
+    queueDepth:
+      Number(counts.waiting || 0) +
+      Number(counts.active || 0) +
+      Number(counts.delayed || 0),
+  };
+};
+
+const addChatGenTask = async (payload: ChatQueueJobPayload) => {
+  const stats = await getChatQueueStats();
+  if (CHAT_QUEUE_MAX_DEPTH > 0 && stats.queueDepth >= CHAT_QUEUE_MAX_DEPTH) {
+    throw new ChatQueueOverloadedError(
+      `Chat queue overloaded (queueDepth=${stats.queueDepth}, maxDepth=${CHAT_QUEUE_MAX_DEPTH})`,
+      stats.queueDepth,
+    );
+  }
+  const priority = payload.maxTokens <= 384 ? 1 : payload.maxTokens <= 768 ? 3 : 6;
+  await chatGenQueue.add(payload, {
+    jobId: `${payload.taskId}:${payload.outputId}:${payload.requestId}`,
+    priority,
+  });
 };
 
 const addSummaryGenTask = async (taskId: string) => {

@@ -26,6 +26,7 @@ import { persistChatTurn } from '@/service/historyPersistenceService';
 import { createNotification } from '@/service/notificationService';
 import { normalizeDepartmentCode, normalizeRoleCode } from '@/service/rbac';
 import { recordContentFlagEvent, recordQueryEvent } from '@/service/analyticsService';
+import { consumeInferenceMetrics } from '@/service/inferenceScheduler';
 import {
   buildFallbackWildcardQuery,
   canonicalizeRagQuery,
@@ -3588,7 +3589,15 @@ export async function getDualLanguageOutput(japaneseAnswer: string): Promise<str
 }
 
 export const chatGenProcess = async (job) => {
-  const { taskId } = job.data;
+  const {
+    taskId,
+    outputId: requestedOutputId,
+    requestId,
+    traceId,
+    userId: queuedUserId,
+    userName: queuedUserName,
+    enqueuedAt,
+  } = job.data || {};
   const type = 'CHAT';
   const mode: string = (config.RAG.mode || ['splitByPage'])[0];
   let ragProcessor: { search: (prompt: string) => Promise<string> | string } | null = null;
@@ -3604,14 +3613,18 @@ export const chatGenProcess = async (job) => {
       startTime: Date.now(),
       endTime: 0,
       totalTime: 0,
+      workerQueueTime: Math.max(0, Date.now() - Number(enqueuedAt || Date.now())),
+      inferenceQueueTime: 0,
       ragUsed: false,
       ragTime: 0,
       llmTime: 0,
+      generationTime: 0,
       translationTime: 0,
       queryTranslationTime: 0,
       titleTime: 0,
       inputTokens: 0,
       outputTokens: 0,
+      tokensPerSecond: 0,
       modelUsed: config.Models.chatModel.name,
       userLanguage: 'unknown',
       fileCount: 0,
@@ -3643,6 +3656,8 @@ export const chatGenProcess = async (job) => {
       recoveryBudgetSpentMs: 0,
       recoveryBudgetMaxCalls: RAG_RECOVERY_MAX_CALLS,
       recoveryBudgetMaxMs: RAG_RECOVERY_MAX_MS,
+      requestId: String(requestId || ''),
+      traceId: String(traceId || ''),
     };
     const localCacheStatsStart = getLocalMemoryCacheStats();
     const recoveryBudget = createRecoveryBudget();
@@ -3658,7 +3673,9 @@ export const chatGenProcess = async (job) => {
       kpiMetrics.recoveryBudgetSpentMs = recoveryBudget.spentMs;
     };
 
-    const activeOutputStatuses = new Set(['WAIT', 'IN_PROCESS', 'PROCESSING']);
+    // Outputs can legitimately remain QUEUED until the worker publishes the first live update,
+    // so treat all pre-terminal in-flight states as writable.
+    const activeOutputStatuses = new Set(['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING']);
     let outputWritesAborted = false;
     const canMutateOutput = async (): Promise<boolean> => {
       if (outputWritesAborted) return false;
@@ -3666,6 +3683,7 @@ export const chatGenProcess = async (job) => {
       const latestStatus = String(latestOutput?.status || '').trim().toUpperCase();
       if (!activeOutputStatuses.has(latestStatus)) {
         outputWritesAborted = true;
+        console.warn(`[CHAT PROCESS] Output ${outputId} is no longer mutable (status=${latestStatus || 'UNKNOWN'}).`);
         return false;
       }
       return true;
@@ -3703,6 +3721,10 @@ export const chatGenProcess = async (job) => {
     };
 
     const data = parseMetadataSafe(metadata);
+    if (data.userId == null && Number.isFinite(Number(queuedUserId))) data.userId = Number(queuedUserId);
+    if (!data.userName && queuedUserName) data.userName = String(queuedUserName);
+    if (!data.requestId && requestId) data.requestId = String(requestId);
+    if (!data.traceId && traceId) data.traceId = String(traceId);
     const departmentCode = normalizeDepartmentCode(data.departmentCode);
     const roleCode = normalizeRoleCode(data.roleCode);
     const isSuperAdmin = roleCode === 'SUPER_ADMIN';
@@ -3823,7 +3845,7 @@ export const chatGenProcess = async (job) => {
       return { outputId, isOk: true, content };
     }
 
-    await publishLiveStatus('Retrieving documents...', 'IN_PROCESS');
+    await publishLiveStatus('Retrieving documents...', 'RETRIEVING');
 
     const outputs = await queryList(KrdGenTaskOutput, {
       task_id: { [Op.eq]: taskId },
@@ -7025,6 +7047,15 @@ export const chatGenProcess = async (job) => {
     console.log(
       `[CHAT PROCESS] Recovery budget: calls=${kpiMetrics.recoveryBudgetCalls}/${kpiMetrics.recoveryBudgetMaxCalls}, spentMs=${kpiMetrics.recoveryBudgetSpentMs}/${kpiMetrics.recoveryBudgetMaxMs}`,
     );
+    const inferenceMetrics = consumeInferenceMetrics(Number(outputId));
+    if (inferenceMetrics) {
+      kpiMetrics.inferenceQueueTime = Number(inferenceMetrics.queueMs || 0);
+      kpiMetrics.generationTime = Number(inferenceMetrics.generationMs || kpiMetrics.llmTime || 0);
+      kpiMetrics.tokensPerSecond = Number(inferenceMetrics.tokensPerSecond || 0);
+      if (!kpiMetrics.outputTokens && Number.isFinite(Number(inferenceMetrics.outputTokens || 0))) {
+        kpiMetrics.outputTokens = Number(inferenceMetrics.outputTokens || 0);
+      }
+    }
     console.log(`[CHAT PROCESS] KPI metrics:`, kpiMetrics);
 
     try {
@@ -7062,6 +7093,10 @@ export const chatGenProcess = async (job) => {
         metadata: {
           ragMs: kpiMetrics.ragTime,
           llmMs: kpiMetrics.llmTime,
+          queueWaitMs: kpiMetrics.workerQueueTime,
+          inferenceQueueMs: kpiMetrics.inferenceQueueTime,
+          generationMs: kpiMetrics.generationTime,
+          tokensPerSecond: kpiMetrics.tokensPerSecond,
           retrievalMs: organicRetrievalMs,
           translationMs: kpiMetrics.translationTime,
           queryTranslationMs: kpiMetrics.queryTranslationTime,
@@ -7100,6 +7135,9 @@ export const chatGenProcess = async (job) => {
           intentLabel: queryIntent.label,
           intentConfidence: Number(queryIntent.confidence.toFixed(3)),
           topRelaxStepUsed: topRelaxStepUsed || null,
+          requestId: kpiMetrics.requestId,
+          traceId: kpiMetrics.traceId,
+          failureReason: inferenceMetrics?.failureReason || null,
         },
       });
       await recordContentFlagEvent({
@@ -7124,5 +7162,7 @@ export const chatGenProcess = async (job) => {
     return { outputId, isOk, content };
   };
 
-  await execute(type, taskId, callAviary);
+  await execute(type, taskId, callAviary, {
+    outputId: Number(requestedOutputId || 0) || undefined,
+  });
 };

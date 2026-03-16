@@ -1,4 +1,10 @@
-import { addChatGenTask, addSummaryGenTask, addTranslateGenTask, addFileUploadTask } from '@/queue/queue';
+import {
+  addChatGenTask,
+  addSummaryGenTask,
+  addTranslateGenTask,
+  addFileUploadTask,
+  type ChatQueueJobPayload,
+} from '@/queue/queue';
 import { add, put, queryById } from '@/utils/mapper';
 import { formatHumpLineTransfer } from '@/utils';
 import KrdGenTask from '@/mysql/model/gen_task.model';
@@ -10,6 +16,7 @@ import { ITranslateTaskFormData, translateTask } from '@/service/translateTask';
 import { chatTask, IChatTaskFormData } from '../service/chatTask';
 import { ISummaryTaskFormData, summaryTask } from '../service/summaryTask';
 import { fileUploadTask, IFileUploadTaskFormData } from '../service/fileUploadTask';
+import { Op } from 'sequelize';
 
 export type PrepareOutput = {
   sort?: number;
@@ -29,9 +36,6 @@ type GenTaskResponse = {
 
 const enqueue = async (type: string, taskId: string) => {
   switch (type) {
-    case 'CHAT':
-      await addChatGenTask(taskId);
-      break;
     case 'SUMMARY':
       await addSummaryGenTask(taskId);
       break;
@@ -43,6 +47,26 @@ const enqueue = async (type: string, taskId: string) => {
       break;
     default:
   }
+};
+
+const mergeJson = (raw: string | undefined, patch: Record<string, unknown>): string => {
+  const base = (() => {
+    try {
+      const parsed = JSON.parse(String(raw || '{}'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+  return JSON.stringify({ ...base, ...patch });
+};
+
+const estimateChatMaxTokens = (prompt: string): number => {
+  const text = String(prompt || '').trim();
+  if (!text) return 256;
+  if (text.length <= 180) return 320;
+  if (text.length <= 600) return 640;
+  return 1024;
 };
 
 export const handleAddGenTask = async (
@@ -57,7 +81,7 @@ export const handleAddGenTask = async (
     id: taskId,
     createBy: userName,
     updateBy: userName,
-    status: 'WAIT',
+    status: addContent.type === 'CHAT' ? 'QUEUED' : 'WAIT',
   };
 
   let outputs: PrepareOutput[] = [];
@@ -109,9 +133,9 @@ export const handleAddGenTask = async (
   let task: IGenTaskSer | undefined;
 
   if (needUpdate && !isLongTextGenTask) {
-    await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: 'WAIT', form_data: '新しい会話' });
+    await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: addContent.type === 'CHAT' ? 'QUEUED' : 'WAIT', form_data: '新しい会話' });
   } else if (isExplainTask || (isLongTextGenTask && needUpdate)) {
-    await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: 'WAIT' });
+    await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: addContent.type === 'CHAT' ? 'QUEUED' : 'WAIT' });
   } else {
     let newAddTaskContent: IGenTaskSer;
 
@@ -166,31 +190,68 @@ export const handleAddGenTask = async (
   }
 
   const results: Promise<IGenTaskOutputSer>[] = [];
+  const chatQueueJobs: ChatQueueJobPayload[] = [];
   for (const output of outputs) {
+    const requestId = nanoid();
+    const traceId = nanoid();
+    const outputMetadata = addContent.type === 'CHAT'
+      ? mergeJson(output.metadata, {
+          taskId,
+          requestId,
+          traceId,
+          queuedAt: new Date().toISOString(),
+          userId,
+          userName,
+          departmentCode,
+        })
+      : output.metadata;
     const addTaskOutputContent = {
       taskId,
-      metadata: output.metadata,
+      metadata: outputMetadata,
       departmentCode,
-      status: 'WAIT',
+      status: addContent.type === 'CHAT' ? 'QUEUED' : 'WAIT',
       sort: output.sort,
       createBy: userName,
       updateBy: userName,
     };
     const newAddTaskOutputContent =
       formatHumpLineTransfer(addTaskOutputContent, 'line') as IGenTaskOutputSer;
-    results.push(add<IGenTaskOutputSer>(KrdGenTaskOutput, newAddTaskOutputContent));
+    results.push(
+      add<IGenTaskOutputSer>(KrdGenTaskOutput, newAddTaskOutputContent).then((created) => {
+        if (addContent.type === 'CHAT' && created?.id) {
+          const prompt = String((addContent.formData as IChatTaskFormData)?.prompt || '');
+          chatQueueJobs.push({
+            taskId,
+            outputId: Number(created.id),
+            sort: Number(output.sort || 0),
+            userId,
+            userName,
+            requestId,
+            traceId,
+            enqueuedAt: Date.now(),
+            maxTokens: estimateChatMaxTokens(prompt),
+          });
+        }
+        return created;
+      }),
+    );
   }
   await Promise.all(results);
 
   try {
-    await enqueue(addContent.type, taskId);
+    if (addContent.type === 'CHAT') {
+      await Promise.all(chatQueueJobs.map((job) => addChatGenTask(job)));
+      await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: 'QUEUED', update_by: 'JOB' });
+    } else {
+      await enqueue(addContent.type, taskId);
+    }
   } catch (e: any) {
     const reason = e?.message || String(e);
     console.error(`[GenTask] Failed to enqueue ${addContent.type} task ${taskId}:`, reason);
     await put<IGenTaskSer>(KrdGenTask, { id: taskId }, { status: 'FAILED', update_by: 'JOB' });
     await put<IGenTaskOutputSer>(
       KrdGenTaskOutput,
-      { task_id: taskId, status: 'WAIT' } as any,
+      { task_id: taskId, status: { [Op.in]: ['WAIT', 'QUEUED'] } } as any,
       { status: 'FAILED', content: `Queue enqueue failed: ${reason}`, update_by: 'JOB' },
     );
     throw new Error(`Queue enqueue failed: ${reason}`);

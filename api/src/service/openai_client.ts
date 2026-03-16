@@ -28,6 +28,8 @@ export interface ChatCompletionOptions {
   timeout_ms?: number;
   extra_body?: Record<string, any>;
   allow_reasoning_fallback?: boolean;
+  abort_signal?: AbortSignal;
+  request_id?: string;
 }
 
 export interface ChatCompletionResponse {
@@ -388,6 +390,8 @@ class OpenAIClient {
       timeout_ms = undefined,
       extra_body = undefined,
       allow_reasoning_fallback = false,
+      abort_signal = undefined,
+      request_id = undefined,
     } = options;
 
     try {
@@ -400,8 +404,10 @@ class OpenAIClient {
         headers: {
           ...this.buildAuthHeaders(),
           'Content-Type': 'application/json',
+          ...(request_id ? { 'x-request-id': request_id } : {}),
         },
         timeout: Number(timeout_ms || this.timeout),
+        signal: abort_signal,
       };
       const maxRequestAttempts = this.getGenerateMaxAttempts();
       const retryDelayMs = this.getGenerateRetryDelayMs();
@@ -566,6 +572,8 @@ class OpenAIClient {
             top_p,
             response_format,
             extra_body,
+            abort_signal,
+            request_id,
           })) {
             streamed += chunk;
           }
@@ -601,6 +609,8 @@ class OpenAIClient {
       response_format = undefined,
       timeout_ms = undefined,
       extra_body = undefined,
+      abort_signal = undefined,
+      request_id = undefined,
     } = options;
 
     const payload = {
@@ -617,6 +627,7 @@ class OpenAIClient {
     const streamTimeoutMs = Number(timeout_ms || this.timeout);
     const controller = new AbortController();
     let timeoutId: NodeJS.Timeout | null = null;
+    let abortListener: (() => void) | null = null;
     const refreshTimeout = () => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
@@ -625,6 +636,14 @@ class OpenAIClient {
       }, streamTimeoutMs);
     };
     refreshTimeout();
+    if (abort_signal) {
+      abortListener = () => controller.abort((abort_signal as any)?.reason);
+      if (abort_signal.aborted) {
+        controller.abort((abort_signal as any)?.reason);
+      } else {
+        abort_signal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
 
     try {
       if (this.verbose) {
@@ -635,6 +654,7 @@ class OpenAIClient {
       const headers: Record<string,string> = {
         'Content-Type': 'application/json',
         ...this.buildAuthHeaders(),
+        ...(request_id ? { 'x-request-id': request_id } : {}),
       };
 
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -778,9 +798,17 @@ class OpenAIClient {
       }
     } catch (error: any) {
       if (timeoutId) clearTimeout(timeoutId);
+      if (abort_signal && abortListener) {
+        abort_signal.removeEventListener('abort', abortListener);
+      }
       const errorMessage = this.formatErrorMessage(error);
       console.error(`[OpenAIClient] Stream failed: ${errorMessage}`);
       throw new Error(`OpenAI streaming error: ${errorMessage}`);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (abort_signal && abortListener) {
+        abort_signal.removeEventListener('abort', abortListener);
+      }
     }
   }
 

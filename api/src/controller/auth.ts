@@ -35,6 +35,7 @@ export const authWhites = [
   '/user/auth/callback',
   '/user/auth/exchange',
   '/api/auth/login',
+  '/api/auth/sso/microsoft',
   '/api/auth/sso/microsoft/mock',
 ];
 

@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { User, AlertCircle, Globe, Moon, Sun } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertCircle, Globe, Moon, Sun } from 'lucide-react';
 import { User as UserType } from '../../types';
 import { useLang } from '../../context/LanguageContext';
 import { useTheme } from '../../context/ThemeContext';
-import { loginWithMicrosoftMock } from '../../api/auth';
+import { loginWithMicrosoft } from '../../api/auth';
 import { getBrandDisplayName } from '../../lib/branding';
 import BrandLogo from '../ui/BrandLogo';
+import { beginMicrosoftLoginRedirect, completeMicrosoftLoginRedirect, hasMicrosoftSsoConfig, type MicrosoftUserInfo } from '../../auth/microsoftAuth';
 
 interface LoginPageProps {
   onLogin: (user: UserType) => void;
@@ -16,55 +17,99 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const { theme, toggleTheme } = useTheme();
   const brandName = getBrandDisplayName(lang);
 
-  const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleMicrosoftLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const finishLogin = useCallback(async (accessToken: string, userInfo: MicrosoftUserInfo) => {
+    const response = await loginWithMicrosoft(accessToken);
+    if (response.code === 200 && response.result?.token) {
+      const roleCode = response.result.roleCode || 'USER';
+      const departmentCode = response.result.departmentCode || 'HR';
+      const isAdmin =
+        roleCode === 'SUPER_ADMIN' ||
+        roleCode === 'HR_ADMIN' ||
+        roleCode === 'GA_ADMIN' ||
+        roleCode === 'ACC_ADMIN';
+      const departmentName =
+        departmentCode === 'HR'
+          ? 'Human Resources'
+          : departmentCode === 'GA'
+            ? 'General Affairs'
+            : departmentCode === 'ACC'
+              ? 'Accounts'
+              : 'General';
+
+      onLogin({
+        employeeId: response.result.empId || response.result.email || userInfo.mail || userInfo.userPrincipalName,
+        name: response.result.displayName || userInfo.displayName || response.result.email || userInfo.userPrincipalName,
+        department: departmentName,
+        departmentCode,
+        role: isAdmin ? 'admin' : 'user',
+        roleCode,
+        lastLogin: new Date().toISOString(),
+      });
+    } else {
+      setError(response.message || t('login.invalidCredentials'));
+    }
+  }, [onLogin, t]);
+
+  // If we were redirected back from Microsoft, complete the flow automatically.
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const result = await completeMicrosoftLoginRedirect();
+        if (!result || !alive) return;
+
+        setError('');
+        setLoading(true);
+        await finishLogin(result.accessToken, result.userInfo);
+      } catch (err) {
+        if (!alive) return;
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('access_denied')) {
+          setError(t('login.ssoCancelled', undefined, 'Microsoft sign-in was cancelled.'));
+        } else if (message.includes('sso_config_missing')) {
+          setError(t('login.ssoConfigMissing', undefined, 'Microsoft SSO is not configured yet. Add the Azure values in ui-2/.env.'));
+        } else {
+          setError(t('login.connectionError'));
+        }
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [finishLogin, t]);
+
+  const handleMicrosoftLogin = async () => {
     setError('');
 
-    if (!email.trim()) {
-      setError(t('login.pleaseEnterEmail'));
-      return;
-    }
-
     setLoading(true);
-
+    console.log("Test")
     try {
-      // NOTE: This is a temporary mock login until Entra ID is configured.
-      const response = await loginWithMicrosoftMock(email.trim());
-      if (response.code === 200 && response.result?.token) {
-        const roleCode = response.result.roleCode || 'USER';
-        const departmentCode = response.result.departmentCode || 'HR';
-        const isAdmin =
-          roleCode === 'SUPER_ADMIN' ||
-          roleCode === 'HR_ADMIN' ||
-          roleCode === 'GA_ADMIN' ||
-          roleCode === 'ACC_ADMIN';
-        const departmentName =
-          departmentCode === 'HR'
-            ? 'Human Resources'
-            : departmentCode === 'GA'
-              ? 'General Affairs'
-              : departmentCode === 'ACC'
-                ? 'Accounts'
-                : 'General';
-
-        onLogin({
-          employeeId: response.result.empId || email.trim(),
-          name: response.result.empId || email.trim(),
-          department: departmentName,
-          departmentCode,
-          role: isAdmin ? 'admin' : 'user',
-          roleCode,
-          lastLogin: new Date().toISOString(),
-        });
-      } else {
-        setError(response.message || t('login.invalidCredentials'));
+      if (!hasMicrosoftSsoConfig()) {
+        setError(t('login.ssoConfigMissing', undefined, 'Microsoft SSO is not configured yet. Add the Azure values in ui-2/.env.'));
+        return;
       }
-    } catch {
-      setError(t('login.connectionError'));
+
+      // Redirect (no popup) is the most reliable across browsers and embedded environments.
+      await beginMicrosoftLoginRedirect();
+    } catch (err) {
+      console.log(err)
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('popup_blocked')) {
+        setError(t('login.popupBlocked', undefined, 'Popup was blocked. Please allow popups and try again.'));
+      } else if (message.includes('user_cancelled')) {
+        setError(t('login.ssoCancelled', undefined, 'Microsoft sign-in was cancelled.'));
+      } else if (message.includes('sso_config_missing')) {
+        setError(t('login.ssoConfigMissing', undefined, 'Microsoft SSO is not configured yet. Add the Azure values in ui-2/.env.'));
+      } else {
+        setError(t('login.connectionError'));
+      }
     } finally {
       setLoading(false);
     }
@@ -167,7 +212,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               </p>
             </div>
 
-            <form onSubmit={handleMicrosoftLogin} className="space-y-5">
+            <div className="space-y-5">
               {error && (
                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 flex gap-2">
                   <AlertCircle className="w-5 h-5 text-red-500" />
@@ -175,34 +220,19 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 </div>
               )}
 
-              {/* Email (temporary until Entra ID is wired) */}
-              <div>
-                <label className="block mb-2 text-foreground dark:text-dark-text">
-                  {t('login.email')}
-                </label>
-                <div className="relative">
-                  <div className="input-icon-absolute pointer-events-none">
-                    <User className="w-5 h-5" />
-                  </div>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder={t('login.emailPlaceholder')}
-                    className="w-full input-with-icon py-3 bg-surface dark:bg-[#0f1724] border rounded-xl text-foreground dark:text-dark-text"
-                    autoComplete="email"
-                  />
-                </div>
-              </div>
+              <p className="text-sm text-center text-muted dark:text-dark-text-muted">
+                {t('login.microsoftSignInHint', undefined, 'Use your Microsoft work account to continue.')}
+              </p>
 
               <button
-                type="submit"
+                type="button"
+                onClick={handleMicrosoftLogin}
                 disabled={loading}
                 className="w-full py-3 btn-primary rounded-xl font-semibold disabled:opacity-50"
               >
                 {loading ? t('common.loading') : t('login.microsoftSignInButton')}
               </button>
-            </form>
+            </div>
           </div>
         </div>
       </div>

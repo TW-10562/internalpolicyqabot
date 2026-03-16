@@ -13,6 +13,8 @@ export interface LoginResponse {
     token: string;
     userId?: number;
     empId?: string;
+    email?: string;
+    displayName?: string;
     roleCode?: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
     departmentCode?: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   };
@@ -58,8 +60,19 @@ export async function login(params: LoginParams): Promise<LoginResponse> {
   return response;
 }
 
-// Temporary Microsoft SSO (mock) login.
-// TODO(EntraID): Replace this with a real Microsoft Entra ID OAuth2/OIDC flow.
+export async function loginWithMicrosoft(accessToken: string): Promise<LoginResponse> {
+  const response = await request<LoginResponse>('/api/auth/sso/microsoft', {
+    method: 'POST',
+    data: { accessToken },
+  });
+
+  if (response.code === 200 && response.result?.token) {
+    setToken(response.result.token);
+  }
+
+  return response;
+}
+
 export async function loginWithMicrosoftMock(email: string): Promise<LoginResponse> {
   const response = await request<LoginResponse>('/api/auth/sso/microsoft/mock', {
     method: 'POST',

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Microsoft Sign-In</title>
+  </head>
+  <body style="font-family: Arial, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#0f1724; color:#fff;">
+    <div>Completing Microsoft sign-in…</div>
+    <script>
+      (function () {
+        try {
+          var payload = {
+            type: 'microsoft-oauth-response',
+            search: window.location.search,
+            hash: window.location.hash
+          };
+
+          // Popup flow: send params back to the opener and close.
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(payload, window.location.origin);
+            return;
+          }
+
+          // Redirect flow: persist params for the SPA to consume, then navigate back.
+          try {
+            window.sessionStorage.setItem('microsoft_sso_redirect_response', payload.search || '');
+          } catch (e) {
+            // If storage is blocked, the SPA will fail to complete sign-in; nothing else we can do here.
+          }
+
+          // If the app is hosted under a subpath, return to that base path.
+          var basePath = (window.location.pathname || '/').replace(/\/auth-popup\.html$/, '/') || '/';
+          window.location.replace(basePath);
+        } finally {
+          // Browsers only allow close() for windows opened by script (popup flow).
+          try { window.close(); } catch (e) {}
+        }
+      })();
+    </script>
+  </body>
+</html>

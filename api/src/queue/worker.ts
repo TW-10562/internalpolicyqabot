@@ -12,6 +12,7 @@ import { queryPage } from '@/utils/mapper';
 import Tag from '@/mysql/model/file_tag.model';
 import { postNewTag } from '@/service/file';
 import { initializeZSet } from '@/utils/redis';
+import { recoverStaleChatOutputs } from '@/service/chatRecovery';
 import { chatGenProcess } from './chatGenProcess';
 import summaryGenProcess from './summaryGenProcess';
 import translateGenProcess from './translateGenProcess';
@@ -51,9 +52,16 @@ const withQueueTiming =
 initializeZSet().catch((error) => {
   console.error('Failed to initialize Ollama endpoint set in worker:', error);
 });
+recoverStaleChatOutputs().catch((error) => {
+  console.error('Failed to recover stale chat outputs:', error);
+});
 
-const defaultConcurrency = parsePositiveInt(process.env.QUEUE_CONCURRENCY, 1);
-const chatConcurrency = parsePositiveInt(process.env.CHAT_QUEUE_CONCURRENCY, defaultConcurrency);
+const defaultConcurrency = parsePositiveInt(process.env.QUEUE_CONCURRENCY, 4);
+const defaultChatConcurrency = Math.max(
+  defaultConcurrency,
+  parsePositiveInt(process.env.VLLM_MAX_IN_FLIGHT, 4) * 2,
+);
+const chatConcurrency = parsePositiveInt(process.env.CHAT_QUEUE_CONCURRENCY, defaultChatConcurrency);
 const summaryConcurrency = parsePositiveInt(process.env.SUMMARY_QUEUE_CONCURRENCY, defaultConcurrency);
 const translateConcurrency = parsePositiveInt(process.env.TRANSLATE_QUEUE_CONCURRENCY, defaultConcurrency);
 const fileUploadConcurrency = parsePositiveInt(process.env.FILEUPLOAD_QUEUE_CONCURRENCY, defaultConcurrency);
