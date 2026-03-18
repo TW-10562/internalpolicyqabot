@@ -217,7 +217,7 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
   })();
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Hide internal tab bar when controlled by external sidebar */}
       {!controlledTab && (
         <div className="flex border-b border-default bg-surface dark:bg-dark-bg-primary transition-colors overflow-x-auto">
@@ -345,7 +345,7 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
         </div>
       )}
 
-      <div key={activeTab} className="flex-1 overflow-y-auto p-4 mac-tab-animate bg-app transition-colors">
+      <div key={activeTab} className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 mac-tab-animate bg-app transition-colors">
         {activeTab === 'documents' && (
           <>
             <DocumentUpload

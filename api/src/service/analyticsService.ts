@@ -2,6 +2,8 @@ import { Op, Sequelize } from 'sequelize';
 import AnalyticsEvent from '@/mysql/model/analytics_event.model';
 import User from '@/mysql/model/user.model';
 import File from '@/mysql/model/file.model';
+import KrdGenTask from '@/mysql/model/gen_task.model';
+import KrdGenTaskOutput from '@/mysql/model/gen_task_output.model';
 import { analyzeModeration, ModerationReason } from '@/service/contentModeration';
 import { normalizeDepartmentCode } from '@/service/rbac';
 import { noEvidenceReply } from '@/rag/generation/promptBuilder';
@@ -151,6 +153,26 @@ type DepartmentAnalyticsScope = {
   userNames: string[];
 };
 
+type QueryAnalyticsRow = {
+  user_id?: number | null;
+  user_name?: string | null;
+  status?: string | null;
+  answer_text?: string | null;
+  response_ms?: number | null;
+  metadata_json?: string | null;
+};
+
+type ScopedChatOutputRow = {
+  id?: number | null;
+  task_id?: string | null;
+  metadata?: string | null;
+  content?: string | null;
+  status?: string | null;
+  department_code?: string | null;
+  task_create_by?: string | null;
+  task_department_code?: string | null;
+};
+
 const resolveDepartmentAnalyticsScope = async (departmentCode?: string): Promise<DepartmentAnalyticsScope | null> => {
   const normalizedDepartment = normalizeStoredDepartmentCode(departmentCode);
   if (!normalizedDepartment) return null;
@@ -198,6 +220,127 @@ const buildScopedEventWhere = (baseWhere: Record<string, unknown>, scope: Depart
       ...(scope.userNames.length > 0 ? [{ user_name: { [Op.in]: scope.userNames } }] : []),
     ],
   };
+};
+
+const loadScopedChatOutputs = async (
+  startAt: Date | null,
+  scope: DepartmentAnalyticsScope | null,
+  includeContent = false,
+): Promise<ScopedChatOutputRow[]> => {
+  const outputWhere: any = {
+    status: { [Op.in]: ['FINISHED', 'FAILED'] },
+  };
+  if (startAt) outputWhere.created_at = { [Op.gte]: startAt };
+
+  const outputAttributes = ['id', 'task_id', 'metadata', 'status', 'department_code'];
+  if (includeContent) outputAttributes.push('content');
+
+  const outputRows = await KrdGenTaskOutput.findAll({
+    attributes: outputAttributes as any,
+    where: outputWhere,
+    raw: true,
+  }) as any[];
+  if (outputRows.length === 0) return [];
+
+  const taskIds = Array.from(
+    new Set(
+      outputRows
+        .map((row) => String(row.task_id || '').trim())
+        .filter(Boolean),
+    ),
+  );
+  if (taskIds.length === 0) return [];
+
+  const tasks = await KrdGenTask.findAll({
+    attributes: ['id', 'type', 'create_by', 'department_code'],
+    where: {
+      id: { [Op.in]: taskIds },
+      type: 'CHAT',
+      ...(scope ? { department_code: scope.normalizedDepartment } : {}),
+    } as any,
+    raw: true,
+  }) as any[];
+  if (tasks.length === 0) return [];
+
+  const taskById = new Map<string, any>(
+    tasks.map((row) => [String(row.id || ''), row]),
+  );
+
+  return outputRows
+    .filter((row) => taskById.has(String(row.task_id || '')))
+    .map((row) => {
+      const task = taskById.get(String(row.task_id || ''));
+      return {
+        ...row,
+        task_create_by: String(task?.create_by || '').trim() || null,
+        task_department_code: String(task?.department_code || '').trim() || null,
+      };
+    });
+};
+
+const countScopedChatOutputs = async (
+  startAt: Date | null,
+  scope: DepartmentAnalyticsScope | null,
+): Promise<number> => {
+  const rows = await loadScopedChatOutputs(startAt, scope, false);
+  return rows.length;
+};
+
+const reconcileMissingQueryRows = async (
+  startAt: Date,
+  scope: DepartmentAnalyticsScope | null,
+): Promise<QueryAnalyticsRow[]> => {
+  const outputRows = await loadScopedChatOutputs(startAt, scope, true);
+  if (outputRows.length === 0) return [];
+
+  const outputIds = Array.from(
+    new Set(
+      outputRows
+        .map((row) => Number(row.id))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    ),
+  );
+  if (outputIds.length === 0) return [];
+
+  const existingRows = await AnalyticsEvent.findAll({
+    attributes: ['task_output_id'],
+    where: {
+      event_type: QUERY_EVENT,
+      task_output_id: { [Op.in]: outputIds },
+    },
+    raw: true,
+  }) as any[];
+  const existingOutputIds = new Set<number>(
+    existingRows
+      .map((row) => Number(row.task_output_id))
+      .filter((value) => Number.isFinite(value) && value > 0),
+  );
+
+  const supplementalRows: QueryAnalyticsRow[] = [];
+  for (const row of outputRows) {
+    const outputId = Number(row.id);
+    if (!Number.isFinite(outputId) || outputId <= 0 || existingOutputIds.has(outputId)) continue;
+
+    const metadata = parseMetadata(row.metadata);
+    const departmentCode = normalizeStoredDepartmentCode(
+      metadata.departmentCode || metadata.department_code || row.department_code || row.task_department_code,
+    );
+    if (scope && departmentCode !== scope.normalizedDepartment) continue;
+
+    const userId = Number(metadata.userId ?? metadata.user_id);
+    const userName = String(metadata.userName || metadata.user_name || row.task_create_by || '').trim();
+
+    supplementalRows.push({
+      user_id: Number.isFinite(userId) && userId > 0 ? userId : null,
+      user_name: userName || null,
+      status: String(row.status || ''),
+      answer_text: String(row.content || ''),
+      response_ms: null,
+      metadata_json: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+    });
+  }
+
+  return supplementalRows;
 };
 
 export async function recordQueryEvent(input: QueryEventInput) {
@@ -316,12 +459,14 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const fileWhere: any = {};
   if (departmentCode) fileWhere.department_code = normalizeDepartmentCode(departmentCode);
 
-  const [queryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
+  const [allTimeQueryCount, queryRows, supplementalQueryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
+    countScopedChatOutputs(null, departmentScope),
     AnalyticsEvent.findAll({
       attributes: ['user_id', 'user_name', 'status', 'answer_text', 'response_ms', 'metadata_json'],
       where: queryWhere,
       raw: true,
     }),
+    reconcileMissingQueryRows(startAt, departmentScope),
     AnalyticsEvent.findAll({
       attributes: [
         'rag_used',
@@ -358,8 +503,9 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
     }),
   ]);
 
-  const queryRowsAny = queryRows as any[];
-  const totalQueries = queryRowsAny.length;
+  const queryRowsAny = [...(queryRows as any[]), ...supplementalQueryRows];
+  const queriesInRange = queryRowsAny.length;
+  const totalQueries = allTimeQueryCount;
   let failedRequests = 0;
   let successfulResponses = 0;
   const finishedQueryRows = [] as any[];
@@ -393,8 +539,8 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const avgTotalResponseMs = responseMsCount > 0 ? (responseMsTotal / responseMsCount) : 0;
   const avgResponseMs = avgTotalResponseMs;
   const avgResponseSource = 'response';
-  const errorRate = totalQueries > 0 ? Number(((failedRequests / totalQueries) * 100).toFixed(2)) : 0;
-  const responseRate = totalQueries > 0 ? Number(((successfulResponses / totalQueries) * 100).toFixed(2)) : 0;
+  const errorRate = queriesInRange > 0 ? Number(((failedRequests / queriesInRange) * 100).toFixed(2)) : 0;
+  const responseRate = queriesInRange > 0 ? Number(((successfulResponses / queriesInRange) * 100).toFixed(2)) : 0;
 
   const activeUserKeys = new Set<string>();
   for (const row of queryRowsAny) {

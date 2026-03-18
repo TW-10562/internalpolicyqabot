@@ -1,4 +1,6 @@
+# Error Flow (ui-2 + api + worker)
 
+This file documents the main request and error propagation paths for the UI (`ui-2`) and backend (`api`).
 
 ```mermaid
 %% CONTAINER DIAGRAM (C4 L2)
@@ -13,6 +15,7 @@ flowchart TB
     API_controllers["api/src/controller/*.ts"]
     API_services["api/src/service/*.ts\n(chatTask, genTaskService, ragService)"]
     API_utils["api/src/utils/*.ts\n(translation, redis, mapper, logger)"]
+    API_repeatJobs["api/src/scheduler/repeatJobs.ts\n(repeatable jobs)"]
   end
 
   subgraph WorkerEnv
@@ -49,5 +52,72 @@ flowchart TB
   API_services --> RAG_api
   API_services --> File_store
   RAG_services --> File_store
-  API_main -->|Scheduler jobs| api/src/scheduler/repeatJobs.ts
-  
+  API_main -->|register repeatable jobs| API_repeatJobs
+```
+
+```mermaid
+%% CHAT SUBMIT + STREAMING + ERROR PROPAGATION
+sequenceDiagram
+  autonumber
+  participant UI as Browser UI (ui-2)
+  participant Req as UI request() (ui-2/src/api/request.ts)
+  participant API as Koa API (api/src/main.ts)
+  participant Auth as auth + RBAC (api/src/controller/auth.ts)
+  participant Schema as Joi schema (api/src/schemas/index.ts)
+  participant Gen as genTask controller (api/src/controller/genTask.ts)
+  participant Svc as handleAddGenTask (api/src/service/genTaskService.ts)
+  participant DB as DB (gen_task, gen_task_output)
+  participant Q as Bull Queue (api/src/queue/queue.ts)
+  participant Worker as Worker (api/src/queue/chatGenProcess.ts)
+  participant Stream as SSE stream (/api/gen-task-output/stream)
+
+  UI->>Req: POST /api/gen-task {type:"CHAT", formData:{prompt,...}}
+  Req->>API: fetch()
+  API->>Auth: auth + requireScopedAccess
+  alt 401 or 403
+    Auth-->>Req: HTTP 401/403 {code,message}
+    Req-->>UI: returns {code:401,...} and redirects to "/"
+  else allowed
+    API->>Schema: validate body (addEditSchema)
+    alt 400 invalid payload
+      Schema-->>Req: HTTP 400 {code,message}
+      Req-->>UI: returns {code:400,message,...}
+    else OK
+      API->>Gen: getAddMid()
+      Gen->>Svc: handleAddGenTask()
+      Svc->>DB: INSERT gen_task + gen_task_output (status=QUEUED)
+      Svc->>Q: addChatGenTask(job payload)
+      alt enqueue failure or overload
+        Svc->>DB: mark task/output FAILED (and persist reason)
+        Gen-->>Req: HTTP 400 or 429 {code,message}
+        Req-->>UI: returns {code:400/429,message,...}
+      else enqueued
+        Gen-->>Req: HTTP 200 {code:200,result:{taskId,...}}
+        Req-->>UI: returns {code:200,result:{taskId,...}}
+      end
+    end
+  end
+
+  UI->>Req: GET /api/gen-task-output/stream?taskId=...&sort=...
+  Req->>Stream: open EventSource / fetch stream
+  Stream-->>UI: event: status {status:"QUEUED"}
+
+  par worker generates
+    Worker->>DB: set output status PROCESSING + write content
+    Worker-->>Stream: publish chunk/replace/status/done (Redis pubsub)
+    Worker->>DB: terminal status FINISHED or FAILED or CANCEL
+  and stream endpoint
+    Stream->>DB: poll output row as fallback (when pubsub is quiet)
+    Stream-->>UI: event: chunk/replace/status
+    alt terminal output
+      Stream-->>UI: event: done {status:"FINISHED"|"FAILED"|"CANCEL", content}
+    else client disconnect / timeout
+      Stream-->>UI: event: timeout or close
+    end
+  end
+```
+
+## Notes
+
+1. Backend error responses are typically produced via `ctx.app.emit('error', { code, message }, ctx)` and handled by `api/src/utils/errHandler.ts`. The handler now accepts either string or numeric `code`/`status` and will use any valid HTTP `4xx/5xx` code (for example `404`) instead of collapsing to `500`.
+2. The UI API wrapper `ui-2/src/api/request.ts` returns a normalized `{code, message, ...}` shape and generally does not throw; callers are expected to branch on `code` (and `401` triggers a token clear + redirect to `/`).

@@ -116,7 +116,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   };
 
   return (
-    <div className="mac-glass-page h-screen overflow-hidden bg-surface dark:bg-[#0f1724] flex flex-col transition-colors">
+    <div className="mac-glass-page h-[100dvh] min-h-[100dvh] overflow-hidden bg-surface dark:bg-[#0f1724] flex flex-col transition-colors">
 
       {/* ================= AUTOFILL FIXES ================= */}
       <style>{`
@@ -152,24 +152,24 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       `}</style>
 
       {/* ================= HEADER ================= */}
-      <header className="w-full py-4 px-6 bg-surface dark:bg-[#0f1724] border-b border-default dark:border-dark-border" style={{ boxShadow: `inset 0 -1px 0 var(--c-section-divider)` }}>
-        <div className="flex items-center justify-between">
+      <header className="w-full px-3 py-4 sm:px-4 lg:px-6 bg-surface dark:bg-[#0f1724] border-b border-default dark:border-dark-border" style={{ boxShadow: `inset 0 -1px 0 var(--c-section-divider)` }}>
+        <div className="flex items-center justify-between gap-3">
           {/* Logo — pinned to left edge */}
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <BrandLogo
               alt={t('brand.logoAlt', { appName: brandName })}
-              className="h-9 w-auto"
+              className="h-8 w-auto sm:h-9"
             />
-            <h1 className="text-2xl font-bold tracking-tight uppercase text-foreground dark:text-dark-text transition-colors">
+            <h1 className="min-w-0 truncate text-base font-bold tracking-tight uppercase text-foreground dark:text-dark-text transition-colors sm:text-xl lg:text-2xl">
               {t('brand.name', { appName: brandName })}
             </h1>
           </div>
 
           {/* Icons — pinned to right edge */}
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <button
               onClick={toggleTheme}
-              className="p-2.5 rounded-xl transition-colors"
+              className="p-2 rounded-xl transition-colors sm:p-2.5"
             >
               {theme === 'light' ? (
                 <Moon className="w-5 h-5 text-icon-muted" />
@@ -180,7 +180,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
             <button
               onClick={toggleLang}
-              className="p-2.5 rounded-xl hover:bg-surface-alt dark:hover:bg-dark-surface relative"
+              className="p-2 rounded-xl hover:bg-surface-alt dark:hover:bg-dark-surface relative sm:p-2.5"
             >
               <Globe className="w-5 h-5 text-icon-muted dark:text-dark-text-muted" />
               <span
@@ -195,9 +195,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       </header>
 
       {/* ================= LOGIN CARD ================= */}
-      <div className="flex-1 flex items-center justify-center px-4 overflow-hidden">
-        <div className="w-full max-w-md">
-          <div className="bg-surface dark:bg-[#0f1724] rounded-2xl shadow-lg border border-default dark:border-dark-border p-8">
+      <div className="flex-1 overflow-y-auto px-4 py-6 sm:py-10">
+        <div className="mx-auto flex min-h-full w-full max-w-md items-center">
+          <div className="w-full bg-surface dark:bg-[#0f1724] rounded-2xl shadow-lg border border-default dark:border-dark-border p-6 sm:p-8">
 
             <div className="text-center mb-8">
               <BrandLogo

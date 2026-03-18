@@ -1,24 +1,20 @@
 import { Context } from 'koa';
 
 export default function errHandlerFn(err: any, ctx: Context) {
-  let status = 500;
-  switch (err.code) {
-    case '400':
-      status = 400;
-      break;
-    case '401':
-      status = 401;
-      break;
-    case '403':
-      status = 403;
-      break;
-    case '409':
-      status = 409;
-      break;
-    default:
-      status = 500;
-      break;
-  }
+  // Some call sites historically emit strings (`code: '400'`), others numbers.
+  // Normalize and tolerate missing/invalid inputs to avoid crashing the server.
+  const rawCode = err?.code ?? err?.status;
+  const parsedCode =
+    typeof rawCode === 'number'
+      ? rawCode
+      : typeof rawCode === 'string'
+        ? Number.parseInt(rawCode, 10)
+        : NaN;
+
+  const status =
+    Number.isFinite(parsedCode) && parsedCode >= 400 && parsedCode <= 599
+      ? parsedCode
+      : 500;
 
   const message = typeof err === 'string' ? err : err?.message || 'Internal server error';
   const logAuthErrors = process.env.LOG_AUTH_ERRORS === '1';
@@ -28,6 +24,15 @@ export default function errHandlerFn(err: any, ctx: Context) {
     console.warn('Auth/permission response:', { status, message });
   } else if (status !== 401 && status !== 403) {
     console.warn('Handled request error:', { status, message });
+  }
+
+  if (!ctx) {
+    // If someone emitted the event without ctx, we can only log; do not throw.
+    console.error('errHandler invoked without Koa ctx (caller likely used ctx.app.emit without ctx arg).', {
+      status,
+      message,
+    });
+    return;
   }
 
   ctx.status = status;

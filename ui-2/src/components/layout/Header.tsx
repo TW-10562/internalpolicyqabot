@@ -29,27 +29,27 @@ export default function Header({
   const brandName = getBrandDisplayName(lang);
 
   return (
-    <header className="w-full py-3 px-6 bg-surface dark:bg-[#0f1724] border-b border-default transition-colors" style={{ boxShadow: `inset 0 -1px 0 var(--c-section-divider)` }}>
-      <div className="flex items-center justify-between w-full">
+    <header className="w-full px-3 py-3 sm:px-4 lg:px-6 bg-surface dark:bg-[#0f1724] border-b border-default transition-colors" style={{ boxShadow: `inset 0 -1px 0 var(--c-section-divider)` }}>
+      <div className="flex items-center justify-between gap-3 w-full">
 
         {/* Left: Logo and Company Name */}
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <BrandLogo
             alt={t('brand.logoAlt', { appName: brandName })}
-            className="h-9 w-auto object-contain"
+            className="h-8 w-auto object-contain sm:h-9"
           />
-          <h1 className="text-2xl font-bold tracking-tight uppercase text-foreground dark:text-dark-text">
+          <h1 className="min-w-0 truncate text-base font-bold tracking-tight uppercase text-foreground dark:text-dark-text sm:text-xl lg:text-2xl">
             {t('brand.name', { appName: brandName })}
           </h1>
         </div>
 
         {/* Right: Notification Bell + Theme + Language + Profile */}
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
 
           {/* Notification Bell */}
           <button
             onClick={onNotificationBellClick}
-            className="p-2.5 rounded-xl transition-colors relative"
+            className="p-2 rounded-xl transition-colors relative sm:p-2.5"
             title={t('notificationsPanel.toggle')}
           >
             <Bell className="w-5 h-5 text-icon-muted dark:text-dark-text-muted icon-current" />
@@ -63,7 +63,7 @@ export default function Header({
           {/* Theme Toggle */}
           <button
             onClick={toggleTheme}
-            className="p-2.5 rounded-xl transition-colors"
+            className="p-2 rounded-xl transition-colors sm:p-2.5"
             title={theme === 'light' ? t('theme.switchToDark') : t('theme.switchToLight')}
           >
             {theme === 'light' ? (
@@ -76,7 +76,7 @@ export default function Header({
           {/* Language Toggle */}
           <button
             onClick={toggleLang}
-            className="p-2.5 rounded-xl transition-colors relative"
+            className="p-2 rounded-xl transition-colors relative sm:p-2.5"
             title={
               lang === 'ja'
                 ? t('language.switchToEnglish')
@@ -94,9 +94,9 @@ export default function Header({
           {/* Profile */}
           <button
             onClick={onProfileClick}
-            className="flex items-center gap-3 px-3 py-2 rounded-xl transition-colors ml-2"
+            className="ml-1 flex items-center gap-2 rounded-xl px-2 py-2 transition-colors sm:ml-2 sm:gap-3 sm:px-3"
           >
-            <div className="text-right">
+            <div className="hidden text-right sm:block">
               <p className="text-sm font-semibold text-foreground dark:text-dark-text transition-colors">{user.name}</p>
               <p className="text-xs text-muted dark:text-dark-text-muted transition-colors">
                 {user.department}

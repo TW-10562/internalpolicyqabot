@@ -178,7 +178,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
   const [faqItems, setFaqItems] = useState<FAQItem[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [loadError, setLoadError] = useState('');
-  const { t, lang } = useLang();
+  const { t } = useLang();
 
   useEffect(() => {
     void loadAnalytics();
@@ -195,7 +195,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
         }),
         request('/api/faq', {
           method: 'GET',
-          params: { limit: 8, minCount: 1 },
+          params: { limit: 8, minCount: 3 },
         }),
       ]);
       if (Number(analyticsResponse.code) !== 200) {
@@ -577,11 +577,13 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
 function CompactMetric({
   title,
   value,
+  subtitle,
   icon: Icon,
   color,
 }: {
   title: string;
   value: string | number;
+  subtitle?: string;
   icon?: any;
   color: 'blue' | 'green' | 'yellow';
 }) {
@@ -603,6 +605,9 @@ function CompactMetric({
         <div>
           <p className="text-[#6E7680] dark:text-dark-text-muted text-sm mb-1 transition-colors">{title}</p>
           <p className="text-lg md:text-xl font-bold text-[#232333] dark:text-dark-text transition-colors break-words">{value}</p>
+          {subtitle ? (
+            <p className="text-xs text-[#6E7680] dark:text-dark-text-muted mt-1 transition-colors">{subtitle}</p>
+          ) : null}
         </div>
         {Icon ? (
           <div className={`p-2 rounded-lg ${iconBg[color]}`}>

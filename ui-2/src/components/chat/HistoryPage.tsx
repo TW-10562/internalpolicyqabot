@@ -118,6 +118,16 @@ export default function HistoryPage({ user }: HistoryPageProps) {
     () => rows.find((r) => r.conversation_id === selectedConversationId) || null,
     [rows, selectedConversationId],
   );
+  const selectedConversationUserLabel = useMemo(() => {
+    if (!selectedConversation) return resolvedYouLabel;
+    if (!isSuperAdmin) return resolvedYouLabel;
+    return (
+      String(selectedConversation.user_name || '').trim() ||
+      String(selectedConversation.emp_id || '').trim() ||
+      String(selectedConversation.user_id || '').trim() ||
+      resolvedYouLabel
+    );
+  }, [isSuperAdmin, resolvedYouLabel, selectedConversation]);
   const turns = useMemo(() => {
     const byMessageId = new Map<string, HistoryMessage>();
     for (const m of messages) {
@@ -318,8 +328,8 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   }, [visibleRows]);
 
   return (
-    <div className="h-full grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 p-4">
-      <div className="rounded-xl border border-default bg-surface dark:bg-dark-surface overflow-hidden">
+    <div className="h-full min-h-0 grid grid-cols-1 gap-4 overflow-hidden p-3 sm:p-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="flex min-h-[260px] flex-col rounded-xl border border-default bg-surface dark:bg-dark-surface overflow-hidden lg:min-h-0">
         <div className="px-4 py-3 border-b border-default font-semibold text-foreground dark:text-dark-text">
           {t('history.title')}
         </div>
@@ -362,7 +372,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
           </div>
         )}
 
-        <div className="max-h-[calc(100vh-260px)] overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {loadingList ? (
             <div className="p-4 text-sm text-muted dark:text-dark-text-muted">{t('common.loading')}</div>
           ) : visibleRows.length === 0 ? (
@@ -436,7 +446,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
         )}
       </div>
 
-      <div className="rounded-xl border border-default bg-surface dark:bg-dark-surface p-4 overflow-y-auto">
+      <div className="min-h-[320px] min-w-0 rounded-xl border border-default bg-surface dark:bg-dark-surface p-4 overflow-y-auto lg:min-h-0">
         {!selectedConversationId ? (
           <p className="text-sm text-muted dark:text-dark-text-muted">{t('history.empty')}</p>
         ) : loadingMessages ? (
@@ -464,7 +474,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
                 >
                   <div className="pb-2">
                     <p className="text-xs mb-1 text-muted dark:text-dark-text-muted flex items-center justify-between gap-2">
-                      <span>{resolvedYouLabel}</span>
+                      <span>{selectedConversationUserLabel}</span>
                       <span>
                         {turn.askedAt
                           ? formatDateTimeJP(turn.askedAt)

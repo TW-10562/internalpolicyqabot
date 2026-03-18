@@ -18,7 +18,7 @@ import NotificationsPanel from '../notifications/NotificationsPanel';
 import AdminDashboard from '../admin/AdminDashboard';
 import InlineContactAdmin from '../contact/InlineContactAdmin';
 import FAQPage from '../faq/FAQPage';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getTriageSummary } from '../../api/triage';
 
 interface HomePageProps {
@@ -65,7 +65,6 @@ export default function HomePage({
   const [notifSearch, setNotifSearch] = useState('');
   const [showNotificationPanel, setShowNotificationPanel] = useState(false);
   const [triageOpenCount, setTriageOpenCount] = useState(0);
-  const rightPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (user.role !== 'admin') {
@@ -95,7 +94,7 @@ export default function HomePage({
   }, [user.role, user.roleCode, user.employeeId]);
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-[100dvh] min-h-[100dvh] flex flex-col overflow-hidden bg-app">
       {/* Header */}
       <Header
         user={user}
@@ -116,10 +115,10 @@ export default function HomePage({
       />
 
       {/* Main */}
-     <main className="mac-glass-page flex-1 pt-2 px-1 lg:pl-3 lg:pr-3 pb-2 overflow-hidden bg-surface dark:bg-dark-gradient transition-colors">
-        <div className={`h-full gap-4 overflow-hidden flex flex-col lg:grid ${showNotificationPanel ? 'lg:grid-cols-[72px_1fr_320px]' : 'lg:grid-cols-[72px_1fr]'}`}>
+     <main className="mac-glass-page flex-1 min-h-0 overflow-hidden bg-surface dark:bg-dark-gradient transition-colors px-2 pt-2 pb-[calc(5.5rem+env(safe-area-inset-bottom))] sm:px-3 lg:px-3 lg:pb-2">
+        <div className={`h-full min-h-0 gap-4 overflow-hidden flex flex-col lg:grid ${showNotificationPanel ? 'lg:grid-cols-[72px_minmax(0,1fr)] xl:grid-cols-[72px_minmax(0,1fr)_320px]' : 'lg:grid-cols-[72px_minmax(0,1fr)]'}`}>
           {/* Sidebar */}
-          <aside className="hidden lg:block h-full">
+          <aside className="hidden lg:block h-full min-h-0">
             <div className="left-sidebar h-full rounded-xl overflow-hidden
   mac-border-highlight border-l border-t border-b">
               <div className="sidebar-inner h-full overflow-y-auto flex flex-col items-center gap-3 pt-4">
@@ -139,7 +138,7 @@ export default function HomePage({
           {/* Main content */}
           <section
             key={activeSection}
-            className="relative h-full rounded-xl mac-glass mac-glass-translucent mac-border-highlight mac-tab-animate overflow-hidden flex flex-col"
+            className="relative h-full min-h-0 min-w-0 rounded-xl mac-glass mac-glass-translucent mac-border-highlight mac-tab-animate overflow-hidden flex flex-col"
           >
             {user.role !== 'admin' && activeSection === 'chat' && (
               <ChatInterface
@@ -176,28 +175,49 @@ export default function HomePage({
 
           {/* Notifications */}
           {showNotificationPanel && (
-            <section
-              ref={rightPanelRef}
-              className="hidden lg:block h-full rounded-xl mac-glass mac-glass-translucent mac-border-highlight shadow-sm overflow-y-auto"
-            >
-              <NotificationsPanel
-                items={notifications as any}
-                searchTerm={notifSearch}
-                onMarkAsRead={onMarkAsRead}
-                onClearAll={onClearNotifications}
-                onSearchChange={setNotifSearch}
-                dimmed={isTyping}
-                currentViewerId={user.employeeId}
-                currentViewerRole={user.role}
+            <>
+              <button
+                type="button"
+                aria-label={t('notificationsPanel.title')}
+                onClick={() => setShowNotificationPanel(false)}
+                className="fixed inset-0 z-40 bg-slate-950/35 backdrop-blur-[1px] xl:hidden"
               />
-            </section>
+              <section
+                className="fixed inset-x-3 top-20 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-50 rounded-2xl mac-glass mac-glass-translucent mac-border-highlight shadow-xl overflow-hidden xl:hidden"
+              >
+                <NotificationsPanel
+                  items={notifications as any}
+                  searchTerm={notifSearch}
+                  onMarkAsRead={onMarkAsRead}
+                  onClearAll={onClearNotifications}
+                  onSearchChange={setNotifSearch}
+                  dimmed={isTyping}
+                  currentViewerId={user.employeeId}
+                  currentViewerRole={user.role}
+                />
+              </section>
+              <section
+                className="hidden xl:block h-full min-h-0 min-w-0 rounded-xl mac-glass mac-glass-translucent mac-border-highlight shadow-sm overflow-hidden"
+              >
+                <NotificationsPanel
+                  items={notifications as any}
+                  searchTerm={notifSearch}
+                  onMarkAsRead={onMarkAsRead}
+                  onClearAll={onClearNotifications}
+                  onSearchChange={setNotifSearch}
+                  dimmed={isTyping}
+                  currentViewerId={user.employeeId}
+                  currentViewerRole={user.role}
+                />
+              </section>
+            </>
           )}
         </div>
       </main>
 
       {/* Mobile nav */}
-      <div className="lg:hidden fixed bottom-0 inset-x-0 z-50 border-t border-default bg-surface shadow-lg">
-        <nav className="flex justify-around py-2">
+      <div className="lg:hidden fixed bottom-0 inset-x-0 z-50 border-t border-default bg-surface/95 backdrop-blur shadow-lg pb-[env(safe-area-inset-bottom)]">
+        <nav className="flex items-center justify-start gap-2 overflow-x-auto px-3 py-2 sm:justify-center">
           {navButtons(
             user.role,
             user.roleCode,
@@ -237,7 +257,7 @@ function navButtons(
         if (key === 'chat') setChatFocusTick((v: number) => v + 1);
       }}
       className={`${
-        compact ? 'w-10 h-10' : 'w-12 h-12'
+        compact ? 'h-11 min-w-[2.75rem] shrink-0' : 'w-12 h-12'
       } flex items-center justify-center rounded-xl transition-all
         ${active === key ? 'btn-primary text-on-accent' : 'text-muted hover:bg-surface-alt hover:text-accent'}`}
     >

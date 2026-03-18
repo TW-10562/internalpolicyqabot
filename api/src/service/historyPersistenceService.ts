@@ -363,6 +363,62 @@ type FaqItem = {
 
 type FaqAggregate = FaqItem & { answerScore: number };
 
+const FAQ_STOPWORDS_EN = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'be',
+  'can',
+  'company',
+  'do',
+  'does',
+  'employee',
+  'employees',
+  'for',
+  'from',
+  'get',
+  'how',
+  'i',
+  'in',
+  'information',
+  'internal',
+  'is',
+  'it',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'our',
+  'please',
+  'policy',
+  'process',
+  'procedure',
+  'regarding',
+  'should',
+  'tell',
+  'the',
+  'their',
+  'there',
+  'these',
+  'this',
+  'to',
+  'us',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
+const FAQ_NUMERIC_QUERY_RE = /\b(how many|how much|days?|months?|years?|hours?|minutes?|amount|limit|maximum|minimum|rate|allowance|count)\b|何日|何時間|何年|何か月|いくら|上限|下限|日当|件数|回数/i;
+const FAQ_NUMERIC_ANSWER_RE = /\d|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|day|days|month|months|year|years|hour|hours|minute|minutes|yen|%|％|日|ヶ月|か月|年|時間|分|円|回/i;
+
 const normalizeQuestion = (q: string) =>
   String(q || '')
     .toLowerCase()
@@ -395,6 +451,75 @@ const normalizeFaqText = (value: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const stripFaqSourceAttribution = (value: string) =>
+  normalizeFaqText(value)
+    .replace(/\n?SOURCE:\s.*$/is, ' ')
+    .replace(/\((matched query|照会語):.*?\)/gi, ' ')
+    .replace(/\s*\[(?:\d+(?:\s*,\s*\d+)*)\]\s*$/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const hasJapaneseContent = (value: string) => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(String(value || ''));
+
+const buildFaqEnglishTokenSet = (value: string): Set<string> => {
+  const tokens = String(value || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => /^[a-z0-9]+$/.test(token))
+    .map((token) => token.replace(/(?:ing|ed|es|s)$/i, ''))
+    .filter((token) => token.length >= 4)
+    .filter((token) => !FAQ_STOPWORDS_EN.has(token));
+  return new Set(tokens);
+};
+
+const buildFaqJapaneseTokens = (value: string): string[] =>
+  String(value || '')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => hasJapaneseContent(token))
+    .filter((token) => token.length >= 2);
+
+const buildFaqQuestionKey = (question: string): string => {
+  const normalized = normalizeFaqQuestionKey(question) || normalizeQuestion(question);
+  if (!normalized) return '';
+  if (!hasJapaneseContent(normalized)) {
+    const englishTokens = Array.from(buildFaqEnglishTokenSet(normalized)).sort();
+    if (englishTokens.length >= 2) return englishTokens.join(' ');
+  }
+  return normalized;
+};
+
+const isFaqAnswerRelevant = (question: string, answer: string): boolean => {
+  const normalizedQuestion = normalizeFaqQuestionKey(question) || normalizeQuestion(question);
+  const normalizedAnswer = stripFaqSourceAttribution(answer);
+  if (!normalizedQuestion || !normalizedAnswer) return false;
+
+  const questionEnTokens = buildFaqEnglishTokenSet(normalizedQuestion);
+  const answerEnTokens = buildFaqEnglishTokenSet(normalizedAnswer);
+  const questionEnTokenList = Array.from(questionEnTokens);
+  const englishOverlap = questionEnTokenList.filter((token) => answerEnTokens.has(token)).length;
+  const highSignalEnglishTokens = questionEnTokenList.filter((token) => token.length >= 8);
+  const hasHighSignalEnglishMatch = highSignalEnglishTokens.length === 0
+    ? true
+    : highSignalEnglishTokens.some((token) => answerEnTokens.has(token));
+
+  const questionJaTokens = buildFaqJapaneseTokens(normalizedQuestion);
+  const compactAnswer = normalizedAnswer.replace(/\s+/g, '');
+  const japaneseOverlap = questionJaTokens.filter((token) => compactAnswer.includes(token)).length;
+
+  const hasEnglishSignals = questionEnTokens.size > 0;
+  const hasJapaneseSignals = questionJaTokens.length > 0;
+  const hasOverlap =
+    (hasHighSignalEnglishMatch && englishOverlap >= 2) ||
+    (hasHighSignalEnglishMatch && hasEnglishSignals && englishOverlap >= Math.ceil(questionEnTokens.size * 0.4)) ||
+    japaneseOverlap >= 1;
+
+  if (!hasOverlap && (hasEnglishSignals || hasJapaneseSignals)) return false;
+  if (FAQ_NUMERIC_QUERY_RE.test(question) && !FAQ_NUMERIC_ANSWER_RE.test(normalizedAnswer)) return false;
+  return true;
+};
+
 const isLowValueQuestion = (q: string) => {
   const v = normalizeQuestion(q);
   if (!v) return true;
@@ -405,7 +530,7 @@ const isLowValueQuestion = (q: string) => {
 };
 
 const isLowValueAnswer = (a: string) => {
-  const v = normalizeFaqText(String(a || '')).toLowerCase();
+  const v = stripFaqSourceAttribution(String(a || '')).toLowerCase();
   if (!v || v.length < 8) return true;
   if (v.includes('[debug]')) return true;
   if (v.includes('i can’t confirm') || v.includes('i cannot confirm')) return true;
@@ -416,7 +541,7 @@ const isLowValueAnswer = (a: string) => {
 
 const scoreAnswerQuality = (answer: string, ragUsed: boolean, sourceCount: number): number => {
   let score = 0;
-  const clean = normalizeFaqText(answer);
+  const clean = stripFaqSourceAttribution(answer);
   if (clean.length >= 8) score += 1;
   if (!isLowValueAnswer(clean)) score += 2;
   if (ragUsed) score += 1;
@@ -454,12 +579,14 @@ const collectFaqItems = (
   for (const m of rows) {
     const q = normalizeFaqText(String(m.original_text || ''));
     if (isLowValueQuestion(q)) continue;
-    const key = normalizeFaqQuestionKey(q) || normalizeQuestion(q);
+    const key = buildFaqQuestionKey(q);
     if (!key) continue;
 
     const outputId = String(m.message_id || '').split(':')[0];
     const assistant = assistantById.get(`${outputId}:assistant`);
-    const answer = normalizeFaqText(String(assistant?.model_answer_text || assistant?.original_text || ''));
+    const answer = stripFaqSourceAttribution(
+      normalizeFaqText(String(assistant?.model_answer_text || assistant?.original_text || '')),
+    );
     if (!answer) continue;
 
     const ragUsed = Boolean(assistant?.rag_used);
@@ -467,6 +594,7 @@ const collectFaqItems = (
     if (options.requireRagUsed && !ragUsed) continue;
     if (options.requireSources && sourceIds.length === 0) continue;
     if (isLowValueAnswer(answer)) continue;
+    if (!isFaqAnswerRelevant(q, answer)) continue;
 
     const lastAsked = new Date(m.created_at || Date.now()).getTime();
     const prev = map.get(key);
@@ -625,7 +753,7 @@ export async function listFaqItems(params: {
   const merged: FaqItem[] = [];
   const seenKeys = new Set<string>();
   for (const item of strictItems) {
-    const key = normalizeFaqQuestionKey(item.question) || normalizeQuestion(item.question);
+    const key = buildFaqQuestionKey(item.question);
     if (!key || seenKeys.has(key)) continue;
     seenKeys.add(key);
     merged.push(item);
@@ -633,7 +761,7 @@ export async function listFaqItems(params: {
   }
   for (const item of relaxedItems) {
     if (merged.length >= limit) break;
-    const key = normalizeFaqQuestionKey(item.question) || normalizeQuestion(item.question);
+    const key = buildFaqQuestionKey(item.question);
     if (!key || seenKeys.has(key)) continue;
     seenKeys.add(key);
     merged.push(item);

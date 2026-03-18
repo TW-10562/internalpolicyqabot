@@ -543,7 +543,14 @@ export const updateFileInfo = async (ctx: Context, next: () => Promise<void>) =>
     await next();
   } catch (error) {
     console.error(error);
-    return ctx.app.emit('error');
+    return ctx.app.emit(
+      'error',
+      {
+        code: '500',
+        message: 'ファイル情報の更新に失敗しました',
+      },
+      ctx,
+    );
   }
 };
 
@@ -586,7 +593,14 @@ export const editTag = async (ctx: Context, next: () => Promise<void>) => {
     await next();
   } catch (error) {
     console.error(error);
-    return ctx.app.emit('error');
+    return ctx.app.emit(
+      'error',
+      {
+        code: '500',
+        message: 'タグの更新に失敗しました',
+      },
+      ctx,
+    );
   }
 };
 
