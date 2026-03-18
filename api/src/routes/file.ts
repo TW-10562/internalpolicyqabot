@@ -1,5 +1,5 @@
 import IndexCon from '@/controller';
-import { deleteFile, deleteFileById, listFiles, uploadFile, updateFileInfo, addNewTag, editTag, deleteTag, listTags, previewFile, downloadFile, extractTextFromFile} from '@/controller/file';
+import { deleteFile, deleteFileById, listFiles, uploadFile, updateFileInfo, addNewTag, editTag, deleteTag, listTags, previewFile, downloadFile, extractTextFromFile, viewFileById } from '@/controller/file';
 import { requireScopedAccess } from '@/controller/auth';
 import Router from 'koa-router';
 
@@ -15,6 +15,7 @@ router.get('/', requireScopedAccess, listFiles, IndexCon());
 router.get('/tags', requireScopedAccess, listTags, IndexCon());
 router.get('/preview/:storage_key', requireScopedAccess, previewFile);
 router.get('/download/:storage_key', requireScopedAccess, downloadFile);
+router.get('/:id/view', requireScopedAccess, viewFileById);
 
 // DELETE routes - specific first, then general param
 router.delete('/delete', requireScopedAccess, deleteFile, IndexCon()); // DELETE /api/files/delete with body

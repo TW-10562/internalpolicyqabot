@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Trash2,
+  Eye,
+  Download,
+  X,
+  FileText,
   Search,
   Upload,
   CheckCircle,
@@ -46,6 +50,13 @@ export default function DocumentTable({
   const [selectedDocIds, setSelectedDocIds] = useState<Set<number>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<{ id: number; filename: string } | null>(null);
   const [deletingFileIds, setDeletingFileIds] = useState<Set<number>>(new Set());
+  const [viewingFileIds, setViewingFileIds] = useState<Set<number>>(new Set());
+  const [previewDoc, setPreviewDoc] = useState<DocumentHistory | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewMimeType, setPreviewMimeType] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [pendingBulkDelete, setPendingBulkDelete] = useState<DocumentHistory[] | null>(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -84,6 +95,102 @@ export default function DocumentTable({
   };
 
   const isDeleting = (fileId: number) => deletingFileIds.has(fileId);
+  const isViewing = (fileId: number) => viewingFileIds.has(fileId);
+
+  const getViewErrorMessage = async (response: Response): Promise<string> => {
+    try {
+      const data = await response.json();
+      return data?.message || `View failed with status ${response.status}`;
+    } catch {
+      return `View failed with status ${response.status}`;
+    }
+  };
+
+  const isInlineViewable = (filename: string, mimeType?: string): boolean => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const normalizedMime = String(mimeType || '').toLowerCase();
+    if (normalizedMime === 'application/pdf') return true;
+    if (normalizedMime.startsWith('text/plain')) return true;
+    if (normalizedMime === 'image/png' || normalizedMime === 'image/jpeg' || normalizedMime === 'image/jpg' || normalizedMime === 'image/webp') return true;
+    return ext === 'pdf' || ext === 'txt' || ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp';
+  };
+
+  const closePreview = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewDoc(null);
+    setPreviewUrl(null);
+    setPreviewText(null);
+    setPreviewMimeType(null);
+    setPreviewError(null);
+    setIsPreviewLoading(false);
+  };
+
+  const handlePreviewDownload = () => {
+    if (!previewDoc || !previewUrl) return;
+    const a = document.createElement('a');
+    a.href = previewUrl;
+    a.download = previewDoc.filename || 'document';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleViewFile = async (doc: DocumentHistory): Promise<void> => {
+    setOperationError(null);
+    setPreviewError(null);
+    setPreviewText(null);
+    setPreviewMimeType(null);
+    setIsPreviewLoading(true);
+    setPreviewDoc(doc);
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+    setViewingFileIds(prev => {
+      const next = new Set(prev);
+      next.add(doc.id);
+      return next;
+    });
+
+    const token = getToken();
+    const viewUrl = `/dev-api/api/files/${doc.id}/view`;
+
+    try {
+      const response = await fetch(viewUrl, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+
+      if (!response.ok) {
+        throw new Error(await getViewErrorMessage(response));
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewUrl(objectUrl);
+      const contentType = response.headers.get('Content-Type') || blob.type || doc.mime_type;
+      setPreviewMimeType(contentType || null);
+
+      const inline = isInlineViewable(doc.filename, contentType || doc.mime_type);
+      if (inline && String(contentType || '').toLowerCase().startsWith('text/plain')) {
+        const text = await blob.text();
+        setPreviewText(text);
+      }
+    } catch (error) {
+      console.error('❌ [DocumentTable] Error viewing file:', error);
+      const message = error instanceof Error ? error.message : t('documentTable.viewError');
+      setOperationError(message);
+      setPreviewError(message);
+      toast.error(t('documentTable.viewError'), message);
+    } finally {
+      setIsPreviewLoading(false);
+      setViewingFileIds(prev => {
+        const next = new Set(prev);
+        next.delete(doc.id);
+        return next;
+      });
+    }
+  };
 
   const handleDeleteFile = async (
     fileId: number,
@@ -185,6 +292,119 @@ export default function DocumentTable({
       {operationError && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {operationError}
+        </div>
+      )}
+
+      {/* Preview Modal */}
+      {previewDoc && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface dark:bg-dark-surface rounded-2xl border border-default shadow-xl w-full max-w-5xl h-[85vh] overflow-hidden transition-colors">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#E8E8E8] dark:border-dark-border bg-[#F6F6F6] dark:bg-dark-bg-primary transition-colors">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-foreground dark:text-dark-text truncate" title={previewDoc.filename}>
+                  {previewDoc.filename}
+                </div>
+                {previewMimeType ? (
+                  <div className="text-xs text-muted dark:text-dark-text-muted truncate" title={previewMimeType}>
+                    {previewMimeType}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handlePreviewDownload}
+                  disabled={!previewUrl || isPreviewLoading}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-surface dark:bg-dark-surface hover:bg-surface-alt dark:hover:bg-dark-border border border-default text-foreground dark:text-dark-text text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={t('pdfPreview.download')}
+                >
+                  <Download className="w-4 h-4 icon-current" />
+                  <span className="hidden sm:inline">{t('pdfPreview.download')}</span>
+                </button>
+                <button
+                  onClick={closePreview}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-surface dark:bg-dark-surface hover:bg-surface-alt dark:hover:bg-dark-border border border-default text-foreground dark:text-dark-text text-sm font-medium transition-colors"
+                  title={t('common.close')}
+                >
+                  <X className="w-4 h-4 icon-current" />
+                  <span className="hidden sm:inline">{t('common.close')}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="h-[calc(85vh-60px)] bg-surface dark:bg-dark-surface transition-colors">
+              {isPreviewLoading ? (
+                <div className="h-full flex items-center justify-center gap-3 text-muted dark:text-dark-text-muted">
+                  <div className="w-6 h-6 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+                  <span className="text-sm">{t('common.loading')}</span>
+                </div>
+              ) : previewError ? (
+                <div className="h-full flex items-center justify-center p-6">
+                  <div className="max-w-xl w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {previewError}
+                  </div>
+                </div>
+              ) : (
+                (() => {
+                  const mime = String(previewMimeType || previewDoc.mime_type || '').toLowerCase();
+                  const ext = previewDoc.filename.split('.').pop()?.toLowerCase();
+                  const isPdf = mime.includes('application/pdf') || ext === 'pdf';
+                  const isImage = mime.startsWith('image/');
+                  const isText = mime.startsWith('text/plain') || ext === 'txt';
+
+                  if (!previewUrl) {
+                    return (
+                      <div className="h-full flex items-center justify-center p-6 text-muted dark:text-dark-text-muted">
+                        {t('documentTable.previewUnavailable')}
+                      </div>
+                    );
+                  }
+
+                  if (isPdf) {
+                    return (
+                      <iframe
+                        src={previewUrl}
+                        className="w-full h-full bg-white"
+                        title={previewDoc.filename}
+                      />
+                    );
+                  }
+
+                  if (isImage) {
+                    return (
+                      <div className="h-full overflow-auto p-6 flex items-center justify-center bg-white/50 dark:bg-dark-bg-primary/40">
+                        <img
+                          src={previewUrl}
+                          alt={previewDoc.filename}
+                          className="max-w-full max-h-full rounded-xl shadow"
+                        />
+                      </div>
+                    );
+                  }
+
+                  if (isText) {
+                    return (
+                      <pre className="h-full overflow-auto p-6 text-sm font-mono whitespace-pre-wrap text-foreground dark:text-dark-text">
+                        {previewText || ''}
+                      </pre>
+                    );
+                  }
+
+                  return (
+                    <div className="h-full flex items-center justify-center p-6">
+                      <div className="max-w-xl w-full rounded-2xl border border-default bg-surface dark:bg-dark-surface p-6 text-center transition-colors">
+                        <div className="mx-auto mb-3 w-12 h-12 rounded-2xl bg-surface-alt dark:bg-dark-border flex items-center justify-center">
+                          <FileText className="w-6 h-6 text-muted dark:text-dark-text-muted" />
+                        </div>
+                        <div className="text-sm text-muted dark:text-dark-text-muted">
+                          {t('documentTable.previewUnavailable')}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -318,12 +538,13 @@ export default function DocumentTable({
           <colgroup>
             <col className="w-12" />
             <col />
+            <col className="w-12" />
             <col className="w-28" />
-            <col className="w-36" />
             <col className="w-32" />
+            <col className="w-24" />
+            <col className="w-24" />
             <col className="w-28" />
-            <col className="w-28" />
-            <col className="w-28" />
+            <col className="w-24" />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-[#F6F6F6] dark:bg-dark-bg-primary border-b border-[#E8E8E8] dark:border-dark-border transition-colors">
             <tr>
@@ -347,23 +568,26 @@ export default function DocumentTable({
               <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.documentName')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-2 py-3 text-center text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+                {t('documentTable.view')}
+              </th>
+              <th className="px-3 py-3 text-right text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.size')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.uploadedBy')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.uploadDate')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.department')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
                 {t('documentTable.status')}
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
-                {t('documentTable.action')}
+              <th className="px-3 py-3 text-right text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+                {t('documentTable.delete')}
               </th>
             </tr>
           </thead>
@@ -371,7 +595,7 @@ export default function DocumentTable({
             {filteredDocs.length > 0 ? (
               filteredDocs.map((doc) => (
                 <tr key={doc.id} className="border-b border-[#E8E8E8] dark:border-dark-border hover:bg-[#F6F6F6] dark:hover:bg-dark-border transition-colors">
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 align-middle">
                     <input
                       type="checkbox"
                       className="w-4 h-4 accent-[#1d2089]"
@@ -385,21 +609,35 @@ export default function DocumentTable({
                       }}
                     />
                   </td>
-                  <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors truncate" title={doc.filename}>
-                    {doc.filename}
+                  <td className="px-4 py-3 align-middle text-[#232333] dark:text-dark-text font-medium transition-colors truncate" title={doc.filename}>
+                  {doc.filename}
                   </td>
-                  <td className="px-4 py-3 text-right text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
+                  <td className="px-2 py-3 align-middle">
+                    <div className="flex items-center justify-center">
+                      <button
+                        onClick={() => handleViewFile(doc)}
+                        disabled={isViewing(doc.id) || isDeleting(doc.id)}
+                        className="p-1 text-blue-600 dark:text-dark-accent-blue hover:bg-blue-50 dark:hover:bg-blue-500/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={t('documentTable.view')}
+                        aria-label={t('documentTable.view')}
+                      >
+                        <Eye className={`w-4 h-4 ${isViewing(doc.id) ? 'animate-pulse' : ''}`} />
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 align-middle text-right text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
                     {(doc.size / 1024 / 1024).toFixed(2)} MB
                   </td>
-                  <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors truncate" title={doc.create_by || t('documentTable.system')}>
+                  <td className="px-3 py-3 align-middle text-[#6E7680] dark:text-dark-text-muted transition-colors truncate" title={doc.create_by || t('documentTable.system')}>
                     {doc.create_by || t('documentTable.system')}
                   </td>
-                  <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
+                  <td className="px-3 py-3 align-middle text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
                     {formatDateJP(doc.created_at)}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 align-middle">
                     <span
-                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                      title={getDepartmentLabel(doc.department_code)}
+                      className={`inline-block max-w-[7rem] truncate px-2 py-1 rounded-full text-xs font-medium ${
                         doc.department_code === 'HR'
                           ? 'bg-blue-50 text-blue-700'
                           : doc.department_code === 'GA'
@@ -419,20 +657,23 @@ export default function DocumentTable({
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => setPendingDelete({ id: doc.id, filename: doc.filename })}
-                      disabled={isDeleting(doc.id)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs font-medium"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      {isDeleting(doc.id) ? t('common.loading') : t('documentTable.delete')}
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => setPendingDelete({ id: doc.id, filename: doc.filename })}
+                        disabled={isDeleting(doc.id) || isViewing(doc.id)}
+                        className="p-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title={t('documentTable.delete')}
+                        aria-label={t('documentTable.delete')}
+                      >
+                        <Trash2 className={`w-4 h-4 ${isDeleting(doc.id) ? 'animate-pulse' : ''}`} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-[#6E7680] dark:text-dark-text-muted transition-colors">
+                <td colSpan={9} className="px-4 py-8 text-center text-[#6E7680] dark:text-dark-text-muted transition-colors">
                   {searchQuery.trim() ? t('documentTable.noMatchingDocuments') : t('documentTable.noDocuments')}
                 </td>
               </tr>

@@ -658,6 +658,106 @@ const canAccessStorageKey = async (scope: AccessScope, storageKey: string): Prom
   return String(file.department_code || '') === String(scope.departmentCode || '');
 };
 
+const DEFAULT_DOCS_ROOT_CANDIDATES = ['/srv/tbot/storage/docs', '/data/docs'] as const;
+
+const isPathInside = (candidatePath: string, rootPath: string): boolean => {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+};
+
+const normalizeStorageKeyPath = (storageKey: string): string => {
+  // Normalize Windows separators and strip leading slashes so `path.resolve(root, key)`
+  // always treats the key as relative.
+  return String(storageKey || '')
+    .replace(/\0/g, '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '');
+};
+
+const getAllowedDocsRoots = (): string[] => {
+  const roots = new Set<string>();
+  if (FILE_UPLOAD_DIR) roots.add(FILE_UPLOAD_DIR);
+  if (process.env.DOCS_ROOT) roots.add(String(process.env.DOCS_ROOT));
+  if ((config as any)?.RAG?.Uploads?.rootDir) roots.add(String((config as any).RAG.Uploads.rootDir));
+  if ((config as any)?.RAG?.Uploads?.filesDir) roots.add(String((config as any).RAG.Uploads.filesDir));
+  for (const candidate of DEFAULT_DOCS_ROOT_CANDIDATES) roots.add(candidate);
+  return Array.from(roots)
+    .map((p) => String(p || '').trim())
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+};
+
+const resolveDocumentFilePath = async (storageKey: string): Promise<string | null> => {
+  const normalizedStorageKey = normalizeStorageKeyPath(storageKey);
+  if (!normalizedStorageKey) return null;
+
+  const roots = getAllowedDocsRoots();
+  for (const root of roots) {
+    const resolvedRoot = path.resolve(root);
+    const candidate = path.resolve(resolvedRoot, normalizedStorageKey);
+    if (!isPathInside(candidate, resolvedRoot)) continue;
+
+    let stat: fs.Stats | null = null;
+    try {
+      stat = await fs.promises.stat(candidate);
+    } catch (e: any) {
+      if (e?.code === 'ENOENT' || e?.code === 'ENOTDIR') {
+        stat = null;
+      } else {
+        throw e;
+      }
+    }
+    if (!stat?.isFile()) continue;
+
+    // Harden against symlink escapes: ensure the real path is still under the real root.
+    const [realRoot, realCandidate] = await Promise.all([
+      fs.promises.realpath(resolvedRoot).catch(() => null),
+      fs.promises.realpath(candidate).catch(() => null),
+    ]);
+    if (realRoot && realCandidate && !isPathInside(realCandidate, realRoot)) continue;
+
+    return candidate;
+  }
+
+  return null;
+};
+
+const resolveFileMimeType = (filename: string, fallback?: string): string => {
+  const byExt = mime.lookup(filename);
+  const fromExt = typeof byExt === 'string' ? byExt : '';
+  const fromFallback = String(fallback || '').trim();
+  const resolved = fromExt || fromFallback || 'application/octet-stream';
+  if (resolved === 'text/plain') {
+    return 'text/plain; charset=utf-8';
+  }
+  return resolved;
+};
+
+const isInlineViewable = (filename: string, mimeType: string): boolean => {
+  const ext = path.extname(filename).toLowerCase();
+  const mt = String(mimeType || '').toLowerCase();
+
+  if (mt === 'application/pdf') return true;
+  if (mt.startsWith('text/plain')) return true;
+  if (mt === 'image/png' || mt === 'image/jpeg' || mt === 'image/jpg' || mt === 'image/webp') return true;
+
+  return ext === '.pdf' || ext === '.txt' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp';
+};
+
+const buildContentDisposition = (disposition: 'inline' | 'attachment', filename: string): string => {
+  const clean = path.basename(String(filename || ''))
+    .replace(/[\r\n"]/g, '_')
+    .trim() || 'file';
+  // Node's HTTP header validator rejects non-latin1 characters in header values.
+  // Use an ASCII fallback for `filename` and the RFC5987-encoded UTF-8 value for `filename*`.
+  const asciiFallback = clean
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/\\/g, '_')
+    .trim() || 'file';
+  const encoded = encodeURIComponent(clean);
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+};
+
 export const previewFile = async (ctx) => {
   const scope = (ctx.state as any).accessScope as AccessScope;
   const storage_key = ctx.params.storage_key;
@@ -716,6 +816,90 @@ export const downloadFile = async (ctx) => {
   ctx.set('Content-Disposition', `attachment; filename="${encodeURIComponent(storage_key)}"`);
   ctx.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   ctx.body = fs.createReadStream(filePath);
+};
+
+export const viewFileById = async (ctx) => {
+  const scope = (ctx.state as any).accessScope as AccessScope;
+  const { id } = ctx.params;
+  const fileId = Number.parseInt(String(id || ''), 10);
+  if (!fileId || Number.isNaN(fileId)) {
+    ctx.status = 400;
+    ctx.set('Content-Type', 'application/json');
+    ctx.body = {
+      code: 400,
+      message: 'Invalid file ID',
+    };
+    return;
+  }
+
+  if (!isSuperAdminRole(scope.roleCode) && !isDepartmentAdminRole(scope.roleCode)) {
+    ctx.status = 403;
+    ctx.set('Content-Type', 'application/json');
+    ctx.body = {
+      code: 403,
+      message: 'アクセス権限がありません',
+    };
+    return;
+  }
+
+  try {
+    const file = await File.findByPk(fileId, {
+      attributes: ['id', 'storage_key', 'filename', 'mime_type', 'department_code'],
+      raw: true,
+    }) as any;
+
+    if (!file) {
+      ctx.status = 404;
+      ctx.set('Content-Type', 'application/json');
+      ctx.body = {
+        code: 404,
+        message: 'ファイルが見つかりません',
+      };
+      return;
+    }
+
+    if (!isSuperAdminRole(scope.roleCode) && String(file.department_code || '') !== String(scope.departmentCode || '')) {
+      ctx.status = 403;
+      ctx.set('Content-Type', 'application/json');
+      ctx.body = {
+        code: 403,
+        message: 'アクセス権限がありません',
+      };
+      return;
+    }
+
+    const storageKey = String(file.storage_key || '').trim();
+    const originalName = path.basename(String(file.filename || '').trim());
+    const displayName = originalName || path.basename(storageKey) || `file-${fileId}`;
+    const filePath = await resolveDocumentFilePath(storageKey);
+
+    if (!filePath) {
+      ctx.status = 404;
+      ctx.set('Content-Type', 'application/json');
+      ctx.body = {
+        code: 404,
+        message: 'ファイルが見つかりません',
+      };
+      return;
+    }
+
+    const mimeType = resolveFileMimeType(displayName, file.mime_type);
+    const inline = isInlineViewable(displayName, mimeType);
+
+    ctx.set('Content-Type', mimeType);
+    ctx.set('Content-Disposition', buildContentDisposition(inline ? 'inline' : 'attachment', displayName));
+    ctx.set('Cache-Control', 'no-store');
+    ctx.set('X-Content-Type-Options', 'nosniff');
+    ctx.body = fs.createReadStream(filePath);
+  } catch (error: any) {
+    console.error('[viewFileById] failed:', error?.message || error);
+    ctx.status = 500;
+    ctx.set('Content-Type', 'application/json');
+    ctx.body = {
+      code: 500,
+      message: 'ファイルの取得に失敗しました',
+    };
+  }
 };
 
 export const extractTextFromFile = async (ctx: Context, next: () => Promise<void>) => {

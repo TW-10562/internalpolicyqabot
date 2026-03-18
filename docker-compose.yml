@@ -137,6 +137,7 @@ services:
       - ./api/.env
     environment:
       DB_MODE: "postgres"
+      DOCS_ROOT: "/data/docs"
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: "${PG_DATABASE:-qa_db}"
@@ -170,6 +171,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./uploads:/app/uploads
+      - /srv/tbot/storage/docs:/data/docs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -196,6 +198,7 @@ services:
       - ./api/.env
     environment:
       DB_MODE: "postgres"
+      DOCS_ROOT: "/data/docs"
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: "${PG_DATABASE:-qa_db}"
@@ -225,6 +228,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./uploads:/app/uploads
+      - /srv/tbot/storage/docs:/data/docs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

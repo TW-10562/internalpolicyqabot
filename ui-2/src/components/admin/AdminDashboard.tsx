@@ -73,6 +73,11 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
   });
   const userManagementRef = useRef<UserManagementHandle | null>(null);
 
+  const toNumber = (value: unknown, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
   const loadAllDocuments = async (): Promise<DocumentHistory[]> => {
     const token = getToken();
     const pageSize = 200;
@@ -88,7 +93,14 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
       const rows = data.result?.rows || data.data || data.rows || [];
       const count = Number(data.result?.count ?? data.count ?? rows.length ?? 0);
       if (!Array.isArray(rows) || rows.length === 0) break;
-      all.push(...rows);
+      const normalized = rows.map((row: any) => ({
+        ...row,
+        id: toNumber(row?.id, toNumber(row?.fileId ?? row?.documentId ?? row?.storage_id)),
+        size: toNumber(row?.size),
+        create_by: row?.create_by || row?.create_by_name || row?.createBy || row?.createdBy || '',
+        mime_type: row?.mime_type || row?.mimeType || '',
+      }));
+      all.push(...normalized);
       total = Number.isFinite(count) ? count : all.length;
       if (rows.length < pageSize) break;
       pageNum += 1;

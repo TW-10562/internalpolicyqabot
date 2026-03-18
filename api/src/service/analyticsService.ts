@@ -542,18 +542,11 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const errorRate = queriesInRange > 0 ? Number(((failedRequests / queriesInRange) * 100).toFixed(2)) : 0;
   const responseRate = queriesInRange > 0 ? Number(((successfulResponses / queriesInRange) * 100).toFixed(2)) : 0;
 
-  const activeUserKeys = new Set<string>();
-  for (const row of queryRowsAny) {
-    const userId = Number(row.user_id);
-    if (Number.isFinite(userId) && userId > 0) {
-      activeUserKeys.add(`id:${userId}`);
-      continue;
-    }
-
-    const userName = String(row.user_name || '').trim().toLowerCase();
-    if (userName) activeUserKeys.add(`name:${userName}`);
-  }
-  const activeUsers = activeUserKeys.size;
+  const activeUsers = await User.count({
+    where: {
+      deleted_at: null,
+    },
+  });
 
   let ragUsedCount = 0;
   let ragUnusedCount = 0;
