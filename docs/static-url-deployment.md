@@ -29,8 +29,8 @@ PUBLIC_BASE_URL=https://bot.your-company.com
 
 Then configure host Nginx using one of:
 
-- `deploy/nginx/hrbot.conf.example` (HTTP)
-- `deploy/nginx/hrbot.ssl.conf.example` (HTTPS)
+- `docker/nginx/hrbot.conf.example` (HTTP)
+- `docker/nginx/hrbot.ssl.conf.example` (HTTPS)
 
 If the API must be exposed on a different public address, also set:
 
@@ -54,4 +54,5 @@ docker compose up -d --build ui api worker redis postgres solr rag-python
 - For this deployment, create an internal DNS record `hrbot.corp.twave -> 10.17.0.221`.
 - If you use a domain, point the DNS record to the server IP first.
 - If you want a clean URL without a port, bind `WEB_PORT=80` or place the stack behind your existing reverse proxy.
+- If you use the bundled certs in `ssl/`, the current certificate subject is `hrbot.twave.internal`, so use that hostname or install the root CA before testing HTTPS.
 - Backend-generated links now use `PUBLIC_BASE_URL` and stop falling back to `localhost` when that variable is set.

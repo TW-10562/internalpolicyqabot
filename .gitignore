@@ -45,3 +45,6 @@ config/*.env
 .env.*.local
 *.env
 .env.shared
+ssl/*.crt
+ssl/*.key
+ssl/*.pem

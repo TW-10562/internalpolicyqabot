@@ -1,33 +1,18 @@
-const DEFAULT_LLM_BASE_URL = 'http://localhost:9080/v1';
-const DEFAULT_LLM_MODEL = 'openai/gpt-oss-20b';
-const DEFAULT_TIMEOUT_MS = 7000;
+import { openaiClient } from '@/service/openai_client';
 
-const normalizeBaseUrl = (value: string): string =>
-  String(value || '').trim().replace(/\/+$/, '');
+const DEFAULT_TIMEOUT_MS = 7000;
+const DEFAULT_MAX_ATTEMPTS = 1;
+const QUERY_LLM_REASONING_EFFORT = String(
+  process.env.RAG_LLM_REASONING_EFFORT ||
+  process.env.LLM_REASONING_EFFORT ||
+  'low',
+).trim();
 
 type QueryRewriteResult = {
   language?: 'en' | 'ja' | 'mixed';
   answer_language?: 'en' | 'ja';
   queries?: string[];
   keywords?: string[];
-};
-
-const extractTextFromContent = (content: any): string => {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (typeof item === 'string') return item;
-        if (item && typeof item === 'object') return String(item.text || item.content || '');
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  if (content && typeof content === 'object') {
-    return String(content.text || content.content || '');
-  }
-  return '';
 };
 
 const uniqueLines = (values: string[], limit: number): string[] => {
@@ -76,58 +61,37 @@ const callGateway = async ({
   maxTokens?: number;
   timeoutMsOverride?: number;
 }): Promise<string> => {
-  const baseUrl = normalizeBaseUrl(process.env.LLM_BASE_URL || DEFAULT_LLM_BASE_URL);
-  const model = String(process.env.LLM_MODEL || DEFAULT_LLM_MODEL).trim() || DEFAULT_LLM_MODEL;
   const timeoutMs = Math.max(
     2000,
     Number(timeoutMsOverride || process.env.RAG_LLM_QUERY_EXPANSION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
   );
-  const apiKey =
-    process.env.LLM_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    process.env.APISIX_API_KEY ||
-    '';
-
-  if (!baseUrl) return '';
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-    headers.apikey = apiKey;
-    headers['x-api-key'] = apiKey;
-  }
-
-  const payload = {
-    model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    temperature,
-    max_tokens: maxTokens,
-    top_p: 1,
-    stream: false,
-  };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const maxAttempts = Math.max(
+    1,
+    Math.min(2, Number(process.env.RAG_LLM_QUERY_EXPANSION_MAX_ATTEMPTS || DEFAULT_MAX_ATTEMPTS)),
+  );
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    if (!response.ok) return '';
-
-    const data = await response.json();
-    return extractTextFromContent(data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || '').trim();
+    const response = await openaiClient.generate(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      {
+        temperature,
+        max_tokens: maxTokens,
+        top_p: 1,
+        stream: false,
+        timeout_ms: timeoutMs,
+        max_attempts: maxAttempts,
+        retry_on_empty: false,
+        allow_reasoning_fallback: true,
+        extra_body: QUERY_LLM_REASONING_EFFORT
+          ? { reasoning_effort: QUERY_LLM_REASONING_EFFORT }
+          : undefined,
+      },
+    );
+    return String(response?.content || '').trim();
   } catch {
     return '';
-  } finally {
-    clearTimeout(timer);
   }
 };
 
@@ -153,7 +117,10 @@ export const generateQueryVariants = async (
     '6. If the query is English, include both English semantic paraphrases and Japanese retrieval phrases.',
     '7. For English queries, return 1-2 English semantic paraphrases and 3-4 Japanese business-document search phrases.',
     '8. Prefer official Japanese policy vocabulary such as 手続き, 手順, 報告, 届出, 申請, 規程, 懲戒, 相談, 防止, 承認 when relevant.',
-    '9. Output JSON only.',
+    '9. Do not drift into adjacent topics, parent categories, or related benefits that were not explicitly asked for.',
+    '10. Do not invent forms, report names, templates, guides, or approval-flow labels unless the user explicitly asks for them.',
+    '11. Keep each retrieval query short, concrete, and close to the original noun/entity being asked about.',
+    '12. Output JSON only.',
     '',
     'Return format:',
     '{',

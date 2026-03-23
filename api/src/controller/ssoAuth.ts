@@ -9,7 +9,14 @@ import { addSession } from '@/utils/auth';
 import { getFullUserInfo } from '@/utils/userInfo';
 import User from '@/mysql/model/user.model';
 import { hashPassword } from '@/service/user';
-import { inferDepartmentCodeFromRole, getRoleForEmail } from '@/service/ssoRoleStore';
+import { getRoleForEmail } from '@/service/ssoRoleStore';
+import {
+  departmentNameForCode,
+  DepartmentCode,
+  RoleCode,
+  roleDepartmentForAdmin,
+  tryNormalizeDepartmentCode,
+} from '@/service/rbac';
 
 const normalizeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
 const splitDisplayName = (value: string) => {
@@ -29,43 +36,205 @@ const splitDisplayName = (value: string) => {
 
 type MicrosoftGraphUserInfo = {
   displayName?: string;
+  department?: string | null;
+  employeeId?: string | null;
   mail?: string | null;
   userPrincipalName?: string;
   id?: string;
 };
 
+const normalizeText = (value: unknown) => String(value || '').trim();
+
+const resolveSsoDepartment = (params: {
+  roleCode: RoleCode;
+  microsoftDepartment?: string | null;
+  existingDepartment?: string | null;
+  existingDepartmentCode?: string | null;
+}): { department: string; departmentCode: DepartmentCode; source: 'admin_role' | 'microsoft' | 'existing' | 'fallback' } => {
+  const adminDepartment = roleDepartmentForAdmin(params.roleCode);
+  if (adminDepartment) {
+    return {
+      department: departmentNameForCode(adminDepartment),
+      departmentCode: adminDepartment,
+      source: 'admin_role',
+    };
+  }
+
+  const microsoftDepartment = normalizeText(params.microsoftDepartment);
+  if (microsoftDepartment) {
+    return {
+      department: microsoftDepartment,
+      departmentCode: tryNormalizeDepartmentCode(microsoftDepartment) || 'OTHER',
+      source: 'microsoft',
+    };
+  }
+
+  const existingDepartmentCode =
+    tryNormalizeDepartmentCode(params.existingDepartmentCode) ||
+    tryNormalizeDepartmentCode(params.existingDepartment);
+  if (existingDepartmentCode) {
+    return {
+      department: normalizeText(params.existingDepartment) || departmentNameForCode(existingDepartmentCode),
+      departmentCode: existingDepartmentCode,
+      source: 'existing',
+    };
+  }
+
+  const fallbackDepartmentCode: DepartmentCode = params.roleCode === 'SUPER_ADMIN' ? 'HR' : 'OTHER';
+  return {
+    department: departmentNameForCode(fallbackDepartmentCode),
+    departmentCode: fallbackDepartmentCode,
+    source: 'fallback',
+  };
+};
+
+const resolveSsoEmployeeId = (params: {
+  email: string;
+  microsoftEmployeeId?: string | null;
+  existingEmployeeId?: string | null;
+}): { employeeId: string; source: 'microsoft' | 'existing' | 'fallback_email' } => {
+  const microsoftEmployeeId = normalizeText(params.microsoftEmployeeId);
+  if (microsoftEmployeeId) {
+    return {
+      employeeId: microsoftEmployeeId,
+      source: 'microsoft',
+    };
+  }
+
+  const existingEmployeeId = normalizeText(params.existingEmployeeId);
+  if (existingEmployeeId) {
+    return {
+      employeeId: existingEmployeeId,
+      source: 'existing',
+    };
+  }
+
+  return {
+    employeeId: normalizeText(params.email),
+    source: 'fallback_email',
+  };
+};
+
 const issueSessionForMicrosoftEmail = async (
   ctx: Context,
   next: () => Promise<void>,
-  params: { email: string; displayName?: string | null },
+  params: { email: string; displayName?: string | null; department?: string | null; employeeId?: string | null },
 ) => {
   const email = normalizeEmail(params.email);
   const displayName = String(params.displayName || '').trim();
+  const requestedEmployeeId = normalizeText(params.employeeId);
   const { firstName, lastName } = splitDisplayName(displayName);
 
   if (!email) {
     return ctx.app.emit('error', { code: '400', message: 'email is required for Microsoft SSO login' }, ctx);
   }
 
-  const roleCode = await getRoleForEmail(email);
-  const departmentCode = inferDepartmentCodeFromRole(roleCode);
+  const identityClauses: any[] = [{ email }, { emp_id: email }, { user_name: email }];
+  if (requestedEmployeeId && requestedEmployeeId !== email) {
+    identityClauses.push({ emp_id: requestedEmployeeId });
+  }
 
+  const roleCode = await getRoleForEmail(email);
   const existing = (await User.findOne({
     raw: true,
     where: {
       deleted_at: null,
-      [Op.or]: [{ email }, { emp_id: email }],
+      [Op.or]: identityClauses as any,
     } as any,
   })) as any;
+  const deletedMatch = existing
+    ? null
+    : ((await User.findOne({
+        raw: true,
+        where: {
+          deleted_at: { [Op.ne]: null } as any,
+          [Op.or]: identityClauses as any,
+        } as any,
+        order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
+      })) as any);
+  const { department, departmentCode, source } = resolveSsoDepartment({
+    roleCode,
+    microsoftDepartment: params.department,
+    existingDepartment: existing?.department || deletedMatch?.department,
+    existingDepartmentCode: existing?.department_code || deletedMatch?.department_code,
+  });
+  console.info('[sso.department_probe] resolved', {
+    email,
+    roleCode,
+    source,
+    microsoftDepartment: normalizeText(params.department) || null,
+    existingDepartment: normalizeText(existing?.department || deletedMatch?.department) || null,
+    existingDepartmentCode: normalizeText(existing?.department_code || deletedMatch?.department_code) || null,
+    department,
+    departmentCode,
+  });
+  const { employeeId, source: employeeSource } = resolveSsoEmployeeId({
+    email,
+    microsoftEmployeeId: requestedEmployeeId,
+    existingEmployeeId: existing?.emp_id || deletedMatch?.emp_id,
+  });
+  console.info('[sso.employee_probe] resolved', {
+    email,
+    employeeSource,
+    microsoftEmployeeId: requestedEmployeeId || null,
+    existingEmployeeId: normalizeText(existing?.emp_id || deletedMatch?.emp_id) || null,
+    employeeId,
+  });
 
   let userId: number;
   let userName: string;
   let empId: string;
 
-  if (!existing) {
+  if (existing) {
+    userId = Number(existing.user_id);
+    userName = String(existing.user_name || email);
+    empId = employeeId || email;
+
+    // Keep the primary app user table aligned with Microsoft profile data.
+    await User.update(
+      {
+        email,
+        emp_id: empId,
+        first_name: firstName || existing.first_name || '',
+        last_name: lastName || existing.last_name || '',
+        status: '1',
+        sso_bound: 1,
+        department,
+        department_code: departmentCode,
+        role_code: roleCode,
+        last_login_at: new Date(),
+      } as any,
+      { where: { user_id: userId } },
+    );
+  } else if (deletedMatch) {
+    userId = Number(deletedMatch.user_id);
+    userName = String(deletedMatch.user_name || email);
+    empId = employeeId || email;
+
+    await User.update(
+      {
+        user_name: userName || email,
+        emp_id: empId,
+        first_name: firstName || deletedMatch.first_name || '',
+        last_name: lastName || deletedMatch.last_name || '',
+        password: deletedMatch.password || (await hashPassword(createHash())),
+        email,
+        phonenumber: deletedMatch.phonenumber || null,
+        status: '1',
+        sso_bound: 1,
+        department,
+        department_code: departmentCode,
+        role_code: roleCode,
+        deleted_at: null,
+        deleted_by: null,
+        last_login_at: new Date(),
+      } as any,
+      { where: { user_id: userId } },
+    );
+  } else {
     const created = (await User.create({
       user_name: email,
-      emp_id: email,
+      emp_id: employeeId || email,
       first_name: firstName,
       last_name: lastName,
       job_role_key: '',
@@ -75,7 +244,7 @@ const issueSessionForMicrosoftEmail = async (
       phonenumber: null,
       status: '1',
       sso_bound: 1,
-      department: departmentCode,
+      department,
       department_code: departmentCode,
       role_code: roleCode,
       create_by: 1,
@@ -83,28 +252,7 @@ const issueSessionForMicrosoftEmail = async (
 
     userId = Number(created.dataValues.user_id);
     userName = String(created.dataValues.user_name || email);
-    empId = String(created.dataValues.emp_id || email);
-  } else {
-    userId = Number(existing.user_id);
-    userName = String(existing.user_name || email);
-    empId = String(existing.emp_id || email);
-
-    // Keep the primary app user table aligned with the SQLite mapping.
-    await User.update(
-      {
-        email,
-        emp_id: empId || email,
-        first_name: firstName || existing.first_name || '',
-        last_name: lastName || existing.last_name || '',
-        status: '1',
-        sso_bound: 1,
-        department: departmentCode,
-        department_code: departmentCode,
-        role_code: roleCode,
-        last_login_at: new Date(),
-      } as any,
-      { where: { user_id: userId } },
-    );
+    empId = String(created.dataValues.emp_id || employeeId || email);
   }
 
   const session = createHash();
@@ -134,6 +282,7 @@ const issueSessionForMicrosoftEmail = async (
     email,
     displayName,
     roleCode,
+    department,
     departmentCode,
   };
 
@@ -142,11 +291,13 @@ const issueSessionForMicrosoftEmail = async (
 
 export const loginWithMicrosoft = async (ctx: Context, next: () => Promise<void>) => {
   const accessToken = String((ctx.request.body as any)?.accessToken || '').trim();
+  const clientDepartment = normalizeText((ctx.request.body as any)?.department);
+  const clientEmployeeId = normalizeText((ctx.request.body as any)?.employeeId || (ctx.request.body as any)?.employeeCode);
   if (!accessToken) {
     return ctx.app.emit('error', { code: '400', message: 'accessToken is required for Microsoft SSO login' }, ctx);
   }
 
-  const graphResponse = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName,id', {
+  const graphResponse = await fetch('https://graph.microsoft.com/v1.0/me?$select=displayName,department,employeeId,mail,userPrincipalName,id', {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
@@ -160,17 +311,37 @@ export const loginWithMicrosoft = async (ctx: Context, next: () => Promise<void>
 
   const profile = (await graphResponse.json()) as MicrosoftGraphUserInfo;
   const email = normalizeEmail(profile.mail || profile.userPrincipalName);
+  console.info('[loginWithMicrosoft] graph_profile', {
+    email,
+    graphDepartment: normalizeText(profile.department) || null,
+    graphEmployeeId: normalizeText(profile.employeeId) || null,
+    clientDepartment: clientDepartment || null,
+    clientEmployeeId: clientEmployeeId || null,
+    displayName: normalizeText(profile.displayName) || null,
+  });
 
   return issueSessionForMicrosoftEmail(ctx, next, {
     email,
+    department: normalizeText(profile.department) || clientDepartment,
+    employeeId: normalizeText(profile.employeeId) || clientEmployeeId,
     displayName: profile.displayName || email,
   });
 };
 
 export const loginWithMicrosoftMock = async (ctx: Context, next: () => Promise<void>) => {
   const rawEmail = (ctx.request.body as any)?.email ?? (ctx.query as any)?.email ?? process.env.SSO_MOCK_EMAIL;
+  const rawDepartment =
+    (ctx.request.body as any)?.department ??
+    (ctx.query as any)?.department ??
+    process.env.SSO_MOCK_DEPARTMENT;
+  const rawEmployeeId =
+    (ctx.request.body as any)?.employeeId ??
+    (ctx.query as any)?.employeeId ??
+    process.env.SSO_MOCK_EMPLOYEE_ID;
   return issueSessionForMicrosoftEmail(ctx, next, {
     email: normalizeEmail(rawEmail),
+    department: normalizeText(rawDepartment),
+    employeeId: normalizeText(rawEmployeeId),
     displayName: normalizeEmail(rawEmail),
   });
 };

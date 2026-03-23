@@ -79,49 +79,11 @@ RUN pnpm build
 
 FROM nginx:1.27-alpine AS ui
 COPY --from=ui-build /app/ui-2/dist /usr/share/nginx/html
-RUN rm /etc/nginx/conf.d/default.conf && \
-  cat <<'__NGINX__' > /etc/nginx/conf.d/default.conf
-server {
-  listen 7001;
-  server_name _;
-  root /usr/share/nginx/html;
-  index index.html;
-
-  client_max_body_size 1024m;
-
-  # Docker DNS (so `api` resolves even after the api container is recreated)
-  resolver 127.0.0.11 valid=10s ipv6=off;
-
-  location /dev-api/ {
-    set $api_upstream api;
-    rewrite ^/dev-api/(.*)$ /$1 break;
-    proxy_pass http://$api_upstream:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_buffering off;
-    proxy_read_timeout 3600;
-  }
-
-  location /assets/ {
-    add_header Cache-Control "public, max-age=31536000, immutable" always;
-    try_files $uri =404;
-  }
-
-  location = /index.html {
-    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
-  }
-
-  location @spa {
-    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
-    rewrite ^ /index.html break;
-  }
-
-  location / {
-    try_files $uri @spa;
-  }
-}
-__NGINX__
-EXPOSE 7001
+COPY docker/nginx/bootstrap/ /usr/share/nginx/html/bootstrap/
+COPY install-hrbot-client.sh /usr/share/nginx/html/bootstrap/install-hrbot-client.sh
+COPY docker/nginx/hrbot.ui.http.conf /opt/hrbot/hrbot.ui.http.conf
+COPY docker/nginx/hrbot.ui.https.conf /opt/hrbot/hrbot.ui.https.conf
+COPY docker/nginx/40-configure-ui.sh /docker-entrypoint.d/40-configure-ui.sh
+RUN chmod +x /docker-entrypoint.d/40-configure-ui.sh && \
+  rm /etc/nginx/conf.d/default.conf
+EXPOSE 80 7001 443

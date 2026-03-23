@@ -59,6 +59,5 @@ export async function deleteRoleForEmail(email: string): Promise<void> {
 }
 
 export function inferDepartmentCodeFromRole(roleCode: RoleCode) {
-  return roleDepartmentForAdmin(roleCode) || 'HR';
+  return roleDepartmentForAdmin(roleCode) || (normalizeRoleCode(roleCode) === 'SUPER_ADMIN' ? 'HR' : 'OTHER');
 }
-

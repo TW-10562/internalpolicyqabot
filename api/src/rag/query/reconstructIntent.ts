@@ -59,6 +59,14 @@ export const reconstructIntentQueries = async (
       {
         temperature: 0.1,
         max_tokens: 180,
+        allow_reasoning_fallback: true,
+        extra_body: {
+          reasoning_effort: String(
+            process.env.RAG_LLM_REASONING_EFFORT ||
+            process.env.LLM_REASONING_EFFORT ||
+            'low',
+          ).trim(),
+        },
       },
     );
     const raw = String(response?.content || '');

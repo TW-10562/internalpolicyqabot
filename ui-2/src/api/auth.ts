@@ -15,6 +15,7 @@ export interface LoginResponse {
     empId?: string;
     email?: string;
     displayName?: string;
+    department?: string;
     roleCode?: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
     departmentCode?: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   };
@@ -60,10 +61,14 @@ export async function login(params: LoginParams): Promise<LoginResponse> {
   return response;
 }
 
-export async function loginWithMicrosoft(accessToken: string): Promise<LoginResponse> {
+export async function loginWithMicrosoft(
+  accessToken: string,
+  department?: string,
+  employeeId?: string,
+): Promise<LoginResponse> {
   const response = await request<LoginResponse>('/api/auth/sso/microsoft', {
     method: 'POST',
-    data: { accessToken },
+    data: { accessToken, department, employeeId },
   });
 
   if (response.code === 200 && response.result?.token) {

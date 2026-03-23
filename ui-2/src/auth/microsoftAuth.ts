@@ -1,4 +1,4 @@
-const MICROSOFT_GRAPH_ME_URL = 'https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName,id';
+const MICROSOFT_GRAPH_ME_URL = 'https://graph.microsoft.com/v1.0/me?$select=displayName,department,employeeId,mail,userPrincipalName,id';
 const MICROSOFT_SCOPES = ['openid', 'profile', 'email', 'User.Read'];
 const POPUP_FEATURES = 'popup=yes,width=520,height=720,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
 const AUTH_MESSAGE_TYPE = 'microsoft-oauth-response';
@@ -8,6 +8,8 @@ const REDIRECT_VERIFIER_KEY = 'microsoft_sso_verifier';
 
 export interface MicrosoftUserInfo {
   displayName: string;
+  department?: string | null;
+  employeeId?: string | null;
   mail: string | null;
   userPrincipalName: string;
   id: string;
@@ -17,6 +19,11 @@ interface PopupResult {
   code: string;
   state: string;
 }
+
+type TokenExchangeResult = {
+  accessToken: string;
+  idToken?: string;
+};
 
 const getAzureClientId = () => (import.meta.env.VITE_AZURE_CLIENT_ID as string | undefined)?.trim() || '';
 const getAzureTenantId = () => (import.meta.env.VITE_AZURE_TENANT_ID as string | undefined)?.trim() || '';
@@ -143,7 +150,7 @@ const waitForPopupResult = (popup: Window, expectedState: string): Promise<Popup
     window.addEventListener('message', handleMessage);
   });
 
-const exchangeCodeForAccessToken = async (code: string, codeVerifier: string) => {
+const exchangeCodeForAccessToken = async (code: string, codeVerifier: string): Promise<TokenExchangeResult> => {
   const tenantId = getAzureTenantId();
   const clientId = getAzureClientId();
   const body = new URLSearchParams({
@@ -168,7 +175,10 @@ const exchangeCodeForAccessToken = async (code: string, codeVerifier: string) =>
     throw new Error(result.error_description || result.error || 'token_exchange_failed');
   }
 
-  return String(result.access_token);
+  return {
+    accessToken: String(result.access_token),
+    idToken: result.id_token ? String(result.id_token) : undefined,
+  };
 };
 
 const storeRedirectFlowState = (state: string, codeVerifier: string) => {
@@ -199,7 +209,49 @@ const clearRedirectFlowState = () => {
   }
 };
 
-const fetchMicrosoftUserInfo = async (accessToken: string): Promise<MicrosoftUserInfo> => {
+const parseJwtPayload = (token: string): Record<string, unknown> | null => {
+  try {
+    const payloadPart = String(token || '').split('.')[1] || '';
+    if (!payloadPart) return null;
+    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+};
+
+const extractStringClaim = (
+  claims: Record<string, unknown> | null,
+  exactKeys: string[],
+  pattern: RegExp,
+): string | null => {
+  if (!claims) return null;
+
+  for (const key of exactKeys) {
+    const value = claims[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  for (const [key, value] of Object.entries(claims)) {
+    if (!pattern.test(key)) continue;
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+};
+
+const extractDepartmentFromClaims = (claims: Record<string, unknown> | null): string | null =>
+  extractStringClaim(claims, ['department'], /department/i);
+
+const extractEmployeeIdFromClaims = (claims: Record<string, unknown> | null): string | null =>
+  extractStringClaim(claims, ['employeeId', 'employeeid'], /employee.?id/i);
+
+const fetchMicrosoftUserInfo = async (accessToken: string, idToken?: string): Promise<MicrosoftUserInfo> => {
   const response = await fetch(MICROSOFT_GRAPH_ME_URL, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -210,7 +262,33 @@ const fetchMicrosoftUserInfo = async (accessToken: string): Promise<MicrosoftUse
     throw new Error('graph_profile_failed');
   }
 
-  return response.json();
+  const profile = (await response.json()) as MicrosoftUserInfo;
+  const tokenClaims = parseJwtPayload(String(idToken || ''));
+  if (!String(profile.department || '').trim()) {
+    const tokenDepartment = extractDepartmentFromClaims(tokenClaims);
+    if (tokenDepartment) {
+      profile.department = tokenDepartment;
+    }
+  }
+  if (!String(profile.employeeId || '').trim()) {
+    const tokenEmployeeId = extractEmployeeIdFromClaims(tokenClaims);
+    if (tokenEmployeeId) {
+      profile.employeeId = tokenEmployeeId;
+    }
+  }
+
+  console.warn('[microsoftAuth.graph_profile]', {
+    graphDepartment: String(profile.department || '').trim() || null,
+    graphEmployeeId: String(profile.employeeId || '').trim() || null,
+    displayName: String(profile.displayName || '').trim() || null,
+    email: String(profile.mail || profile.userPrincipalName || '').trim() || null,
+  });
+  console.warn('[microsoftAuth.employee_probe]', {
+    graphEmployeeId: String(profile.employeeId || '').trim() || null,
+    email: String(profile.mail || profile.userPrincipalName || '').trim() || null,
+  });
+
+  return profile;
 };
 
 // Redirect-based login: starts an auth redirect (no popup).
@@ -266,9 +344,9 @@ export async function completeMicrosoftLoginRedirect() {
   }
 
   try {
-    const accessToken = await exchangeCodeForAccessToken(code, stored.verifier);
-    const userInfo = await fetchMicrosoftUserInfo(accessToken);
-    return { accessToken, userInfo };
+    const tokens = await exchangeCodeForAccessToken(code, stored.verifier);
+    const userInfo = await fetchMicrosoftUserInfo(tokens.accessToken, tokens.idToken);
+    return { accessToken: tokens.accessToken, userInfo };
   } finally {
     clearRedirectFlowState();
   }
@@ -289,11 +367,11 @@ export async function loginWithMicrosoftPopup() {
   const authorizeUrl = await buildAuthorizeUrl(state, nonce, codeVerifier);
   const popup = openPopup(authorizeUrl);
   const popupResult = await waitForPopupResult(popup, state);
-  const accessToken = await exchangeCodeForAccessToken(popupResult.code, codeVerifier);
-  const userInfo = await fetchMicrosoftUserInfo(accessToken);
+  const tokens = await exchangeCodeForAccessToken(popupResult.code, codeVerifier);
+  const userInfo = await fetchMicrosoftUserInfo(tokens.accessToken, tokens.idToken);
 
   return {
-    accessToken,
+    accessToken: tokens.accessToken,
     userInfo,
   };
 }

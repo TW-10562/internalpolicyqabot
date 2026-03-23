@@ -84,7 +84,7 @@ services:
       SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
     volumes:
       - ./rag:/app/rag
-      - ./config:/app/config:ro
+      - ./api/config:/app/config:ro
       - ./uploads:/app/uploads
       - ./rag/data/model:/app/rag/data/model
       - ./rag/app/rag_db:/app/rag/app/rag_db
@@ -130,13 +130,14 @@ services:
         PNPM_VERSION: 9.12.3
     container_name: hrbot-api
     ports:
-      - "${API_PORT:-8080}:8080"
-      - "${BULL_BOARD_PORT:-9999}:9999"
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+      - "127.0.0.1:${BULL_BOARD_PORT:-9999}:9999"
     env_file:
       - ./.env
       - ./api/.env
     environment:
       DB_MODE: "postgres"
+      DATABASE_URL: "postgresql://${PG_USER:-twave_01}:${PG_PASSWORD:-twave_01password}@postgres:5432/${PG_DATABASE:-qa_db}"
       DOCS_ROOT: "/data/docs"
       PG_HOST: postgres
       PG_PORT: 5432
@@ -148,15 +149,15 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: "${REDIS_PASSWORD:-abcd1234}"
       REDIS_DB: 0
-      SOLR_URL: "${SOLR_URL:-http://solr:8983}"
+      SOLR_URL: "http://solr:8983"
       SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
 
       # External (host) OpenAI-compatible gateway default (Linux needs extra_hosts below).
       # Override with `LLM_BASE_URL_OVERRIDE=http://vllm-single:8000/v1` when using the optional `vllm-single` service.
       LLM_BASE_URL: "${LLM_BASE_URL_OVERRIDE:-http://host.docker.internal:9080/v1}"
       LLM_MODEL: "${LLM_MODEL:-openai/gpt-oss-20b}"
-      RAG_API: "${RAG_API:-http://rag-python:8010}"
-      RAG_BACKEND_URL: "${RAG_BACKEND_URL:-http://rag-python:8010}"
+      RAG_API: "http://rag-python:8010"
+      RAG_BACKEND_URL: "http://rag-python:8010"
       RAG_BACKEND_HOST: rag-python
       RAG_BACKEND_PORT: 8010
 
@@ -169,7 +170,7 @@ services:
       AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
       NODE_ENV: "production"
     volumes:
-      - ./config:/app/config:ro
+      - ./api/config:/app/config:ro
       - ./uploads:/app/uploads
       - /srv/tbot/storage/docs:/data/docs
     extra_hosts:
@@ -198,6 +199,7 @@ services:
       - ./api/.env
     environment:
       DB_MODE: "postgres"
+      DATABASE_URL: "postgresql://${PG_USER:-twave_01}:${PG_PASSWORD:-twave_01password}@postgres:5432/${PG_DATABASE:-qa_db}"
       DOCS_ROOT: "/data/docs"
       PG_HOST: postgres
       PG_PORT: 5432
@@ -209,12 +211,12 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: "${REDIS_PASSWORD:-abcd1234}"
       REDIS_DB: 0
-      SOLR_URL: "${SOLR_URL:-http://solr:8983}"
+      SOLR_URL: "http://solr:8983"
       SOLR_CORE_NAME: "${SOLR_CORE_NAME:-mycore}"
       LLM_BASE_URL: "${LLM_BASE_URL_OVERRIDE:-http://host.docker.internal:9080/v1}"
       LLM_MODEL: "${LLM_MODEL:-openai/gpt-oss-20b}"
-      RAG_API: "${RAG_API:-http://rag-python:8010}"
-      RAG_BACKEND_URL: "${RAG_BACKEND_URL:-http://rag-python:8010}"
+      RAG_API: "http://rag-python:8010"
+      RAG_BACKEND_URL: "http://rag-python:8010"
       RAG_BACKEND_HOST: rag-python
       RAG_BACKEND_PORT: 8010
       BACKEND_HOST: 0.0.0.0
@@ -226,7 +228,7 @@ services:
       AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
       NODE_ENV: "production"
     volumes:
-      - ./config:/app/config:ro
+      - ./api/config:/app/config:ro
       - ./uploads:/app/uploads
       - /srv/tbot/storage/docs:/data/docs
     extra_hosts:
@@ -250,7 +252,11 @@ services:
         PNPM_VERSION: 9.12.3
     container_name: hrbot-ui
     ports:
-      - "${WEB_PORT:-7001}:7001"
+      - "127.0.0.1:${WEB_PORT:-7001}:7001"
+      - "80:80"
+      - "${WEB_TLS_PORT:-443}:443"
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       - api
     networks:

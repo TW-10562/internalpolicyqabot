@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { translateQueryForRetrievalDetailed } from '@/utils/query_translation';
-import { generateJapaneseQueryVariants } from '@/rag/query/crossLanguageBridge';
-import { generateQueryVariants } from '@/rag/query/llmQueryExpansion';
 import { canonicalizeQuery } from './canonicalizeQuery';
 import { normalizeQuery } from './normalizeQuery';
 
@@ -23,7 +21,7 @@ export type ExpandQueryOutput = {
   queryForRAG: string;
   multilingualRetrievalQueries: string[];
   queryTranslationApplied: boolean;
-  queryTranslationStatus: 'termbase' | 'term_map' | 'llm_bridge' | 'none';
+  queryTranslationStatus: 'termbase' | 'term_map' | 'semantic_bridge' | 'none';
   translateCallsCount: number;
   translateMs: number;
 };
@@ -54,6 +52,7 @@ const JA_TRANSLATION_COMPOSITE_LOW_SIGNAL_TERMS = new Set([
   '規則',
 ]);
 const JA_PROCEDURAL_HINT_PATTERN = /(申請|手続|手続き|手順|方法|届出|提出|承認|申告|申込み|申し込み)/;
+const JA_GENERATED_ARTIFACT_PATTERN = /(報告書|フォーマット|テンプレート|様式|ひな形|雛形|ガイド|マニュアル|承認フロー|作成手順|作成方法)/;
 type SemanticBridgeVariants = {
   englishVariants: string[];
   japaneseVariants: string[];
@@ -112,8 +111,29 @@ const prioritizeJapaneseVariants = (variants: string[], limit: number): string[]
   const substantial = unique.filter((variant) => variant.length >= 4);
   const source = substantial.length > 0 ? substantial : unique;
   return [...source]
-    .sort((left, right) => right.length - left.length)
+    .sort((left, right) => {
+      const leftScore = scoreJapaneseRetrievalVariant(left);
+      const rightScore = scoreJapaneseRetrievalVariant(right);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return left.length - right.length;
+    })
     .slice(0, limit);
+};
+
+const scoreJapaneseRetrievalVariant = (variant: string): number => {
+  const normalized = normalizeSpacing(variant);
+  if (!normalized) return -100;
+  const terms = normalized.split(/\s+/).filter(Boolean);
+  const proceduralHints = (normalized.match(/申請|手続|手順|方法|届出|提出|承認|申告|報告|フロー/g) || []).length;
+  const artifactPenalty = JA_GENERATED_ARTIFACT_PATTERN.test(normalized) ? 2.4 : 0;
+  const longPenalty = Math.max(0, normalized.length - 16) * 0.14;
+  const proceduralOverloadPenalty = Math.max(0, proceduralHints - 2) * 0.85;
+  const termBonus =
+    terms.length === 1 ? 0.9
+      : terms.length <= 3 ? 1.8
+        : 0.4;
+  const proceduralBonus = proceduralHints > 0 ? 1.4 : 0;
+  return termBonus + proceduralBonus - artifactPenalty - longPenalty - proceduralOverloadPenalty;
 };
 
 const prioritizeEnglishCrossLanguageQueries = (variants: string[], limit: number): string[] => {
@@ -127,7 +147,10 @@ const prioritizeEnglishCrossLanguageQueries = (variants: string[], limit: number
       const leftComposite = left.split(/\s+/).length > 1 ? 1 : 0;
       const rightComposite = right.split(/\s+/).length > 1 ? 1 : 0;
       if (leftComposite !== rightComposite) return rightComposite - leftComposite;
-      return right.length - left.length;
+      const leftScore = scoreJapaneseRetrievalVariant(left);
+      const rightScore = scoreJapaneseRetrievalVariant(right);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return left.length - right.length;
     })
     .slice(0, limit);
 };
@@ -555,7 +578,7 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   let queryTranslationApplied = false;
   let translateCallsCount = 0;
   let translateMs = 0;
-  let queryTranslationStatus: 'termbase' | 'term_map' | 'llm_bridge' | 'none' = 'none';
+  let queryTranslationStatus: 'termbase' | 'term_map' | 'semantic_bridge' | 'none' = 'none';
   let generatedJapaneseQueries: string[] = [];
   let semanticEnglishVariants: string[] = [];
 
@@ -580,27 +603,22 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   }
 
   if (translationExpansionEnabled && canonical && input.userLanguage === 'en') {
-    const llmGeneratedVariants = await generateQueryVariants(canonical, 'en').catch(() => []);
-    const heuristicVariants = await generateJapaneseQueryVariants(canonical).catch(() => []);
     semanticEnglishVariants = uniqueStringList(
       [
         ...semanticBridgeVariants.englishVariants,
-        ...llmGeneratedVariants.filter((variant) => !containsJapanese(variant)),
       ],
       4,
     );
     generatedJapaneseQueries = prioritizeEnglishCrossLanguageQueries(
       [
         ...semanticBridgeVariants.japaneseVariants,
-        ...llmGeneratedVariants,
-        ...heuristicVariants,
       ],
       6,
     );
     if (generatedJapaneseQueries.length > 0) {
       queryTranslationApplied = true;
       if (queryTranslationStatus === 'none') {
-        queryTranslationStatus = 'llm_bridge';
+        queryTranslationStatus = 'semantic_bridge';
       }
     }
   }

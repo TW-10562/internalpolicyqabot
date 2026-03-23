@@ -9,8 +9,9 @@ export type AdminUser = {
   last_name: string;
   job_role_key?: string;
   area_of_work_key?: string;
+  department?: string;
   role_code: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  department_code: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
+  department_code: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   status: string;
   updated_at: string;
 };

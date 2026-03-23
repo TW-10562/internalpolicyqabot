@@ -22,9 +22,9 @@ const normalizeDepartmentAlias = (value: unknown): string =>
     .toUpperCase()
     .replace(/[\s_\-\\/]+/g, '');
 
-export const normalizeDepartmentCode = (value: unknown): DepartmentCode => {
+export const tryNormalizeDepartmentCode = (value: unknown): DepartmentCode | null => {
   const normalized = normalizeDepartmentAlias(value);
-  if (!normalized) return 'HR';
+  if (!normalized) return null;
   if (isDepartment(normalized)) return normalized;
 
   if (normalized === 'HUMANRESOURCES' || normalized === 'HUMANRESOURCE' || normalized === '人事') {
@@ -39,10 +39,31 @@ export const normalizeDepartmentCode = (value: unknown): DepartmentCode => {
   if (normalized === 'OTHERS' || normalized === 'その他') {
     return 'OTHER';
   }
-  if (normalized === 'IT' || normalized === 'ITSUPPORT' || normalized === 'SYSTEM') {
+  if (
+    normalized === 'IT' ||
+    normalized === 'ITSUPPORT' ||
+    normalized === 'SYSTEM' ||
+    normalized === 'INFORMATIONSYSTEMS' ||
+    normalized === 'INFORMATIONTECHNOLOGY'
+  ) {
     return 'SYSTEMS';
   }
+  return null;
+};
+
+export const normalizeDepartmentCode = (value: unknown): DepartmentCode => {
+  const resolved = tryNormalizeDepartmentCode(value);
+  if (resolved) return resolved;
   return 'HR';
+};
+
+export const departmentNameForCode = (value: unknown): string => {
+  const code = normalizeDepartmentCode(value);
+  if (code === 'GA') return 'General Affairs';
+  if (code === 'ACC') return 'Accounting';
+  if (code === 'OTHER') return 'Other';
+  if (code === 'SYSTEMS') return 'Systems';
+  return 'Human Resources';
 };
 
 export const normalizeRoleCode = (value: unknown): RoleCode => {

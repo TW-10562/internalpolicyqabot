@@ -27,12 +27,25 @@ const katakanaToHiragana = (value: string): string =>
     })
     .join('');
 
+const splitRunOnEnglishTokens = (value: string): string =>
+  String(value || '').replace(/\bto([a-z]{5,})\b/g, (match, suffix) => {
+    const normalizedSuffix = String(suffix || '').toLowerCase();
+    if (/(?:apply|approve|request|report|submit|update|reset|check|view|edit|contact|use|know|find|open|read|write|start|finish|create|inform|notify|review|claim|clock|complete|confirm|get)(?:s|ed|ing)?$/.test(normalizedSuffix)) {
+      return `to ${normalizedSuffix}`;
+    }
+    if (/(ing|ed|ize|ise|fy|ate|en)$/.test(normalizedSuffix)) {
+      return `to ${normalizedSuffix}`;
+    }
+    return match;
+  });
+
 export const normalizeQuery = (query: string): string => {
   const nfkc = normalizeUnicodeNfkc(query);
   const punctuationNormalized = normalizePunctuation(nfkc);
   // Lowercase Latin tokens while preserving Japanese text.
   const lowerCasedLatin = punctuationNormalized.replace(/[A-Z]+/g, (match) => match.toLowerCase());
+  const runOnEnglishNormalized = splitRunOnEnglishTokens(lowerCasedLatin);
   // Fold Katakana/Hiragana variants into a consistent Hiragana representation.
-  const kanaNormalized = katakanaToHiragana(lowerCasedLatin);
+  const kanaNormalized = katakanaToHiragana(runOnEnglishNormalized);
   return kanaNormalized.replace(/\s+/g, ' ').trim();
 };

@@ -45,6 +45,43 @@ const buildUserName = (firstName: string, lastName: string, employeeId: string) 
 
 const normalizeUserName = (value: string) => String(value || '').trim().toLowerCase();
 
+async function findDeletedUserReuseCandidate(params: {
+  employeeId?: string;
+  userName?: string;
+  email?: string | null;
+}) {
+  const orClauses: any[] = [];
+  const employeeId = String(params.employeeId || '').trim();
+  const userName = String(params.userName || '').trim();
+  const email = params.email ? normalizeEmail(params.email) : null;
+
+  if (employeeId) {
+    orClauses.push({ emp_id: employeeId });
+  }
+  if (email) {
+    orClauses.push({ email });
+  }
+  if (userName) {
+    orClauses.push(
+      Sequelize.where(
+        Sequelize.fn('LOWER', Sequelize.col('user_name')),
+        normalizeUserName(userName),
+      ),
+    );
+  }
+
+  if (!orClauses.length) return null;
+
+  return User.findOne({
+    raw: true,
+    where: {
+      deleted_at: { [Op.ne]: null } as any,
+      [Op.or]: orClauses as any,
+    } as any,
+    order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
+  }) as any;
+}
+
 const toResponseUser = (user: any) => ({
   user_id: user.user_id,
   user_name: user.user_name,
@@ -54,6 +91,7 @@ const toResponseUser = (user: any) => ({
   last_name: user.last_name,
   job_role_key: user.job_role_key,
   area_of_work_key: user.area_of_work_key,
+  department: user.department,
   department_code: user.department_code,
   role_code: user.role_code,
   status: user.status,
@@ -159,6 +197,7 @@ export async function listAdminUsers(scope: AccessScope, opts?: { query?: string
       'last_name',
       'job_role_key',
       'area_of_work_key',
+      'department',
       'department_code',
       'role_code',
       'status',
@@ -219,7 +258,50 @@ export async function createAdminUser(input: AdminUserInput, actorScope: AccessS
     throw err;
   }
 
+  const reusableDeleted = await findDeletedUserReuseCandidate({
+    employeeId,
+    userName: resolvedUserName,
+    email: normalizedEmail,
+  });
+
   return seq.transaction(async (transaction) => {
+    if (reusableDeleted) {
+      const restoredUserId = Number(reusableDeleted.user_id);
+
+      await User.update({
+        user_name: resolvedUserName,
+        emp_id: employeeId,
+        first_name: firstName,
+        last_name: lastName,
+        job_role_key: normalizeJobRole(input.userJobRole),
+        area_of_work_key: normalizeArea(input.areaOfWork),
+        password: await hashPassword(password),
+        email: normalizedEmail || (looksLikeEmail(employeeId) ? normalizeEmail(employeeId) : null),
+        status: input.isActive === false ? '0' : '1',
+        sso_bound: 1,
+        create_by: reusableDeleted.create_by || actorScope.userId,
+        department: departmentCode,
+        department_code: departmentCode,
+        role_code: roleCode,
+        deleted_at: null,
+        deleted_by: null,
+        last_login_at: null,
+      } as any, { where: { user_id: restoredUserId }, transaction });
+
+      await UserRole.destroy({ where: { user_id: restoredUserId }, transaction });
+
+      await emitAuditLog({
+        actor: actorScope,
+        action: 'USER_RESTORED',
+        targetType: 'user',
+        targetId: restoredUserId,
+        details: { departmentCode, roleCode, employeeId },
+      });
+
+      const restored = await User.findOne({ raw: true, where: { user_id: restoredUserId }, transaction }) as any;
+      return toResponseUser(restored);
+    }
+
     const created = await User.create({
       user_name: resolvedUserName,
       emp_id: employeeId,

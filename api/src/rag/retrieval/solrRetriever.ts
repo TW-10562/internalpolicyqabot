@@ -101,6 +101,22 @@ const readNumberEnv = (name: string, fallback: number): number => {
 const PROCEDURAL_QUERY_HINT_PATTERN = /(申請|手続|手続き|手順|方法|届出|提出|承認|apply|procedure|steps?|how\s+to|workflow)/i;
 const hasProceduralHint = (value: string): boolean =>
   PROCEDURAL_QUERY_HINT_PATTERN.test(String(value || '').trim());
+const GENERATED_QUERY_ARTIFACT_PATTERN = /(報告書|フォーマット|テンプレート|様式|ひな形|雛形|ガイド|マニュアル|承認フロー|作成手順|作成方法)/;
+const scoreQueryShape = (query: string): number => {
+  const normalized = String(query || '').trim();
+  if (!normalized) return -100;
+  const terms = normalized.split(/\s+/).filter(Boolean);
+  const proceduralHints = (normalized.match(/申請|手続|手順|方法|届出|提出|承認|申告|報告|フロー|apply|procedure|workflow|steps?/gi) || []).length;
+  const artifactPenalty = GENERATED_QUERY_ARTIFACT_PATTERN.test(normalized) ? 2.4 : 0;
+  const longPenalty = Math.max(0, normalized.length - 18) * 0.12;
+  const proceduralOverloadPenalty = Math.max(0, proceduralHints - 2) * 0.8;
+  const termBonus =
+    terms.length === 1 ? 0.8
+      : terms.length <= 3 ? 1.6
+        : 0.4;
+  const proceduralBonus = proceduralHints > 0 ? 1.2 : 0;
+  return termBonus + proceduralBonus - artifactPenalty - longPenalty - proceduralOverloadPenalty;
+};
 
 const stableDocKey = (doc: any): string => {
   const id = String(doc?.id || '').trim();
@@ -470,13 +486,12 @@ export const retrieveDocumentsWithSolr = async (
 
   if (effectiveCrossLanguageBridgeEnabled && canonicalQuery && input.userLanguage === 'en') {
     const existingJapaneseQueries = expandedQueries.filter((query) => hasJapaneseChars(query));
-    const llmGeneratedTerms =
-      existingJapaneseQueries.length >= 3
-        ? []
-        : await generateQueryVariants(canonicalQuery, input.userLanguage);
-    const heuristicGeneratedTerms = await generateJapaneseQueryVariants(canonicalQuery);
+    let bridgeGeneratedTerms: string[] = [];
+    if (existingJapaneseQueries.length === 0) {
+      bridgeGeneratedTerms = await generateJapaneseQueryVariants(canonicalQuery);
+    }
     japaneseRetrievalQueries = uniqueStrings(
-      [...existingJapaneseQueries, ...llmGeneratedTerms, ...heuristicGeneratedTerms].filter((query) => hasJapaneseChars(query)),
+      [...existingJapaneseQueries, ...bridgeGeneratedTerms].filter((query) => hasJapaneseChars(query)),
       6,
     );
     if (japaneseRetrievalQueries.length > 0) {
@@ -664,6 +679,10 @@ export const retrieveDocumentsWithSolr = async (
     const hasBest = lexicalBestDocs.length > 0;
     const candidateHasProceduralHint = hasProceduralHint(candidate);
     const bestHasProceduralHint = hasProceduralHint(lexicalBestQuery);
+    const candidateShapeScore = scoreQueryShape(candidate);
+    const bestShapeScore = scoreQueryShape(lexicalBestQuery);
+    const candidateAdjustedScore = candidateTopScore + (candidateShapeScore * 0.45);
+    const bestAdjustedScore = lexicalBestTopScore + (bestShapeScore * 0.45);
     const isBetterCandidate = (() => {
       if (!hasBest) return true;
       if (queryIsProcedural && candidateHasProceduralHint !== bestHasProceduralHint) {
@@ -671,6 +690,9 @@ export const retrieveDocumentsWithSolr = async (
       }
       if (candidateTopTermHits > lexicalBestTopTermHits) return true;
       if (candidateTopTermHits < lexicalBestTopTermHits) return false;
+      if (queryIsProcedural && candidateAdjustedScore !== bestAdjustedScore) {
+        return candidateAdjustedScore > bestAdjustedScore;
+      }
       return candidateTopScore > lexicalBestTopScore;
     })();
 
@@ -682,6 +704,8 @@ export const retrieveDocumentsWithSolr = async (
       retrieval_confidence: Number(candidateConfidence.toFixed(3)),
       better_than_current: isBetterCandidate,
       procedural_hint: candidateHasProceduralHint ? 1 : 0,
+      query_shape_score: Number(candidateShapeScore.toFixed(3)),
+      adjusted_score: Number(candidateAdjustedScore.toFixed(3)),
     });
 
     if (isBetterCandidate) {

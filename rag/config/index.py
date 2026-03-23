@@ -33,13 +33,11 @@ class ConfigLoader:
         raw = self._read_yaml(self.config_file_path)
         filled = self._interpolate_placeholders(raw)
         self.config = self._validate(filled)
-        self._apply_env_overrides()
 
     def reload(self) -> None:
         raw = self._read_yaml(self.config_file_path)
         filled = self._interpolate_placeholders(raw)
         self.config = self._validate(filled)
-        self._apply_env_overrides()
 
     def findAndFillProjectRootDirTags(self) -> None:
         if isinstance(self.config, AppConfigSchema):
@@ -49,56 +47,6 @@ class ConfigLoader:
 
         filled = self._interpolate_placeholders(data)
         self.config = self._validate(filled)
-        self._apply_env_overrides()
-
-    def _apply_env_overrides(self) -> None:
-        def env_num(value: str | None, fallback: int) -> int:
-            try:
-                return int(value) if value is not None else fallback
-            except (TypeError, ValueError):
-                return fallback
-
-        if os.getenv("SOLR_URL"):
-            self.config.ApacheSolr.url = os.environ["SOLR_URL"]
-        if os.getenv("SOLR_CORE_NAME"):
-            self.config.ApacheSolr.coreName = os.environ["SOLR_CORE_NAME"]
-
-        if os.getenv("RAG_BACKEND_HOST"):
-            self.config.RAG.Backend.host = os.environ["RAG_BACKEND_HOST"]
-        if os.getenv("RAG_BACKEND_PORT"):
-            self.config.RAG.Backend.port = env_num(
-                os.getenv("RAG_BACKEND_PORT"), self.config.RAG.Backend.port
-            )
-        backend_url = (
-            os.getenv("RAG_BACKEND_URL")
-            or os.getenv("RAG_API")
-            or os.getenv("RAG_SERVICE_URL")
-        )
-        if backend_url:
-            self.config.RAG.Backend.url = backend_url
-
-        embedding_model = os.getenv("RAG_EMBEDDING_MODEL")
-        if embedding_model:
-            self.config.Models.ragEmbeddingModel.name = embedding_model
-        embedding_cache_dir = os.getenv("RAG_EMBEDDING_CACHE_DIR")
-        if embedding_cache_dir:
-            self.config.Models.ragEmbeddingModel.cacheDir = embedding_cache_dir
-
-        rerank_model = os.getenv("RAG_RERANK_MODEL")
-        if rerank_model:
-            self.config.Models.ragRerankModel.name = rerank_model
-        rerank_cache_dir = os.getenv("RAG_RERANK_CACHE_DIR")
-        if rerank_cache_dir:
-            self.config.Models.ragRerankModel.cacheDir = rerank_cache_dir
-
-        docs_root = os.getenv("DOCS_ROOT")
-        if not docs_root:
-            return
-        upload_dir = os.getenv("UPLOAD_DIR", "files")
-        uploads = self.config.RAG.Uploads
-        uploads.rootDir = docs_root
-        uploads.filesDir = str(Path(docs_root) / upload_dir)
-        uploads.uploadDirectory = str(Path(docs_root) / "temp")
 
     @staticmethod
     def _read_yaml(path: Path) -> dict[str, Any]:

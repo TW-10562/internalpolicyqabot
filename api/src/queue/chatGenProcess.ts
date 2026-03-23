@@ -3677,13 +3677,25 @@ export const chatGenProcess = async (job) => {
     // so treat all pre-terminal in-flight states as writable.
     const activeOutputStatuses = new Set(['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING']);
     let outputWritesAborted = false;
+    let outputFinalizedLocally = false;
+    let liveMutationChain: Promise<void> = Promise.resolve();
+    const enqueueLiveMutation = async (operation: () => Promise<void>): Promise<void> => {
+      const nextRun = liveMutationChain
+        .catch(() => undefined)
+        .then(operation);
+      liveMutationChain = nextRun.catch(() => undefined);
+      await nextRun;
+    };
     const canMutateOutput = async (): Promise<boolean> => {
-      if (outputWritesAborted) return false;
+      if (outputWritesAborted || outputFinalizedLocally) return false;
       const [latestOutput] = await queryList(KrdGenTaskOutput, { id: { [Op.eq]: outputId } });
+      if (outputWritesAborted || outputFinalizedLocally) return false;
       const latestStatus = String(latestOutput?.status || '').trim().toUpperCase();
       if (!activeOutputStatuses.has(latestStatus)) {
         outputWritesAborted = true;
-        console.warn(`[CHAT PROCESS] Output ${outputId} is no longer mutable (status=${latestStatus || 'UNKNOWN'}).`);
+        if (!outputFinalizedLocally) {
+          console.warn(`[CHAT PROCESS] Output ${outputId} is no longer mutable (status=${latestStatus || 'UNKNOWN'}).`);
+        }
         return false;
       }
       return true;
@@ -3696,29 +3708,35 @@ export const chatGenProcess = async (job) => {
     const publishLive = async (
       event: 'status' | 'chunk' | 'replace' | 'done' | 'error',
       payload: Record<string, any>,
-    ) => {
-      if (event !== 'done' && event !== 'error' && !(await canMutateOutput())) {
-        return;
-      }
-      await publishChatStreamEvent(String(taskId), event, {
-        outputId,
-        ...payload,
-      }).catch(() => undefined);
-    };
-    const publishLiveStatus = async (message: string, status = 'PROCESSING') => {
-      if (!(await canMutateOutput())) return;
-      if (outputId) {
-        await put<IGenTaskOutputSer>(
-          KrdGenTaskOutput,
-          { id: outputId },
-          {
-            status,
-            update_by: 'JOB',
-          },
-        ).catch(() => undefined);
-      }
-      await publishLive('status', { status, message });
-    };
+    ): Promise<void> =>
+      enqueueLiveMutation(async () => {
+        if (event !== 'done' && event !== 'error' && !(await canMutateOutput())) {
+          return;
+        }
+        await publishChatStreamEvent(String(taskId), event, {
+          outputId,
+          ...payload,
+        }).catch(() => undefined);
+      });
+    const publishLiveStatus = async (message: string, status = 'PROCESSING'): Promise<void> =>
+      enqueueLiveMutation(async () => {
+        if (!(await canMutateOutput())) return;
+        if (outputId) {
+          await put<IGenTaskOutputSer>(
+            KrdGenTaskOutput,
+            { id: outputId },
+            {
+              status,
+              update_by: 'JOB',
+            },
+          ).catch(() => undefined);
+        }
+        await publishChatStreamEvent(String(taskId), 'status', {
+          outputId,
+          status,
+          message,
+        }).catch(() => undefined);
+      });
 
     const data = parseMetadataSafe(metadata);
     if (data.userId == null && Number.isFinite(Number(queuedUserId))) data.userId = Number(queuedUserId);
@@ -4041,36 +4059,37 @@ export const chatGenProcess = async (job) => {
         console.warn(`[STEP 3] Empty LLM response fallback applied (${reason}).`);
       };
 
-      const pushProcessingPreview = async (answer: string, opts?: { force?: boolean }): Promise<void> => {
-        const next = String(answer || '').trim();
-        if (!next) return;
-        if (isGenerationFailureStyleAnswer(next) || isCannotConfirmStyleAnswer(next)) return;
-        if (!(await canMutateOutput())) return;
+      const pushProcessingPreview = async (answer: string, opts?: { force?: boolean }): Promise<void> =>
+        enqueueLiveMutation(async () => {
+          const next = String(answer || '').trim();
+          if (!next) return;
+          if (isGenerationFailureStyleAnswer(next) || isCannotConfirmStyleAnswer(next)) return;
+          if (!(await canMutateOutput())) return;
 
-        const now = Date.now();
-        const force = Boolean(opts?.force);
-        if (!force) {
-          if (next === streamedPreviewAnswer) return;
-          if (now - lastPreviewWriteAt < STREAM_PREVIEW_MIN_INTERVAL_MS) return;
-        }
+          const now = Date.now();
+          const force = Boolean(opts?.force);
+          if (!force) {
+            if (next === streamedPreviewAnswer) return;
+            if (now - lastPreviewWriteAt < STREAM_PREVIEW_MIN_INTERVAL_MS) return;
+          }
 
-        streamedPreviewAnswer = next;
-        lastPreviewWriteAt = now;
+          streamedPreviewAnswer = next;
+          lastPreviewWriteAt = now;
 
-        try {
-          await put<IGenTaskOutputSer>(
-            KrdGenTaskOutput,
-            { id: outputId },
-            {
-              content: next,
-              status: 'PROCESSING',
-              update_by: 'JOB',
-            },
-          );
-        } catch (previewError) {
-          console.warn('[STEP 3] Failed to stream processing preview:', (previewError as any)?.message || previewError);
-        }
-      };
+          try {
+            await put<IGenTaskOutputSer>(
+              KrdGenTaskOutput,
+              { id: outputId },
+              {
+                content: next,
+                status: 'PROCESSING',
+                update_by: 'JOB',
+              },
+            );
+          } catch (previewError) {
+            console.warn('[STEP 3] Failed to stream processing preview:', (previewError as any)?.message || previewError);
+          }
+        });
 
       const tryModularHowToExtractiveFallback = (reason: string): boolean => {
         const explicitHowToCue = hasExplicitProcedureCue(String(originalQueryText || prompt || ''));
@@ -4526,7 +4545,7 @@ export const chatGenProcess = async (job) => {
             markEmptyLlmResponseFallback('generation_failure_or_empty');
           }
         }
-        void pushProcessingPreview(finalAnswer);
+        await pushProcessingPreview(finalAnswer);
 
         if (!skipExpensiveProceduralPostRecovery && kpiMetrics.ragUsed && /DOCUMENT CONTEXT:/i.test(String(prompt || ''))) {
           const recovered = await recoverTruncatedAnswerFromContext({
@@ -4600,7 +4619,7 @@ export const chatGenProcess = async (job) => {
             markAnswerFallbackUsed('cannot_confirm_with_docs');
           }
         }
-        void pushProcessingPreview(finalAnswer);
+        await pushProcessingPreview(finalAnswer);
 
         if (
           kpiMetrics.ragUsed &&
@@ -4700,10 +4719,12 @@ export const chatGenProcess = async (job) => {
         if (!shouldKeepRagSourcesForAnswer(finalAnswer, kpiMetrics.ragUsed) && ragSources.length > 0) {
           ragSources.splice(0, ragSources.length);
         }
-        void pushProcessingPreview(finalAnswer, { force: true });
+        await pushProcessingPreview(finalAnswer, { force: true });
         if (kpiMetrics.ragUsed && isGenerationFailureStyleAnswer(finalAnswer)) {
           markEmptyLlmResponseFallback('generation_failure_style_answer');
         }
+
+        await liveMutationChain.catch(() => undefined);
 
         if (!(await canMutateOutput())) {
           console.warn('[CHAT PROCESS] Output became terminal during processing; skipping late persistence.');
@@ -4808,6 +4829,8 @@ export const chatGenProcess = async (job) => {
         kpiMetrics.tierLatency = tierLatencyMs;
         updateLocalCacheMetrics();
         const finalStatus = isOk ? 'FINISHED' : 'FAILED';
+        outputFinalizedLocally = true;
+        outputWritesAborted = true;
         logFilterTrace('tier_selection', {
           canonical_query: queryForRAG,
           original_query: String(originalQueryText || '').slice(0, 180),

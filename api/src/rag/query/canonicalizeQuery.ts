@@ -143,6 +143,18 @@ const stableUnique = (tokens: string[]): string[] => {
   return out;
 };
 
+const splitRunOnEnglishToken = (token: string): string[] => {
+  const value = String(token || '').trim().toLowerCase();
+  if (!value) return [];
+  if (value.startsWith('to') && value.length >= 7) {
+    const suffix = value.slice(2);
+    if (EN_VERB_HINTS.has(suffix) || /(ing|ed|ize|ise|fy|ate|en)$/.test(suffix)) {
+      return ['to', suffix];
+    }
+  }
+  return [value];
+};
+
 const englishTokenize = (query: string): string[] =>
   normalizeUnicode(query)
     .toLowerCase()
@@ -151,6 +163,7 @@ const englishTokenize = (query: string): string[] =>
     .replace(/\s+/g, ' ')
     .trim()
     .split(/\s+/)
+    .flatMap((v) => splitRunOnEnglishToken(v))
     .map((v) => v.trim())
     .filter(Boolean);
 

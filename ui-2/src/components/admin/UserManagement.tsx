@@ -20,7 +20,8 @@ interface User {
   email: string;
   employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
+  department: string;
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   isActive: boolean;
   lastUpdated: string;
 }
@@ -49,6 +50,8 @@ type CsvSummary = {
   insertedCount?: number;
   errors?: CsvErrorItem[];
 };
+
+const LAST_SSO_PROBE_KEY = 'last_sso_probe';
 
 const looksLikeEmail = (value: string) => {
   const v = value.trim();
@@ -104,6 +107,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const loadUsersRequestRef = useRef(0);
+  const hasLoggedStoredSsoProbeRef = useRef(false);
   const [csvLoading, setCsvLoading] = useState(false);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [userToDelete, setUserToDelete] = useState<string | null>(null);
@@ -144,7 +148,43 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       return;
     }
 
-    const mapped = (response.result || []).map((item) => {
+    const displayProbe = (response.result || []).map((item) => {
+      const apiEmail = String(item.email || '').trim();
+      const apiEmp = String(item.emp_id || '').trim();
+      const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
+      const employeeCode = apiEmail ? apiEmp : (looksLikeEmail(apiEmp) ? '' : apiEmp);
+      const displayedDepartment = String(item.department || '').trim() || item.department_code || 'HR';
+
+      return {
+        email,
+        rawDepartment: String(item.department || '').trim() || null,
+        rawDepartmentCode: String(item.department_code || '').trim() || null,
+        displayedDepartment,
+        rawEmpId: apiEmp || null,
+        displayedEmployeeCode: employeeCode || null,
+      };
+    });
+    try {
+      (window as typeof window & { __userTableProbe?: typeof displayProbe }).__userTableProbe = displayProbe;
+    } catch {
+      // Ignore global assignment errors in restricted environments.
+    }
+    console.warn('[UserManagement.table_display_probe]', displayProbe);
+    if (!hasLoggedStoredSsoProbeRef.current) {
+      try {
+        const rawStoredProbe = window.sessionStorage.getItem(LAST_SSO_PROBE_KEY);
+        if (rawStoredProbe) {
+          const parsedProbe = JSON.parse(rawStoredProbe) as Record<string, unknown>;
+          (window as typeof window & { __lastSsoProbe?: Record<string, unknown> }).__lastSsoProbe = parsedProbe;
+          console.warn('[UserManagement.last_sso_probe]', parsedProbe);
+        }
+      } catch {
+        // Ignore malformed debug data; this probe is best-effort only.
+      }
+      hasLoggedStoredSsoProbeRef.current = true;
+    }
+
+    const mapped = (response.result || []).map((item, index) => {
       const apiEmail = String(item.email || '').trim();
       const apiEmp = String(item.emp_id || '').trim();
       const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
@@ -157,6 +197,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         email,
         employeeCode,
         roleCode: item.role_code || 'USER',
+        department: displayProbe[index]?.displayedDepartment || 'HR',
         departmentCode: item.department_code || 'HR',
         isActive: item.status === '1',
         lastUpdated: item.updated_at,
@@ -649,7 +690,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                           {user.roleCode}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.departmentCode}</td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.department || user.departmentCode}</td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted text-sm transition-colors">{formatDateTime(user.lastUpdated)}</td>
                       <td className="px-4 py-3 flex gap-2">
                         <button onClick={() => handleEditUser(user.id)} className="p-1 text-blue-600 dark:text-dark-accent-blue hover:bg-blue-50 dark:hover:bg-blue-500/20 rounded transition-colors" title={t('userManagement.form.edit')}><Edit className="w-4 h-4" /></button>

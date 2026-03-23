@@ -12,6 +12,22 @@ interface LoginPageProps {
   onLogin: (user: UserType) => void;
 }
 
+const LAST_SSO_PROBE_KEY = 'last_sso_probe';
+
+const persistLastSsoProbe = (probe: Record<string, unknown>) => {
+  try {
+    window.sessionStorage.setItem(LAST_SSO_PROBE_KEY, JSON.stringify(probe));
+  } catch {
+    // Ignore storage errors; console probes still run.
+  }
+
+  try {
+    (window as typeof window & { __lastSsoProbe?: Record<string, unknown> }).__lastSsoProbe = probe;
+  } catch {
+    // Ignore global assignment errors in restricted environments.
+  }
+};
+
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const { t, toggleLang, lang } = useLang();
   const { theme, toggleTheme } = useTheme();
@@ -21,7 +37,35 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
 
   const finishLogin = useCallback(async (accessToken: string, userInfo: MicrosoftUserInfo) => {
-    const response = await loginWithMicrosoft(accessToken);
+    const clientDepartment = String(userInfo.department || '').trim() || undefined;
+    const clientEmployeeId = String(userInfo.employeeId || '').trim() || undefined;
+    const response = await loginWithMicrosoft(accessToken, clientDepartment, clientEmployeeId);
+    const ssoProbe = {
+      capturedAt: new Date().toISOString(),
+      graphDepartment: String(userInfo.department || '').trim() || null,
+      graphEmployeeId: String(userInfo.employeeId || '').trim() || null,
+      clientDepartment: clientDepartment || null,
+      clientEmployeeId: clientEmployeeId || null,
+      apiDepartment: String(response.result?.department || '').trim() || null,
+      apiDepartmentCode: String(response.result?.departmentCode || '').trim() || null,
+      apiEmpId: String(response.result?.empId || '').trim() || null,
+      email:
+        String(response.result?.email || '').trim() ||
+        String(userInfo.mail || userInfo.userPrincipalName || '').trim() ||
+        null,
+    };
+    persistLastSsoProbe(ssoProbe);
+    console.warn('[LoginPage.sso_department_probe]', ssoProbe);
+    console.warn('[LoginPage.sso_employee_probe]', {
+      capturedAt: ssoProbe.capturedAt,
+      graphEmployeeId: String(userInfo.employeeId || '').trim() || null,
+      clientEmployeeId: clientEmployeeId || null,
+      apiEmpId: String(response.result?.empId || '').trim() || null,
+      email:
+        String(response.result?.email || '').trim() ||
+        String(userInfo.mail || userInfo.userPrincipalName || '').trim() ||
+        null,
+    });
     if (response.code === 200 && response.result?.token) {
       const roleCode = response.result.roleCode || 'USER';
       const departmentCode = response.result.departmentCode || 'HR';
@@ -31,13 +75,17 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         roleCode === 'GA_ADMIN' ||
         roleCode === 'ACC_ADMIN';
       const departmentName =
-        departmentCode === 'HR'
+        String(response.result.department || '').trim() ||
+        String(userInfo.department || '').trim() ||
+        (departmentCode === 'HR'
           ? 'Human Resources'
           : departmentCode === 'GA'
             ? 'General Affairs'
             : departmentCode === 'ACC'
-              ? 'Accounts'
-              : 'General';
+              ? 'Accounting'
+              : departmentCode === 'SYSTEMS'
+                ? 'Systems'
+                : 'Other');
 
       onLogin({
         employeeId: response.result.empId || response.result.email || userInfo.mail || userInfo.userPrincipalName,
@@ -89,7 +137,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setError('');
 
     setLoading(true);
-    console.log("Test")
+    console.warn('[LoginPage.sso_start]', {
+      startedAt: new Date().toISOString(),
+    });
     try {
       if (!hasMicrosoftSsoConfig()) {
         setError(t('login.ssoConfigMissing', undefined, 'Microsoft SSO is not configured yet. Add the Azure values in ui-2/.env.'));
@@ -99,7 +149,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       // Redirect (no popup) is the most reliable across browsers and embedded environments.
       await beginMicrosoftLoginRedirect();
     } catch (err) {
-      console.log(err)
+      console.warn('[LoginPage.sso_error]', err);
       const message = err instanceof Error ? err.message : '';
       if (message.includes('popup_blocked')) {
         setError(t('login.popupBlocked', undefined, 'Popup was blocked. Please allow popups and try again.'));

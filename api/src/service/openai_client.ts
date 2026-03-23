@@ -26,6 +26,7 @@ export interface ChatCompletionOptions {
   response_format?: { type: 'json_object' | 'text' };
   retry_on_empty?: boolean;
   timeout_ms?: number;
+  max_attempts?: number;
   extra_body?: Record<string, any>;
   allow_reasoning_fallback?: boolean;
   abort_signal?: AbortSignal;
@@ -250,18 +251,23 @@ class OpenAIClient {
   private hasIgnoredReasoningField(payload: any): boolean {
     const firstChoice = payload?.choices?.[0] || {};
     const candidates = [
+      firstChoice?.message?.reasoning,
       firstChoice?.message?.reasoning_content,
       firstChoice?.message?.thinking,
       firstChoice?.message?.analysis,
+      firstChoice?.delta?.reasoning,
       firstChoice?.delta?.reasoning_content,
       firstChoice?.delta?.thinking,
       firstChoice?.delta?.analysis,
+      firstChoice?.reasoning,
       firstChoice?.reasoning_content,
       firstChoice?.thinking,
       firstChoice?.analysis,
+      payload?.message?.reasoning,
       payload?.message?.reasoning_content,
       payload?.message?.thinking,
       payload?.message?.analysis,
+      payload?.reasoning,
       payload?.reasoning_content,
       payload?.thinking,
       payload?.analysis,
@@ -274,9 +280,7 @@ class OpenAIClient {
     allowReasoningFallback: boolean = false,
   ): { content: string | null; source: string } {
     const firstChoice = payload?.choices?.[0] || {};
-    if (this.hasIgnoredReasoningField(payload)) {
-      console.warn('LLM_REASONING_FIELD_IGNORED');
-    }
+    const hasIgnoredReasoning = this.hasIgnoredReasoningField(payload);
 
     const contentArray = firstChoice?.message?.content;
     if (Array.isArray(contentArray)) {
@@ -350,10 +354,15 @@ class OpenAIClient {
 
     if (allowReasoningFallback) {
       const reasoningCandidates = [
+        firstChoice?.message?.reasoning,
         firstChoice?.message?.reasoning_content,
+        firstChoice?.delta?.reasoning,
         firstChoice?.delta?.reasoning_content,
+        firstChoice?.reasoning,
         firstChoice?.reasoning_content,
+        payload?.message?.reasoning,
         payload?.message?.reasoning_content,
+        payload?.reasoning,
         payload?.reasoning_content,
         firstChoice?.message?.thinking,
         firstChoice?.delta?.thinking,
@@ -364,6 +373,9 @@ class OpenAIClient {
       for (const candidate of reasoningCandidates) {
         const text = this.extractText(candidate).trim();
         if (!text) continue;
+        if (hasIgnoredReasoning) {
+          console.warn('LLM_REASONING_FIELD_IGNORED');
+        }
         console.warn('[RAG LLM CLIENT] reasoning_content_recovery');
         return { content: text, source: 'reasoning_content_fallback' };
       }
@@ -388,6 +400,7 @@ class OpenAIClient {
       response_format = undefined,
       retry_on_empty = true,
       timeout_ms = undefined,
+      max_attempts = undefined,
       extra_body = undefined,
       allow_reasoning_fallback = false,
       abort_signal = undefined,
@@ -409,7 +422,10 @@ class OpenAIClient {
         timeout: Number(timeout_ms || this.timeout),
         signal: abort_signal,
       };
-      const maxRequestAttempts = this.getGenerateMaxAttempts();
+      const maxRequestAttempts = Math.max(
+        1,
+        Math.min(4, Number(max_attempts ?? this.getGenerateMaxAttempts())),
+      );
       const retryDelayMs = this.getGenerateRetryDelayMs();
       const requestOnce = async (args: {
         temperature: number;
