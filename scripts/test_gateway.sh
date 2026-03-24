@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APISIX_URL="${APISIX_URL:-http://127.0.0.1:9080}"
+API_CONTAINER="${API_CONTAINER:-hrbot-api}"
+API_KEY="${LLM_API_KEY:-}"
+API_KEY_HEADER="${LLM_API_KEY_HEADER:-}"
+MODEL_NAME="${LLM_MODEL:-}"
+
+tmp_models="$(mktemp)"
+tmp_chat="$(mktemp)"
+tmp_noauth="$(mktemp)"
+cleanup() {
+  rm -f "$tmp_models" "$tmp_chat" "$tmp_noauth"
+}
+trap cleanup EXIT
+
+read_container_env() {
+  local key="$1"
+  docker exec "$API_CONTAINER" sh -lc "printf %s \"\${$key:-}\""
+}
+
+if [[ -z "$API_KEY" ]]; then
+  API_KEY="$(read_container_env LLM_API_KEY)"
+fi
+if [[ -z "$API_KEY_HEADER" ]]; then
+  API_KEY_HEADER="$(read_container_env LLM_API_KEY_HEADER)"
+fi
+if [[ -z "$MODEL_NAME" ]]; then
+  MODEL_NAME="$(read_container_env LLM_MODEL)"
+fi
+
+API_KEY_HEADER="${API_KEY_HEADER:-apikey}"
+
+if [[ -z "$API_KEY" ]]; then
+  echo "gateway test failed: LLM_API_KEY is not available" >&2
+  exit 1
+fi
+
+echo "[gateway] auth failure check"
+noauth_status="$(
+  curl -sS -o "$tmp_noauth" -w '%{http_code}' \
+    "$APISIX_URL/v1/models" || true
+)"
+if [[ "$noauth_status" == "200" ]]; then
+  echo "gateway test failed: /v1/models succeeded without auth" >&2
+  cat "$tmp_noauth" >&2
+  exit 1
+fi
+
+echo "[gateway] models success check"
+models_status="$(
+  curl -sS -o "$tmp_models" -w '%{http_code}' \
+    -H "$API_KEY_HEADER: $API_KEY" \
+    "$APISIX_URL/v1/models"
+)"
+if [[ "$models_status" != "200" ]]; then
+  echo "gateway test failed: /v1/models returned HTTP $models_status" >&2
+  cat "$tmp_models" >&2
+  exit 1
+fi
+
+models_summary="$(
+  node -e '
+    const fs = require("fs");
+    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const ids = Array.isArray(data.data) ? data.data.map((row) => row.id).filter(Boolean) : [];
+    if (!ids.length) process.exit(1);
+    console.log(ids.join(", "));
+  ' "$tmp_models"
+)"
+
+if [[ -z "$MODEL_NAME" ]]; then
+  MODEL_NAME="$(node -e '
+    const fs = require("fs");
+    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const first = Array.isArray(data.data) ? data.data[0]?.id : "";
+    process.stdout.write(String(first || ""));
+  ' "$tmp_models")"
+fi
+
+if [[ -z "$MODEL_NAME" ]]; then
+  echo "gateway test failed: no model name available" >&2
+  exit 1
+fi
+
+chat_payload="$(
+  node -e '
+    const payload = {
+      model: process.argv[1],
+      messages: [{ role: "user", content: "What is 2+2? Reply with only the single character 4." }],
+      max_tokens: 64,
+      stream: false,
+    };
+    process.stdout.write(JSON.stringify(payload));
+  ' "$MODEL_NAME"
+)"
+
+echo "[gateway] chat completion check"
+chat_status="$(
+  curl -sS -o "$tmp_chat" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H "$API_KEY_HEADER: $API_KEY" \
+    --data "$chat_payload" \
+    "$APISIX_URL/v1/chat/completions"
+)"
+if [[ "$chat_status" != "200" ]]; then
+  echo "gateway test failed: /v1/chat/completions returned HTTP $chat_status" >&2
+  cat "$tmp_chat" >&2
+  exit 1
+fi
+
+chat_content="$(
+  node -e '
+    const fs = require("fs");
+    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const message = data.choices?.[0]?.message || {};
+    const content = String(message.content || "").trim();
+    const reasoning = String(message.reasoning || "").trim();
+    const text = content || reasoning;
+    if (!text) process.exit(1);
+    process.stdout.write(text);
+  ' "$tmp_chat"
+)"
+
+echo "[gateway] models: $models_summary"
+echo "[gateway] chat model: $MODEL_NAME"
+echo "[gateway] chat content: $chat_content"

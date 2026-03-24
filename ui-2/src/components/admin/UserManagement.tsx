@@ -58,6 +58,12 @@ const looksLikeEmail = (value: string) => {
   return Boolean(v && v.includes('@') && v.includes('.') && !v.includes(' '));
 };
 
+const getEmployeeCodeDisplay = (value: string) => {
+  const normalized = value.trim();
+  if (!looksLikeEmail(normalized)) return normalized;
+  return normalized.split('@')[0] || normalized;
+};
+
 const initialFormData: FormData = {
   firstName: '',
   lastName: '',
@@ -152,7 +158,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       const apiEmail = String(item.email || '').trim();
       const apiEmp = String(item.emp_id || '').trim();
       const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
-      const employeeCode = apiEmail ? apiEmp : (looksLikeEmail(apiEmp) ? '' : apiEmp);
+      const employeeCode = getEmployeeCodeDisplay(apiEmp);
       const displayedDepartment = String(item.department || '').trim() || item.department_code || 'HR';
 
       return {
@@ -188,7 +194,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       const apiEmail = String(item.email || '').trim();
       const apiEmp = String(item.emp_id || '').trim();
       const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
-      const employeeCode = apiEmail ? apiEmp : (looksLikeEmail(apiEmp) ? '' : apiEmp);
+      const employeeCode = getEmployeeCodeDisplay(apiEmp);
 
       return {
         id: String(item.user_id),

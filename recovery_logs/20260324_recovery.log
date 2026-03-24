@@ -1,0 +1,12 @@
+2026-03-24 recovery audit
+
+- Patched Python config loading in rag/config/index.py
+- Corrected container service defaults in api/config/default.yml
+- Replaced pathological hybrid BM25 loading in rag/services/HybridRAGEngineFactory.py
+- Added embedding timing diagnostics in rag/services/embedder.py
+- Added search request diagnostics in rag/api/main.py
+- Added runtime health checks and aligned env overrides in docker-compose.override.yml
+- Restarted stack with docker compose down
+- Restarted stack with docker compose up -d
+- Validated API health, RAG health, Solr availability, gateway model listing, gateway chat completion reachability, and Aviary task creation
+- Captured before/after latency observations from rag-python and worker logs

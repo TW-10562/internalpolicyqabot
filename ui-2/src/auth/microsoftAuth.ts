@@ -1,4 +1,4 @@
-const MICROSOFT_GRAPH_ME_URL = 'https://graph.microsoft.com/v1.0/me?$select=displayName,department,employeeId,mail,userPrincipalName,id';
+const MICROSOFT_GRAPH_ME_URL = 'https://graph.microsoft.com/v1.0/me?$select=displayName,department,employeeId,mailNickname,mail,onPremisesSamAccountName,userPrincipalName,id';
 const MICROSOFT_SCOPES = ['openid', 'profile', 'email', 'User.Read'];
 const POPUP_FEATURES = 'popup=yes,width=520,height=720,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
 const AUTH_MESSAGE_TYPE = 'microsoft-oauth-response';
@@ -10,7 +10,9 @@ export interface MicrosoftUserInfo {
   displayName: string;
   department?: string | null;
   employeeId?: string | null;
+  mailNickname?: string | null;
   mail: string | null;
+  onPremisesSamAccountName?: string | null;
   userPrincipalName: string;
   id: string;
 }
@@ -251,6 +253,21 @@ const extractDepartmentFromClaims = (claims: Record<string, unknown> | null): st
 const extractEmployeeIdFromClaims = (claims: Record<string, unknown> | null): string | null =>
   extractStringClaim(claims, ['employeeId', 'employeeid'], /employee.?id/i);
 
+const normalizeText = (value: unknown) => String(value || '').trim();
+
+const extractEmailLocalPart = (value: unknown) => {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized || !normalized.includes('@')) return '';
+  return normalized.split('@')[0] || '';
+};
+
+const resolveEmployeeCode = (profile: MicrosoftUserInfo) =>
+  normalizeText(profile.employeeId) ||
+  normalizeText(profile.onPremisesSamAccountName) ||
+  normalizeText(profile.mailNickname) ||
+  extractEmailLocalPart(profile.mail || profile.userPrincipalName) ||
+  null;
+
 const fetchMicrosoftUserInfo = async (accessToken: string, idToken?: string): Promise<MicrosoftUserInfo> => {
   const response = await fetch(MICROSOFT_GRAPH_ME_URL, {
     headers: {
@@ -276,15 +293,24 @@ const fetchMicrosoftUserInfo = async (accessToken: string, idToken?: string): Pr
       profile.employeeId = tokenEmployeeId;
     }
   }
+  const resolvedEmployeeCode = resolveEmployeeCode(profile);
+  if (resolvedEmployeeCode && !normalizeText(profile.employeeId)) {
+    profile.employeeId = resolvedEmployeeCode;
+  }
 
   console.warn('[microsoftAuth.graph_profile]', {
     graphDepartment: String(profile.department || '').trim() || null,
     graphEmployeeId: String(profile.employeeId || '').trim() || null,
+    graphMailNickname: normalizeText(profile.mailNickname) || null,
+    graphSamAccountName: normalizeText(profile.onPremisesSamAccountName) || null,
     displayName: String(profile.displayName || '').trim() || null,
     email: String(profile.mail || profile.userPrincipalName || '').trim() || null,
   });
   console.warn('[microsoftAuth.employee_probe]', {
     graphEmployeeId: String(profile.employeeId || '').trim() || null,
+    graphMailNickname: normalizeText(profile.mailNickname) || null,
+    graphSamAccountName: normalizeText(profile.onPremisesSamAccountName) || null,
+    resolvedEmployeeCode,
     email: String(profile.mail || profile.userPrincipalName || '').trim() || null,
   });
 

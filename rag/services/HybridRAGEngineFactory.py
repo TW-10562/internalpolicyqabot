@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 import jaconv
@@ -10,8 +11,9 @@ from core.logging import logger
 from langchain.retrievers.ensemble import EnsembleRetriever
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
 from models.schemas import HybridSearchRequest
-from services.embedder import embeddings
+from services.embedder import embed_text, embeddings, process_text
 from services.reranker_service import get_ranked_results
 from sudachipy import dictionary, tokenizer
 
@@ -64,6 +66,8 @@ class HybridRAGSearchEngine:
         )
 
         self._all_documents_cache: Optional[List] = None
+        self._bm25_retriever_cache: Optional[BM25Retriever] = None
+        self._bm25_params_cache: Optional[tuple[tuple[str, Any], ...]] = None
         self._bm25_lock = threading.Lock()
 
     def _compute_candidate_k(self, req: HybridSearchRequest) -> int:
@@ -90,16 +94,97 @@ class HybridRAGSearchEngine:
     def _ensure_all_documents(self, refresh: bool = False) -> List:
         with self._bm25_lock:
             if self._all_documents_cache is None or refresh:
+                started = perf_counter()
                 logger.info(
-                    "[RAG] Loading all documents from Chroma for BM25-capable modes"
+                    "[RAG] Loading all documents from Chroma collection for BM25-capable modes"
                 )
-                self._all_documents_cache = self.vectorstore.similarity_search(
-                    "", k=100000
+                payload = self.vectorstore._collection.get(
+                    include=["documents", "metadatas"]
                 )
+                ids = list(payload.get("ids") or [])
+                documents = list(payload.get("documents") or [])
+                metadatas = list(payload.get("metadatas") or [])
+                materialized: List[Document] = []
+                for idx, page_content in enumerate(documents):
+                    text = str(page_content or "").strip()
+                    if not text:
+                        continue
+                    metadata = dict(metadatas[idx] or {}) if idx < len(metadatas) else {}
+                    if idx < len(ids):
+                        metadata.setdefault("id", ids[idx])
+                    materialized.append(
+                        Document(
+                            page_content=text,
+                            metadata=metadata,
+                        )
+                    )
+                self._all_documents_cache = materialized
+                self._bm25_retriever_cache = None
+                self._bm25_params_cache = None
                 logger.info(
-                    f"[RAG] Cached {len(self._all_documents_cache or [])} documents for BM25"
+                    f"[RAG] Cached {len(self._all_documents_cache or [])} documents for BM25 in {perf_counter() - started:.3f}s"
                 )
         return self._all_documents_cache or []
+
+    def _build_bm25_retriever(
+        self, candidate_documents: List, bm25_params: Dict[str, Any], top_k: int
+    ) -> BM25Retriever:
+        cache_key = tuple(sorted((str(key), value) for key, value in bm25_params.items()))
+        use_cache = candidate_documents is self._all_documents_cache
+        if (
+            use_cache
+            and self._bm25_retriever_cache is not None
+            and self._bm25_params_cache == cache_key
+        ):
+            self._bm25_retriever_cache.k = top_k
+            return self._bm25_retriever_cache
+
+        retriever = BM25Retriever.from_documents(
+            documents=candidate_documents,
+            bm25_params=bm25_params,
+            preprocess_func=ja_preprocess,
+        )
+        retriever.k = top_k
+
+        if use_cache:
+            self._bm25_retriever_cache = retriever
+            self._bm25_params_cache = cache_key
+        return retriever
+
+    def _query_vector_documents(
+        self, query: str, top_k: int, where_filter: Optional[Dict[str, Any]] = None
+    ) -> List[Document]:
+        started = perf_counter()
+        payload = self.vectorstore._collection.query(
+            query_embeddings=[embed_text(process_text(query) or query)],
+            n_results=top_k,
+            where=where_filter or None,
+            include=["documents", "metadatas", "distances"],
+        )
+
+        ids = list((payload.get("ids") or [[]])[0] or [])
+        documents = list((payload.get("documents") or [[]])[0] or [])
+        metadatas = list((payload.get("metadatas") or [[]])[0] or [])
+        distances = list((payload.get("distances") or [[]])[0] or [])
+
+        results: List[Document] = []
+        for idx, page_content in enumerate(documents):
+            text = str(page_content or "").strip()
+            if not text:
+                continue
+            metadata = dict(metadatas[idx] or {}) if idx < len(metadatas) else {}
+            if idx < len(ids):
+                metadata.setdefault("id", ids[idx])
+            if idx < len(distances):
+                distance = float(distances[idx])
+                metadata["vector_distance"] = distance
+                metadata["vector_similarity"] = float(1 / (1 + max(distance, 0.0)))
+            results.append(Document(page_content=text, metadata=metadata))
+
+        logger.info(
+            f"[RAG] Vector query completed in {perf_counter() - started:.3f}s with {len(results)} candidate docs"
+        )
+        return results
 
     def _normalize_where_filter(self, req: HybridSearchRequest) -> Dict[str, Any]:
         where: Dict[str, Any] = {}
@@ -177,21 +262,14 @@ class HybridRAGSearchEngine:
             # ----- Vector-only -----
             if req.vector_only:
                 logger.info("[RAG] Vector-only search")
-                vector_kwargs: Dict[str, Any] = {"k": k_candidates}
-                if where_filter:
-                    vector_kwargs["filter"] = where_filter
-                retriever = self.vectorstore.as_retriever(
-                    search_kwargs=vector_kwargs
+                retrieved_docs = self._query_vector_documents(
+                    req.query, k_candidates, where_filter
                 )
-                retrieved_docs = retriever.invoke(req.query)
                 if where_filter and not retrieved_docs:
                     logger.warning(
                         "[RAG] Vector-only metadata filter returned 0 docs; retrying without metadata filter"
                     )
-                    retriever = self.vectorstore.as_retriever(
-                        search_kwargs={"k": k_candidates}
-                    )
-                    retrieved_docs = retriever.invoke(req.query)
+                    retrieved_docs = self._query_vector_documents(req.query, k_candidates)
                 logger.info("[RAG] Vector-only search completed")
                 return self._maybe_rerank(req.query, retrieved_docs, req.top_k)
 
@@ -221,19 +299,28 @@ class HybridRAGSearchEngine:
             # ----- BM25-only -----
             if req.bm25_only:
                 logger.info("[RAG] BM25-only search")
-                bm25_retriever = BM25Retriever.from_documents(
-                    documents=candidate_documents,
-                    bm25_params=bm25_params,
-                    preprocess_func=ja_preprocess,
+                started = perf_counter()
+                bm25_retriever = self._build_bm25_retriever(
+                    candidate_documents, bm25_params, k_candidates
                 )
-                bm25_retriever.k = k_candidates
                 retrieved_docs = bm25_retriever.invoke(req.query)
-                logger.info("[RAG] BM25-only search completed")
+                logger.info(
+                    f"[RAG] BM25-only search completed in {perf_counter() - started:.3f}s with {len(retrieved_docs)} candidate docs"
+                )
                 return self._maybe_rerank(req.query, retrieved_docs, req.top_k)
 
             # ----- Hybrid（Ensemble）-----
             logger.info("[RAG] Hybrid search")
-            multiplier = 2
+            started = perf_counter()
+            multiplier = max(
+                1,
+                int(
+                    getattr(
+                        config.RAG.PreProcess.PDF.splitByArticle, "multiplier", 2
+                    )
+                    or 2
+                ),
+            )
             expanded_top_k = max(k_candidates, req.top_k * max(1, int(multiplier)))
 
             vector_kwargs: Dict[str, Any] = {"k": expanded_top_k}
@@ -242,12 +329,9 @@ class HybridRAGSearchEngine:
             vector_retriever = self.vectorstore.as_retriever(
                 search_kwargs=vector_kwargs
             )
-            bm25_retriever = BM25Retriever.from_documents(
-                documents=candidate_documents,
-                bm25_params=bm25_params,
-                preprocess_func=ja_preprocess,
+            bm25_retriever = self._build_bm25_retriever(
+                candidate_documents, bm25_params, expanded_top_k
             )
-            bm25_retriever.k = expanded_top_k
 
             ensemble_retriever = EnsembleRetriever(
                 retrievers=[vector_retriever, bm25_retriever],
@@ -255,7 +339,7 @@ class HybridRAGSearchEngine:
             )
             retrieved_docs = ensemble_retriever.invoke(req.query)
             logger.info(
-                f"[RAG] Hybrid produced {len(retrieved_docs)} candidates (pre-rerank/trim)"
+                f"[RAG] Hybrid produced {len(retrieved_docs)} candidates (pre-rerank/trim) in {perf_counter() - started:.3f}s"
             )
             return self._maybe_rerank(req.query, retrieved_docs, req.top_k)
 

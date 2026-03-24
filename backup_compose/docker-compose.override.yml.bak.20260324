@@ -1,0 +1,106 @@
+services:
+  postgres:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twave_01 -d qa_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "abcd1234", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  solr:
+    healthcheck:
+      test: ["CMD-SHELL", "solr status > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  rag-python:
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11435
+      RAG_HYBRID_BM25_WEIGHT: "0.8"
+      RAG_HYBRID_VECTOR_WEIGHT: "0.2"
+      RAG_SEMANTIC_BM25_ONLY: "0"
+      RAG_SEMANTIC_VECTOR_ONLY: "0"
+      SOLR_CORE_NAME: mycore
+      SOLR_URL: http://solr:8983
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      solr:
+        condition: service_healthy
+
+  api:
+    environment:
+      RAG_BACKEND_TIMEOUT_MS: "4000"
+      RAG_CONTEXT_DEDUP: "1"
+      RAG_HYBRID_SOLR_WEIGHT: "0.8"
+      RAG_HYBRID_VECTOR_WEIGHT: "0.2"
+      RAG_RESPONSE_CACHE_ENABLED: "1"
+      RAG_SOLR_ROWS: "12"
+      RAG_VECTOR_RETRIEVAL_ENABLED: "0"
+      RAG_VECTOR_TIMEOUT_MS: "3000"
+      RAG_VECTOR_TOP_K: "8"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rag-python:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      solr:
+        condition: service_healthy
+
+  worker:
+    environment:
+      RAG_BACKEND_TIMEOUT_MS: "4000"
+      RAG_CONTEXT_DEDUP: "1"
+      RAG_HYBRID_SOLR_WEIGHT: "0.8"
+      RAG_HYBRID_VECTOR_WEIGHT: "0.2"
+      RAG_RESPONSE_CACHE_ENABLED: "1"
+      RAG_SOLR_ROWS: "12"
+      RAG_VECTOR_RETRIEVAL_ENABLED: "0"
+      RAG_VECTOR_TIMEOUT_MS: "3000"
+      RAG_VECTOR_TOP_K: "8"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rag-python:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      solr:
+        condition: service_healthy
+
+  ui:
+    depends_on:
+      api:
+        condition: service_healthy

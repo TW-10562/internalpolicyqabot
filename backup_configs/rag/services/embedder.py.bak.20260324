@@ -1,7 +1,6 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from time import perf_counter
 
 import torch
 from core.logging import logger
@@ -142,13 +141,7 @@ embeddings = load_embeddings()
 
 @lru_cache(maxsize=EMBED_QUERY_CACHE_SIZE)
 def _embed_query_cached(normalized_text: str) -> tuple[float, ...]:
-    started = perf_counter()
-    vector = tuple(embeddings.embed_query(normalized_text))
-    logger.info(
-        f"[RAG] Query embedding computed in {perf_counter() - started:.3f}s "
-        f"(chars={len(normalized_text)})"
-    )
-    return vector
+    return tuple(embeddings.embed_query(normalized_text))
 
 
 def embed_text(text: str) -> list[float]:
@@ -163,15 +156,10 @@ def embed_text_batch(texts: list[str], batch_size: int = 16) -> list[list[float]
     from tqdm import tqdm
 
     for i in tqdm(range(0, len(texts), batch_size), desc="Embedding texts"):
-        started = perf_counter()
         batch_texts = [
             process_text(text) or str(text or "").strip()
             for text in texts[i : i + batch_size]
         ]
         batch_embeddings = embeddings.embed_documents(batch_texts)
-        logger.info(
-            f"[RAG] Batch embeddings computed in {perf_counter() - started:.3f}s "
-            f"(batch={len(batch_texts)})"
-        )
         results.extend(batch_embeddings)
     return results

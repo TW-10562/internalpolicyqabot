@@ -184,65 +184,35 @@ const issueSessionForMicrosoftEmail = async (
   const email = normalizeEmail(params.email);
   const displayName = String(params.displayName || '').trim();
   const requestedEmployeeId = normalizeText(params.employeeId);
-  const lookupEmployeeId =
-    requestedEmployeeId ||
-    normalizeText((params as any).onPremisesSamAccountName) ||
-    normalizeText((params as any).mailNickname);
   const { firstName, lastName } = splitDisplayName(displayName);
 
   if (!email) {
     return ctx.app.emit('error', { code: '400', message: 'email is required for Microsoft SSO login' }, ctx);
   }
 
+  const identityClauses: any[] = [{ email }, { emp_id: email }, { user_name: email }];
+  if (requestedEmployeeId && requestedEmployeeId !== email) {
+    identityClauses.push({ emp_id: requestedEmployeeId });
+  }
+
   const roleCode = await getRoleForEmail(email);
-  const activeEmployeeMatch =
-    lookupEmployeeId && lookupEmployeeId !== email
-      ? ((await User.findOne({
-          raw: true,
-          where: {
-            deleted_at: null,
-            emp_id: lookupEmployeeId,
-          } as any,
-          order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
-        })) as any)
-      : null;
-  const activeEmailMatch = (await User.findOne({
+  const existing = (await User.findOne({
     raw: true,
     where: {
       deleted_at: null,
-      [Op.or]: [{ email }, { emp_id: email }, { user_name: email }] as any,
+      [Op.or]: identityClauses as any,
     } as any,
-      order: [['sso_bound', 'DESC'], ['updated_at', 'DESC'], ['user_id', 'DESC']],
   })) as any;
-  const existing = activeEmployeeMatch || activeEmailMatch;
-  if (activeEmployeeMatch && activeEmailMatch && Number(activeEmployeeMatch.user_id) !== Number(activeEmailMatch.user_id)) {
-    console.warn('[sso.account_probe] employee/email conflict resolved in favor of employee match', {
-      email,
-      lookupEmployeeId,
-      employeeUserId: Number(activeEmployeeMatch.user_id),
-      emailUserId: Number(activeEmailMatch.user_id),
-    });
-  }
   const deletedMatch = existing
     ? null
-    : (((lookupEmployeeId && lookupEmployeeId !== email
-        ? ((await User.findOne({
-            raw: true,
-            where: {
-              deleted_at: { [Op.ne]: null } as any,
-              emp_id: lookupEmployeeId,
-            } as any,
-            order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
-          })) as any)
-        : null) ||
-        ((await User.findOne({
-          raw: true,
-          where: {
-            deleted_at: { [Op.ne]: null } as any,
-            [Op.or]: [{ email }, { emp_id: email }, { user_name: email }] as any,
-          } as any,
-          order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
-        })) as any)) as any);
+    : ((await User.findOne({
+        raw: true,
+        where: {
+          deleted_at: { [Op.ne]: null } as any,
+          [Op.or]: identityClauses as any,
+        } as any,
+        order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
+      })) as any);
   const { department, departmentCode, source } = resolveSsoDepartment({
     roleCode,
     microsoftDepartment: params.department,
@@ -279,41 +249,11 @@ const issueSessionForMicrosoftEmail = async (
   let userId: number;
   let userName: string;
   let empId: string;
-  const selectedUserId = existing
-    ? Number(existing.user_id)
-    : deletedMatch
-      ? Number(deletedMatch.user_id)
-      : null;
-  const employeeConflict =
-    employeeId && employeeId !== email
-      ? ((await User.findOne({
-          raw: true,
-          where: {
-            emp_id: employeeId,
-            ...(selectedUserId ? { user_id: { [Op.ne]: selectedUserId } } : {}),
-          } as any,
-          order: [['deleted_at', 'ASC'], ['updated_at', 'DESC'], ['user_id', 'DESC']],
-        })) as any)
-      : null;
-  const safeEmployeeId =
-    employeeConflict && selectedUserId !== Number(employeeConflict.user_id)
-      ? normalizeText(existing?.emp_id || deletedMatch?.emp_id) || email
-      : employeeId || email;
-  if (employeeConflict && selectedUserId !== Number(employeeConflict.user_id)) {
-    console.warn('[sso.employee_conflict] preserving current emp_id to avoid unique collision', {
-      email,
-      requestedEmployeeId: employeeId,
-      selectedUserId,
-      conflictingUserId: Number(employeeConflict.user_id),
-      conflictingDeletedAt: employeeConflict.deleted_at || null,
-      persistedEmpId: safeEmployeeId,
-    });
-  }
 
   if (existing) {
     userId = Number(existing.user_id);
     userName = String(existing.user_name || email);
-    empId = safeEmployeeId;
+    empId = employeeId || email;
 
     // Keep the primary app user table aligned with Microsoft profile data.
     await User.update(
@@ -334,7 +274,7 @@ const issueSessionForMicrosoftEmail = async (
   } else if (deletedMatch) {
     userId = Number(deletedMatch.user_id);
     userName = String(deletedMatch.user_name || email);
-    empId = safeEmployeeId;
+    empId = employeeId || email;
 
     await User.update(
       {
@@ -359,7 +299,7 @@ const issueSessionForMicrosoftEmail = async (
   } else {
     const created = (await User.create({
       user_name: email,
-      emp_id: safeEmployeeId,
+      emp_id: employeeId || email,
       first_name: firstName,
       last_name: lastName,
       job_role_key: '',
@@ -377,7 +317,7 @@ const issueSessionForMicrosoftEmail = async (
 
     userId = Number(created.dataValues.user_id);
     userName = String(created.dataValues.user_name || email);
-    empId = String(created.dataValues.emp_id || safeEmployeeId || email);
+    empId = String(created.dataValues.emp_id || employeeId || email);
   }
 
   const session = createHash();
