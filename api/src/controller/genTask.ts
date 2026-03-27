@@ -195,7 +195,7 @@ export const getAddMid = async (ctx: any, next: () => Promise<void>) => {
 
     genTaskLog('\n--- TASK CREATION ---');
     genTaskLog('📤 [GenTask] Sending task to processing queue...');
-    const result = await handleAddGenTask(enhancedContent, userName, Number(userId));
+    const result = await handleAddGenTask(enhancedContent, userName, Number(userId), accessScope.departmentCode || 'OTHER');
     const ragTriggered = Boolean((enhancedContent as any)?.formData?.ragTriggered);
 
     genTaskLog('✅ [GenTask] Task created successfully:', {

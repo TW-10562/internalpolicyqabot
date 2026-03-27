@@ -2,8 +2,9 @@ import Router from 'koa-router';
 import Joi from 'joi';
 import { ok, fail } from '@/service/apiResponse';
 import { requireScopedAccess } from '@/controller/auth';
-import { AccessScope, isSuperAdminRole } from '@/service/rbac';
+import { AccessScope } from '@/service/rbac';
 import { listFaqItems } from '@/service/historyPersistenceService';
+import { getAllowedFaqCategories } from '@/service/faqAccess';
 
 const router = new Router({ prefix: '/api/faq' });
 router.use(requireScopedAccess);
@@ -28,12 +29,16 @@ router.get('/', async (ctx: any) => {
   }
 
   try {
+    // Enforce role-based FAQ category access at the backend level.
+    // HR FAQs are only visible to SUPER_ADMIN and HR_ADMIN.
+    const allowedCategories = getAllowedFaqCategories(scope.roleCode);
+
     const data = await listFaqItems({
       limit: value.limit,
       minCount: value.minCount,
       sampleSize: value.sampleSize,
-      departmentCode: isSuperAdminRole(scope.roleCode) ? undefined : scope.departmentCode,
       roleCode: scope.roleCode,
+      allowedCategories,
     });
     ctx.body = ok(data);
   } catch (e: any) {

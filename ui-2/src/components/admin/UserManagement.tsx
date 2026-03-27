@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Plus, Edit, Trash2, X, Save, Upload, Search } from 'lucide-react';
+import { Plus, Edit, Trash2, X, Save, Upload, Search, RotateCcw } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { formatDateTimeJP } from '../../lib/dateTime';
@@ -9,6 +9,8 @@ import {
   deleteAdminUser,
   fetchAdminUsers,
   importAdminUsersCsv,
+  permanentlyDeleteAdminUser,
+  restoreAdminUser,
   updateAdminUser,
 } from '../../api/adminUsers';
 import { User as CurrentUser } from '../../types';
@@ -23,8 +25,13 @@ interface User {
   department: string;
   departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   isActive: boolean;
+  lifecycleStatus: 'ACTIVE' | 'RESTORED' | 'DELETED';
+  deletedAt: string | null;
   lastUpdated: string;
 }
+
+type UserTab = 'ACTIVE' | 'RESTORED' | 'DELETED' | 'ALL';
+type DeleteActionMode = 'DELETE' | 'PERMANENT_DELETE';
 
 interface FormData {
   firstName: string;
@@ -32,7 +39,7 @@ interface FormData {
   email: string;
   employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   isActive: boolean;
 }
 
@@ -50,8 +57,6 @@ type CsvSummary = {
   insertedCount?: number;
   errors?: CsvErrorItem[];
 };
-
-const LAST_SSO_PROBE_KEY = 'last_sso_probe';
 
 const looksLikeEmail = (value: string) => {
   const v = value.trim();
@@ -73,6 +78,13 @@ const initialFormData: FormData = {
   departmentCode: 'HR',
   isActive: true,
 };
+
+const userTabKeys: Array<{ key: UserTab; labelKey: string; fallback: string }> = [
+  { key: 'ACTIVE', labelKey: 'userManagement.tab.active', fallback: 'Active' },
+  { key: 'RESTORED', labelKey: 'userManagement.tab.restored', fallback: 'Restored' },
+  { key: 'DELETED', labelKey: 'userManagement.tab.deleted', fallback: 'Deleted' },
+  { key: 'ALL', labelKey: 'userManagement.tab.all', fallback: 'All' },
+];
 
 export interface UserManagementHandle {
   openCsvUpload: () => void;
@@ -113,16 +125,16 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const loadUsersRequestRef = useRef(0);
-  const hasLoggedStoredSsoProbeRef = useRef(false);
   const [csvLoading, setCsvLoading] = useState(false);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [userToDelete, setUserToDelete] = useState<string | null>(null);
+  const [deleteActionMode, setDeleteActionMode] = useState<DeleteActionMode>('DELETE');
   const [errorMessage, setErrorMessage] = useState('');
   const [csvSummary, setCsvSummary] = useState<CsvSummary | null>(null);
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [internalSearchQuery, setInternalSearchQuery] = useState('');
-  const [activeSearch, setActiveSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<UserTab>('ACTIVE');
 
   const getI18nLabel = (key: string, fallback: string) => {
     const translated = t(key);
@@ -141,12 +153,12 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const searchQuery = controlledSearchQuery ?? internalSearchQuery;
   const setSearchQuery = onSearchQueryChange ?? setInternalSearchQuery;
 
-  const loadUsers = async (query?: string) => {
-    const q = String(query ?? activeSearch).trim();
+  const loadUsers = useCallback(async (query?: string, tab: UserTab = statusFilter) => {
+    const q = String(query ?? searchQuery).trim();
     const requestId = ++loadUsersRequestRef.current;
     setLoading(true);
     setErrorMessage('');
-    const response = await fetchAdminUsers(q);
+    const response = await fetchAdminUsers(q, tab);
     if (requestId !== loadUsersRequestRef.current) return;
     if (response.code !== 200) {
       setErrorMessage(response.message || 'Failed to fetch users');
@@ -154,47 +166,20 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       return;
     }
 
-    const displayProbe = (response.result || []).map((item) => {
+    const mapped = (response.result || []).map((item) => {
       const apiEmail = String(item.email || '').trim();
       const apiEmp = String(item.emp_id || '').trim();
       const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
       const employeeCode = getEmployeeCodeDisplay(apiEmp);
-      const displayedDepartment = String(item.department || '').trim() || item.department_code || 'HR';
-
-      return {
-        email,
-        rawDepartment: String(item.department || '').trim() || null,
-        rawDepartmentCode: String(item.department_code || '').trim() || null,
-        displayedDepartment,
-        rawEmpId: apiEmp || null,
-        displayedEmployeeCode: employeeCode || null,
-      };
-    });
-    try {
-      (window as typeof window & { __userTableProbe?: typeof displayProbe }).__userTableProbe = displayProbe;
-    } catch {
-      // Ignore global assignment errors in restricted environments.
-    }
-    console.warn('[UserManagement.table_display_probe]', displayProbe);
-    if (!hasLoggedStoredSsoProbeRef.current) {
-      try {
-        const rawStoredProbe = window.sessionStorage.getItem(LAST_SSO_PROBE_KEY);
-        if (rawStoredProbe) {
-          const parsedProbe = JSON.parse(rawStoredProbe) as Record<string, unknown>;
-          (window as typeof window & { __lastSsoProbe?: Record<string, unknown> }).__lastSsoProbe = parsedProbe;
-          console.warn('[UserManagement.last_sso_probe]', parsedProbe);
-        }
-      } catch {
-        // Ignore malformed debug data; this probe is best-effort only.
-      }
-      hasLoggedStoredSsoProbeRef.current = true;
-    }
-
-    const mapped = (response.result || []).map((item, index) => {
-      const apiEmail = String(item.email || '').trim();
-      const apiEmp = String(item.emp_id || '').trim();
-      const email = apiEmail || (looksLikeEmail(apiEmp) ? apiEmp : '');
-      const employeeCode = getEmployeeCodeDisplay(apiEmp);
+      const rawLifecycleStatus = String(item.lifecycle_status || '').trim().toUpperCase();
+      const lifecycleStatus: User['lifecycleStatus'] =
+        rawLifecycleStatus === 'ACTIVE' || rawLifecycleStatus === 'RESTORED' || rawLifecycleStatus === 'DELETED'
+          ? rawLifecycleStatus
+          : item.deleted_at
+            ? 'DELETED'
+            : (item as any).restored_at
+              ? 'RESTORED'
+              : 'ACTIVE';
 
       return {
         id: String(item.user_id),
@@ -203,15 +188,16 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         email,
         employeeCode,
         roleCode: item.role_code || 'USER',
-        department: displayProbe[index]?.displayedDepartment || 'HR',
+        department: String(item.department || '').trim() || item.department_code || 'HR',
         departmentCode: item.department_code || 'HR',
-        isActive: item.status === '1',
+        isActive: lifecycleStatus === 'ACTIVE',
+        lifecycleStatus,
+        deletedAt: item.deleted_at || null,
         lastUpdated: item.updated_at,
       };
     });
 
     setUsers(mapped);
-    setActiveSearch(q);
     setSelectedUserIds((prev) => {
       if (prev.size === 0) return prev;
       const allowed = new Set(mapped.map((item) => item.id));
@@ -219,22 +205,15 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       return next;
     });
     setLoading(false);
-  };
+  }, [searchQuery, statusFilter]);
 
   useEffect(() => {
-    void loadUsers('');
-  }, []);
-
-  useEffect(() => {
-    const normalizedQuery = searchQuery.trim();
-    if (normalizedQuery === activeSearch) return;
-
     const timeoutId = window.setTimeout(() => {
-      void loadUsers(searchQuery);
+      void loadUsers(searchQuery, statusFilter);
     }, 250);
 
     return () => window.clearTimeout(timeoutId);
-  }, [searchQuery, activeSearch]);
+  }, [loadUsers, searchQuery, statusFilter]);
 
   const handleCSVUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -271,7 +250,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       getI18nOrFallback('userManagement.csvSummary.successTitle', 'CSV imported'),
       t('userManagement.csvSummary.successMessage', { count: Number(report?.insertedCount ?? 0) }, 'Inserted {{count}} users'),
     );
-    await loadUsers();
+    await loadUsers(searchQuery, statusFilter);
     setCsvLoading(false);
 
     if (fileInputRef.current) {
@@ -279,9 +258,11 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     }
   };
 
-  const selectedCount = selectedUserIds.size;
-  const allSelected = users.length > 0 && users.every((user) => selectedUserIds.has(user.id));
-  const canBulkDelete = currentUser?.roleCode === 'SUPER_ADMIN';
+  const isBulkDeletable = (user: User) => user.lifecycleStatus !== 'DELETED';
+  const visibleBulkUsers = users.filter(isBulkDeletable);
+  const selectedCount = visibleBulkUsers.filter((user) => selectedUserIds.has(user.id)).length;
+  const allSelected = visibleBulkUsers.length > 0 && visibleBulkUsers.every((user) => selectedUserIds.has(user.id));
+  const canBulkDelete = currentUser?.roleCode === 'SUPER_ADMIN' && statusFilter !== 'DELETED';
 
   const handleAddUser = useCallback(() => {
     setFormData(initialFormData);
@@ -307,6 +288,13 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
 
   const handleSaveNewUser = async () => {
     if (!formData.firstName || !formData.lastName || !formData.email) {
+      const missing: string[] = [];
+      if (!formData.firstName) missing.push(firstNameLabel);
+      if (!formData.lastName) missing.push(lastNameLabel);
+      if (!formData.email) missing.push(emailLabel);
+      setErrorMessage(
+        `${getI18nOrFallback('userManagement.form.requiredFields', 'Required fields missing')}: ${missing.join(', ')}`,
+      );
       return;
     }
 
@@ -319,7 +307,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
 
     setShowAddModal(false);
     setFormData(initialFormData);
-    await loadUsers();
+    await loadUsers(searchQuery, statusFilter);
   };
 
   const handleEditUser = (userId: string) => {
@@ -341,7 +329,22 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     setErrorMessage('');
-    const response = await updateAdminUser(editingUser, buildPayload());
+    const user = users.find((u) => u.id === editingUser);
+    if (!user) return;
+    // Only roleCode is editable — send original user data for everything else
+    const payload = {
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      employeeCode: user.employeeCode,
+      employeeId: user.employeeCode || user.email,
+      roleCode: formData.roleCode,
+      departmentCode: user.departmentCode,
+      isActive: true,
+      userJobRole: '',
+      areaOfWork: '',
+    };
+    const response = await updateAdminUser(editingUser, payload);
     if (response.code !== 200) {
       setErrorMessage(response.message || 'Failed to update user');
       return;
@@ -349,7 +352,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
 
     setEditingUser(null);
     setFormData(initialFormData);
-    await loadUsers();
+    await loadUsers(searchQuery, statusFilter);
   };
 
   const handleCancelEdit = () => {
@@ -358,22 +361,46 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
   };
 
   const handleDeleteUser = (userId: string) => {
+    setDeleteActionMode('DELETE');
     setUserToDelete(userId);
     setShowDeleteModal(true);
   };
 
-  const confirmDelete = async () => {
+  const handlePermanentDeleteUser = (userId: string) => {
+    setDeleteActionMode('PERMANENT_DELETE');
+    setUserToDelete(userId);
+    setShowDeleteModal(true);
+  };
+
+  const handleRestoreUser = async (userId: string) => {
+    setErrorMessage('');
+    const response = await restoreAdminUser(userId);
+    if (response.code !== 200) {
+      setErrorMessage(response.message || 'Failed to restore user');
+      return;
+    }
+    await loadUsers(searchQuery, statusFilter);
+  };
+
+  const confirmDeleteAction = async () => {
     if (!userToDelete) return;
     setErrorMessage('');
-    const response = await deleteAdminUser(userToDelete);
+    const response =
+      deleteActionMode === 'PERMANENT_DELETE'
+        ? await permanentlyDeleteAdminUser(userToDelete)
+        : await deleteAdminUser(userToDelete);
     if (response.code !== 200) {
-      setErrorMessage(response.message || 'Failed to delete user');
+      setErrorMessage(
+        response.message ||
+          (deleteActionMode === 'PERMANENT_DELETE' ? 'Failed to permanently delete user' : 'Failed to delete user'),
+      );
       return;
     }
 
     setShowDeleteModal(false);
     setUserToDelete(null);
-    await loadUsers();
+    setDeleteActionMode('DELETE');
+    await loadUsers(searchQuery, statusFilter);
   };
 
   useEffect(() => {
@@ -388,7 +415,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
 
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedUserIds(new Set(users.map((user) => user.id)));
+      setSelectedUserIds(new Set(visibleBulkUsers.map((user) => user.id)));
     } else {
       setSelectedUserIds(new Set());
     }
@@ -404,6 +431,50 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       }
       return next;
     });
+  };
+
+  const getRowActions = (user: User) => {
+    const editLabel = getI18nOrFallback('userManagement.action.edit', 'Edit');
+    const deleteLabel = getI18nOrFallback('userManagement.action.delete', 'Delete');
+    const restoreLabel = getI18nOrFallback('userManagement.action.restore', 'Restore');
+    const permanentDeleteLabel = getI18nOrFallback('userManagement.action.permanentDelete', 'Delete Permanently');
+
+    if (user.lifecycleStatus === 'DELETED') {
+      return [
+        {
+          key: 'restore',
+          label: restoreLabel,
+          icon: RotateCcw,
+          tone: 'success' as const,
+          onClick: () => void handleRestoreUser(user.id),
+        },
+        {
+          key: 'permanent-delete',
+          label: permanentDeleteLabel,
+          icon: Trash2,
+          tone: 'danger' as const,
+          onClick: () => handlePermanentDeleteUser(user.id),
+        },
+      ];
+    }
+
+    // ACTIVE and RESTORED users get the same actions
+    return [
+      {
+        key: 'edit',
+        label: editLabel,
+        icon: Edit,
+        tone: 'primary' as const,
+        onClick: () => handleEditUser(user.id),
+      },
+      {
+        key: 'delete',
+        label: deleteLabel,
+        icon: Trash2,
+        tone: 'danger' as const,
+        onClick: () => handleDeleteUser(user.id),
+      },
+    ];
   };
 
   const handleBulkDelete = useCallback(() => {
@@ -445,11 +516,19 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     setShowBulkDeleteModal(false);
     setSelectedUserIds(new Set());
     setBulkDeleting(false);
-    await loadUsers();
+    await loadUsers(searchQuery, statusFilter);
   };
 
   const formatDateTime = (value: string) => {
     return formatDateTimeJP(value, value || '-');
+  };
+
+  const getActionButtonClass = (tone: 'primary' | 'success' | 'warning' | 'danger') => {
+    const base = 'inline-flex shrink-0 items-center justify-center rounded-lg p-2 transition-colors';
+    if (tone === 'primary') return `${base} text-blue-600 hover:bg-blue-50`;
+    if (tone === 'success') return `${base} text-emerald-600 hover:bg-emerald-50`;
+    if (tone === 'warning') return `${base} text-amber-600 hover:bg-amber-50`;
+    return `${base} text-red-600 hover:bg-red-50`;
   };
 
   return (
@@ -543,8 +622,10 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       ) : null}
 
       {errorMessage && (
-        <div className="px-4 py-3 rounded-lg bg-red-50 text-red-700 border border-red-200 text-sm">
-          {errorMessage}
+        <div className="px-4 py-3 rounded-lg bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900/40 text-sm transition-colors">
+          {errorMessage.includes('<html') || errorMessage.includes('<!DOCTYPE')
+            ? t('userManagement.error.serverUnavailable', undefined, 'Server is temporarily unavailable. Please try again.')
+            : errorMessage}
         </div>
       )}
 
@@ -587,8 +668,33 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
         </div>
       )}
 
-      <div className="bg-surface dark:bg-dark-surface border border-default dark:border-default rounded-2xl overflow-hidden shadow-sm transition-colors">
-        <table className="w-full">
+      {!editingUser ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {userTabKeys.map((tab) => {
+            const active = statusFilter === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setStatusFilter(tab.key);
+                  setSelectedUserIds(new Set());
+                }}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
+                  active
+                    ? 'btn-primary border-transparent text-on-accent shadow-sm'
+                    : 'border-default bg-surface text-muted hover:text-foreground dark:border-dark-border dark:bg-dark-surface dark:text-dark-text-muted dark:hover:text-dark-text'
+                }`}
+              >
+                {getI18nOrFallback(tab.labelKey, tab.fallback)}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className="overflow-x-auto rounded-2xl border border-default bg-surface shadow-sm transition-colors dark:border-default dark:bg-dark-surface">
+        <table className="w-full table-auto">
           <thead className="bg-surface-alt dark:bg-dark-bg-primary border-b border-default dark:border-default transition-colors">
             <tr>
               <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
@@ -597,7 +703,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                   type="checkbox"
                   checked={allSelected}
                   onChange={(e) => toggleSelectAll(e.target.checked)}
-                  disabled={users.length === 0 || loading || bulkDeleting}
+                  disabled={!canBulkDelete || visibleBulkUsers.length === 0 || loading || bulkDeleting}
                   aria-label={getI18nOrFallback('userManagement.table.selectAll', 'Select all')}
                   className="h-4 w-4 rounded border-default text-accent-strong focus:ring-2 focus:ring-accent-strong"
                 />
@@ -635,23 +741,15 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                           type="checkbox"
                           checked={selectedUserIds.has(user.id)}
                           onChange={() => toggleSelectUser(user.id)}
-                          disabled={bulkDeleting}
+                          disabled={bulkDeleting || !canBulkDelete || !isBulkDeletable(user)}
                           aria-label={getI18nOrFallback('userManagement.table.selectUser', 'Select user')}
                           className="h-4 w-4 rounded border-default text-accent-strong focus:ring-2 focus:ring-accent-strong"
                         />
                       </td>
-                      <td className="px-4 py-3">
-                        <input type="text" value={formData.firstName} onChange={(e) => setFormData({ ...formData, firstName: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default dark:border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
-                      </td>
-                      <td className="px-4 py-3">
-                        <input type="text" value={formData.lastName} onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
-                      </td>
-                      <td className="px-4 py-3">
-                        <input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
-                      </td>
-                      <td className="px-4 py-3">
-                        <input type="text" value={formData.employeeCode} onChange={(e) => setFormData({ ...formData, employeeCode: e.target.value })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors" />
-                      </td>
+                      <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors">{user.firstName}</td>
+                      <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors">{user.lastName}</td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.email || '-'}</td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.employeeCode || '-'}</td>
                       <td className="px-4 py-3">
                         <select value={formData.roleCode} onChange={(e) => setFormData({ ...formData, roleCode: e.target.value as FormData['roleCode'] })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors">
                           <option value="USER">USER</option>
@@ -661,18 +759,19 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                           <option value="SUPER_ADMIN">SUPER_ADMIN</option>
                         </select>
                       </td>
-                      <td className="px-4 py-3">
-                        <select value={formData.departmentCode} onChange={(e) => setFormData({ ...formData, departmentCode: e.target.value as FormData['departmentCode'] })} className="w-full bg-surface dark:bg-dark-surface border border-default rounded px-2 py-1 text-foreground dark:text-dark-text text-sm focus:outline-none focus-ring-accent transition-colors">
-                          <option value="HR">HR</option>
-                          <option value="GA">GA</option>
-                          <option value="ACC">ACC</option>
-                          <option value="SYSTEMS">SYSTEMS</option>
-                        </select>
-                      </td>
+                      <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.department || user.departmentCode}</td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted text-sm transition-colors">{formatDateTime(user.lastUpdated)}</td>
-                      <td className="px-4 py-3 flex gap-2">
-                        <button onClick={() => void handleSaveEdit()} className="p-1 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-500/20 rounded transition-colors" title={t('userManagement.form.save')}><Save className="w-4 h-4" /></button>
-                        <button onClick={handleCancelEdit} className="p-1 text-icon-muted dark:text-dark-text-muted hover:bg-surface hover:dark:bg-white/10 rounded transition-colors" title={t('userManagement.form.cancel')}><X className="w-4 h-4" /></button>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <button onClick={() => void handleSaveEdit()} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 transition-colors hover:bg-emerald-100" title={t('userManagement.form.save')}>
+                            <Save className="h-4 w-4" />
+                            <span>{t('userManagement.form.save')}</span>
+                          </button>
+                          <button onClick={handleCancelEdit} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100" title={t('userManagement.form.cancel')}>
+                            <X className="h-4 w-4" />
+                            <span>{t('userManagement.form.cancel')}</span>
+                          </button>
+                        </div>
                       </td>
                     </>
                   ) : (
@@ -682,7 +781,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                           type="checkbox"
                           checked={selectedUserIds.has(user.id)}
                           onChange={() => toggleSelectUser(user.id)}
-                          disabled={bulkDeleting}
+                          disabled={bulkDeleting || !canBulkDelete || !isBulkDeletable(user)}
                           aria-label={getI18nOrFallback('userManagement.table.selectUser', 'Select user')}
                           className="h-4 w-4 rounded border-default text-accent-strong focus:ring-2 focus:ring-accent-strong"
                         />
@@ -698,9 +797,24 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                       </td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors">{user.department || user.departmentCode}</td>
                       <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted text-sm transition-colors">{formatDateTime(user.lastUpdated)}</td>
-                      <td className="px-4 py-3 flex gap-2">
-                        <button onClick={() => handleEditUser(user.id)} className="p-1 text-blue-600 dark:text-dark-accent-blue hover:bg-blue-50 dark:hover:bg-blue-500/20 rounded transition-colors" title={t('userManagement.form.edit')}><Edit className="w-4 h-4" /></button>
-                        <button onClick={() => handleDeleteUser(user.id)} className="p-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors" title={t('userManagement.form.delete')}><Trash2 className="w-4 h-4" /></button>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          {getRowActions(user).map((action) => {
+                            const Icon = action.icon;
+                            return (
+                              <button
+                                key={action.key}
+                                type="button"
+                                onClick={action.onClick}
+                                className={getActionButtonClass(action.tone)}
+                                title={action.label}
+                                aria-label={action.label}
+                              >
+                                <Icon className="h-5 w-5" />
+                              </button>
+                            );
+                          })}
+                        </div>
                       </td>
                     </>
                   )}
@@ -747,12 +861,36 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface dark:bg-dark-surface border border-default dark:border-default rounded-2xl p-6 max-w-md w-full mx-4 space-y-4 shadow-xl transition-colors">
-            <h3 className="text-xl font-semibold text-foreground dark:text-white transition-colors">{getI18nOrFallback('userManagement.delete.confirmTitle', 'Confirm Delete')}</h3>
-            <p className="text-muted dark:text-dark-text-muted text-sm transition-colors">{t('userManagement.delete.confirmMessage')}</p>
+            <h3 className="text-xl font-semibold text-foreground dark:text-white transition-colors">
+              {deleteActionMode === 'PERMANENT_DELETE'
+                ? getI18nOrFallback('userManagement.delete.permanentConfirmTitle', 'Confirm Permanent Delete')
+                : getI18nOrFallback('userManagement.delete.confirmTitle', 'Confirm Delete')}
+            </h3>
+            <p className="text-muted dark:text-dark-text-muted text-sm transition-colors">
+              {deleteActionMode === 'PERMANENT_DELETE'
+                ? getI18nOrFallback(
+                    'userManagement.delete.permanentConfirmMessage',
+                    'This user will be permanently removed and cannot be restored.',
+                  )
+                : t('userManagement.delete.confirmMessage')}
+            </p>
 
             <div className="flex gap-3 justify-end pt-4 border-t border-default dark:border-default transition-colors">
-              <button onClick={() => { setShowDeleteModal(false); setUserToDelete(null); }} className="px-4 py-2 rounded-lg bg-surface dark:bg-dark-surface-alt hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text text-sm font-medium transition-colors">{t('userManagement.form.cancel')}</button>
-              <button onClick={() => void confirmDelete()} className="px-4 py-2 rounded-lg btn-danger disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors">{t('userManagement.delete.confirmButton')}</button>
+              <button
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  setUserToDelete(null);
+                  setDeleteActionMode('DELETE');
+                }}
+                className="px-4 py-2 rounded-lg bg-surface dark:bg-dark-surface-alt hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text text-sm font-medium transition-colors"
+              >
+                {t('userManagement.form.cancel')}
+              </button>
+              <button onClick={() => void confirmDeleteAction()} className="px-4 py-2 rounded-lg btn-danger disabled:opacity-50 disabled:cursor-not-allowed text-on-accent text-sm font-medium transition-colors">
+                {deleteActionMode === 'PERMANENT_DELETE'
+                  ? getI18nOrFallback('userManagement.delete.permanentConfirmButton', 'Delete Permanently')
+                  : t('userManagement.delete.confirmButton')}
+              </button>
             </div>
           </div>
         </div>

@@ -226,6 +226,7 @@ class HybridRAGSearchEngine:
 
     @staticmethod
     def _matches_filter_value(actual: Any, expected: Any) -> bool:
+    
         if isinstance(expected, dict):
             in_values = expected.get("$in")
             if isinstance(in_values, list):

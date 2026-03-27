@@ -14,12 +14,20 @@ type FAQItem = {
   qualityLabel?: 'VERIFIED' | 'RELAXED';
 };
 
-const normalizeQualityLabel = (value: unknown): 'VERIFIED' | 'RELAXED' => (
-  value === 'RELAXED' ? 'RELAXED' : 'VERIFIED'
-);
+const ALL_FAQ_DEPARTMENTS = ['HR', 'GA', 'ACC', 'OTHER'] as const;
+const MAX_FAQ_ITEMS = 50;
 
-const MAX_FAQ_ITEMS = 10;
-const MIN_FREQUENT_COUNT = 3;
+/**
+ * Determine which FAQ department filters a user can see based on role.
+ * HR FAQs are only visible to SUPER_ADMIN and HR_ADMIN.
+ */
+const getAllowedFaqDepartments = (roleCode?: string): string[] => {
+  const role = String(roleCode || '').toUpperCase();
+  if (role === 'SUPER_ADMIN' || role === 'HR_ADMIN') {
+    return [...ALL_FAQ_DEPARTMENTS];
+  }
+  return ['GA', 'ACC', 'OTHER'];
+};
 
 const normalizeQuestion = (q: string) =>
   String(q || '')
@@ -27,33 +35,41 @@ const normalizeQuestion = (q: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const normalizeQualityLabel = (value: unknown): 'VERIFIED' | 'RELAXED' => (
+  value === 'RELAXED' ? 'RELAXED' : 'VERIFIED'
+);
+
 export default function FAQPage({ user }: { user?: UserType }) {
   const { t } = useLang();
   const [remoteItems, setRemoteItems] = useState<FAQItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [minCountUsed, setMinCountUsed] = useState<number>(MIN_FREQUENT_COUNT);
+  const [minCountUsed, setMinCountUsed] = useState<number>(1);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [deptFilter, setDeptFilter] = useState<'ALL' | 'HR' | 'GA' | 'ACC'>('ALL');
+  const allowedDepts = getAllowedFaqDepartments(user?.roleCode);
+  const [deptFilter, setDeptFilter] = useState<string>('ALL');
   const [sortMode, setSortMode] = useState<'freq' | 'recent'>('freq');
   const toDepartmentLabel = (code?: string) => {
     const v = String(code || '').toUpperCase();
     if (v === 'HR') return t('common.departments.hr');
     if (v === 'GA') return t('common.departments.ga');
     if (v === 'ACC') return t('common.departments.acc');
+    if (v === 'SYSTEMS') return t('common.departments.systems');
     if (v === 'OTHER') return t('common.departments.other');
     if (!v) return t('common.departments.unknown');
     return v;
   };
-  const toDepartmentFilterLabel = (code: 'ALL' | 'HR' | 'GA' | 'ACC') => {
+  const toDepartmentFilterLabel = (code: string) => {
     if (code === 'ALL') return t('faqPage.allDepartments');
     return toDepartmentLabel(code);
   };
   const departmentFilterOptions = useMemo(() => {
-    if (user?.roleCode === 'USER') return ['ALL', 'GA', 'ACC'] as const;
-    return ['ALL', 'HR', 'GA', 'ACC'] as const;
-  }, [user?.roleCode]);
+    return ['ALL', ...allowedDepts];
+  }, [allowedDepts]);
+
+  const hasDepartmentOption = (dept: string) =>
+    allowedDepts.includes(String(dept || '').toUpperCase());
 
   useEffect(() => {
     if (!departmentFilterOptions.includes(deptFilter as any)) {
@@ -74,18 +90,19 @@ export default function FAQPage({ user }: { user?: UserType }) {
       setLoading(true);
       setLoadError(null);
       try {
-        const data = await fetchFaq(MIN_FREQUENT_COUNT);
+        const data = await fetchFaq(1);
         if (!mounted) return;
         if (data?.ok === true && Array.isArray(data.data?.items)) {
           const normalizeItems = (items: any[]) =>
             items.map((it) => ({
               ...it,
+              departmentCode: hasDepartmentOption(it.departmentCode) ? String(it.departmentCode || '').toUpperCase() : 'OTHER',
               key: normalizeQuestion(it.question || ''),
               qualityLabel: normalizeQualityLabel(it.qualityLabel),
               sourceCount: Number(it.sourceCount || 0),
             }));
           setRemoteItems(normalizeItems(data.data.items));
-          setMinCountUsed(MIN_FREQUENT_COUNT);
+          setMinCountUsed(1);
         } else {
           setRemoteItems(null);
           setLoadError(data?.error?.message || data?.message || t('faqPage.loadFailed'));
@@ -104,9 +121,15 @@ export default function FAQPage({ user }: { user?: UserType }) {
     };
   }, [user?.roleCode, user?.department]);
 
-  const baseItems = useMemo(() => (Array.isArray(remoteItems) ? remoteItems : []), [remoteItems]);
-  const frequent = baseItems.filter((i) => i.count >= MIN_FREQUENT_COUNT).slice(0, MAX_FAQ_ITEMS);
-  const displayItems = frequent.length ? frequent : baseItems.slice(0, MAX_FAQ_ITEMS);
+  const baseItems = useMemo(() => {
+    const items = Array.isArray(remoteItems) ? remoteItems : [];
+    // Defense in depth: filter out any items from departments the user cannot access
+    return items.filter((item) => {
+      const dept = String(item.departmentCode || '').toUpperCase();
+      return hasDepartmentOption(dept) || dept === 'OTHER' || dept === 'OTHERS';
+    });
+  }, [remoteItems, allowedDepts]);
+  const displayItems = baseItems.slice(0, MAX_FAQ_ITEMS);
   const normalizedQuery = normalizeQuestion(query);
   const filtered = displayItems.filter((item) => {
     const dept = String(item.departmentCode || '').toUpperCase();
@@ -123,6 +146,8 @@ export default function FAQPage({ user }: { user?: UserType }) {
   const subtitle = displayItems.length
     ? t('faqPage.subtitleWithStats', { minCount: minCountUsed, verifiedCount, totalCount: displayItems.length })
     : t('faqPage.noItems');
+  const hasFilterResults = sorted.length > 0;
+  const noMatches = !loading && !loadError && displayItems.length > 0 && !hasFilterResults;
 
   return (
     <div className="h-full flex flex-col gap-4 p-5 overflow-y-auto faq-shell">
@@ -193,6 +218,10 @@ export default function FAQPage({ user }: { user?: UserType }) {
         </div>
       )}
       {!loading && !loadError && displayItems.length === 0 ? (
+        <div className="faq-state">
+          {t('faqPage.noItems')}
+        </div>
+      ) : noMatches ? (
         <div className="faq-state">
           {t('faqPage.emptyHint')}
         </div>

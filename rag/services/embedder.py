@@ -2,6 +2,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
+from typing import List
 
 import torch
 from core.logging import logger
@@ -60,31 +61,82 @@ def process_text(text):
     return text
 
 
-def ensure_local_HF_model(
-    model_name: str, cache_dir: str, auto_download: bool = True
-) -> str:
+def _find_hf_cache_snapshot(model_name: str) -> str | None:
+    """Look for a model in the default HuggingFace cache directory."""
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+    model_cache_dir = hf_cache / f"models--{model_name.replace('/', '--')}"
+    if not model_cache_dir.exists():
+        return None
+    snapshots_dir = model_cache_dir / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+    # Use the most recent snapshot (there's usually only one)
+    snapshots = sorted(snapshots_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    for snap in snapshots:
+        if snap.is_dir() and (snap / "config.json").exists():
+            return str(snap)
+    return None
 
-    model_dir = Path(cache_dir) / model_name.replace("/", "_")
-    model_files = [
+
+def _check_model_dir(model_dir: Path) -> bool:
+    """Check if a directory contains a valid, complete model."""
+    if not model_dir.exists():
+        return False
+    indicator_files = [
         "config.json",
         "sentence_bert_config.json",
         "pytorch_model.bin",
         "tokenizer.json",
         "tokenizer_config.json",
     ]
+    has_indicator = any((model_dir / f).exists() for f in indicator_files)
+    has_safetensors = any(model_dir.glob("*.safetensors"))
+    if not (has_indicator or has_safetensors):
+        return False
+    # If a shard index exists, verify all shards are present
+    index_file = model_dir / "model.safetensors.index.json"
+    if index_file.exists():
+        try:
+            import json
+            with index_file.open() as f:
+                index = json.load(f)
+            shard_files = set(index.get("weight_map", {}).values())
+            if shard_files and not all((model_dir / s).exists() for s in shard_files):
+                logger.warning(f"Incomplete model at {model_dir}: missing shards")
+                return False
+        except Exception:
+            pass
+    return True
 
-    if model_dir.exists() and any((model_dir / f).exists() for f in model_files):
+
+def ensure_local_HF_model(
+    model_name: str, cache_dir: str, auto_download: bool = True
+) -> str:
+
+    model_dir = Path(cache_dir) / model_name.replace("/", "_")
+
+    if _check_model_dir(model_dir):
         logger.info(f"Embedding model {model_name} found in local cache.")
-    else:
-        if not auto_download:
-            raise FileNotFoundError(
-                f"Model {model_name} not found in local cache at {model_dir}."
-            )
-        logger.info(f"Downloading embedding model {model_name} to local cache...")
-        snapshot_download(
-            repo_id=model_name, local_dir=model_dir, local_dir_use_symlinks=False
+        return str(model_dir)
+
+    # Fallback: check the default HuggingFace cache directory
+    hf_snapshot = _find_hf_cache_snapshot(model_name)
+    if hf_snapshot:
+        logger.info(
+            f"Embedding model {model_name} found in HuggingFace cache: {hf_snapshot}"
         )
-        logger.info(f"Model {model_name} downloaded to: {model_dir}")
+        return hf_snapshot
+
+    if not auto_download:
+        raise FileNotFoundError(
+            f"Model {model_name} not found in local cache at {model_dir} "
+            f"or in HuggingFace cache."
+        )
+    logger.info(f"Downloading embedding model {model_name} to local cache...")
+    snapshot_download(
+        repo_id=model_name, local_dir=model_dir, local_dir_use_symlinks=False
+    )
+    logger.info(f"Model {model_name} downloaded to: {model_dir}")
 
     return str(model_dir)
 
@@ -158,7 +210,7 @@ def embed_text(text: str) -> list[float]:
     return list(_embed_query_cached(normalized))
 
 
-def embed_text_batch(texts: list[str], batch_size: int = 16) -> list[list[float]]:
+def embed_text_batch(texts: list[str], batch_size: int = 4) -> list[list[float]]:
     results = []
     from tqdm import tqdm
 

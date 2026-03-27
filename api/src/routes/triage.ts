@@ -207,16 +207,8 @@ router.delete('/tickets/purge', async (ctx: any) => {
     ctx.body = fail('FORBIDDEN', 'アクセス権限がありません');
     return;
   }
-  const schema = Joi.object({
-    adminPassword: Joi.string().trim().min(1).required(),
-  });
-  const { error, value } = schema.validate(ctx.request.body || {});
-  if (error) {
-    ctx.body = fail('BAD_REQUEST', error.details[0].message);
-    return;
-  }
   try {
-    const result = await purgeTriageTickets(scope, value.adminPassword);
+    const result = await purgeTriageTickets(scope);
     await emitAuditLog({
       actor: scope,
       action: 'TRIAGE_TICKETS_PURGED',

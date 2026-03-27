@@ -4,11 +4,16 @@ import { Context } from 'koa';
 import {
   createAdminUser,
   deleteAdminUser,
+  permanentlyDeleteAdminUser,
   bulkDeleteAdminUsers,
   importAdminUsersFromCsv,
   listAdminUsers,
   updateAdminUser,
+  restoreAdminUser,
 } from '@/service/adminUser';
+
+const emitError = (ctx: Context, code: string, message: string) =>
+  ctx.app.emit('error', { code, message }, ctx);
 
 const looksLikeEmail = (value: unknown) => {
   const v = String(value || '').trim();
@@ -50,7 +55,11 @@ const parsePayload = (body: any) => {
 export const getAdminUsers = async (ctx: Context, next: () => Promise<void>) => {
   const scope = (ctx.state as any).accessScope as AccessScope;
   const q = String((ctx.query as any)?.q || (ctx.query as any)?.search || '').trim();
-  const users = await listAdminUsers(scope, q ? { query: q } : undefined);
+  const status = String((ctx.query as any)?.status || '').trim().toUpperCase();
+  const users = await listAdminUsers(
+    scope,
+    q || status ? { query: q, statusFilter: status as any } : undefined,
+  );
   ctx.state.formatData = users;
   await next();
 };
@@ -59,7 +68,7 @@ export const createAdminUserController = async (ctx: Context, next: () => Promis
   try {
     const payload = parsePayload(ctx.request.body);
     if (!payload.firstName || !payload.lastName || !payload.email) {
-      return ctx.app.emit('error', { code: '400', message: '必須項目が不足しています' }, ctx);
+      return emitError(ctx, '400', '必須項目が不足しています');
     }
 
     const scope = (ctx.state as any).accessScope as AccessScope;
@@ -68,18 +77,18 @@ export const createAdminUserController = async (ctx: Context, next: () => Promis
     await next();
   } catch (error: any) {
     if (error?.code === 'duplicate_user_name') {
-      return ctx.app.emit('error', { code: '409', message: 'userName は既に使用されています' }, ctx);
+      return emitError(ctx, '409', 'userName は既に使用されています');
     }
     if (error?.code === 'duplicate_emp_id' || error?.name === 'SequelizeUniqueConstraintError') {
-      return ctx.app.emit('error', { code: '409', message: 'employeeId は既に使用されています' }, ctx);
+      return emitError(ctx, '409', 'employeeId は既に使用されています');
     }
     if (error?.code === 'forbidden_department' || error?.code === 'forbidden_role_assignment') {
-      return ctx.app.emit('error', { code: '403', message: 'アクセス権限がありません' }, ctx);
+      return emitError(ctx, '403', 'アクセス権限がありません');
     }
     if (error?.message === 'validation_error') {
-      return ctx.app.emit('error', { code: '400', message: '入力値が不正です' }, ctx);
+      return emitError(ctx, '400', '入力値が不正です');
     }
-    return ctx.app.emit('error', { code: '500', message: 'ユーザー作成に失敗しました' }, ctx);
+    return emitError(ctx, '500', 'ユーザー作成に失敗しました');
   }
 };
 
@@ -88,7 +97,7 @@ export const updateAdminUserController = async (ctx: Context, next: () => Promis
     const userId = Number(ctx.params.userId);
     const payload = parsePayload(ctx.request.body);
     if (!payload.firstName || !payload.lastName || !payload.email) {
-      return ctx.app.emit('error', { code: '400', message: '必須項目が不足しています' }, ctx);
+      return emitError(ctx, '400', '必須項目が不足しています');
     }
 
     const scope = (ctx.state as any).accessScope as AccessScope;
@@ -97,21 +106,21 @@ export const updateAdminUserController = async (ctx: Context, next: () => Promis
     await next();
   } catch (error: any) {
     if (error?.code === 'duplicate_user_name') {
-      return ctx.app.emit('error', { code: '409', message: 'userName は既に使用されています' }, ctx);
+      return emitError(ctx, '409', 'userName は既に使用されています');
     }
     if (error?.code === 'duplicate_emp_id' || error?.name === 'SequelizeUniqueConstraintError') {
-      return ctx.app.emit('error', { code: '409', message: 'employeeId は既に使用されています' }, ctx);
+      return emitError(ctx, '409', 'employeeId は既に使用されています');
     }
     if (error?.message === 'not_found') {
-      return ctx.app.emit('error', { code: '400', message: 'ユーザーが存在しません' }, ctx);
+      return emitError(ctx, '400', 'ユーザーが存在しません');
     }
     if (error?.code === 'forbidden_department' || error?.code === 'forbidden_role_assignment') {
-      return ctx.app.emit('error', { code: '403', message: 'アクセス権限がありません' }, ctx);
+      return emitError(ctx, '403', 'アクセス権限がありません');
     }
     if (error?.message === 'validation_error') {
-      return ctx.app.emit('error', { code: '400', message: '入力値が不正です' }, ctx);
+      return emitError(ctx, '400', '入力値が不正です');
     }
-    return ctx.app.emit('error', { code: '500', message: 'ユーザー更新に失敗しました' }, ctx);
+    return emitError(ctx, '500', 'ユーザー更新に失敗しました');
   }
 };
 
@@ -124,9 +133,57 @@ export const deleteAdminUserController = async (ctx: Context, next: () => Promis
     await next();
   } catch (error: any) {
     if (error?.code === 'forbidden_department') {
-      return ctx.app.emit('error', { code: '403', message: 'アクセス権限がありません' }, ctx);
+      return emitError(ctx, '403', 'アクセス権限がありません');
     }
-    return ctx.app.emit('error', { code: '500', message: 'ユーザー削除に失敗しました' }, ctx);
+    return emitError(ctx, '500', 'ユーザー削除に失敗しました');
+  }
+};
+
+export const restoreAdminUserController = async (ctx: Context, next: () => Promise<void>) => {
+  try {
+    const userId = Number(ctx.params.userId);
+    const scope = (ctx.state as any).accessScope as AccessScope;
+    await restoreAdminUser(userId, scope);
+    ctx.state.formatData = { success: true };
+    await next();
+  } catch (error: any) {
+    if (error?.code === 'validation_error') {
+      return emitError(ctx, '400', 'userId が不正です');
+    }
+    if (error?.code === 'not_found') {
+      return emitError(ctx, '404', 'ユーザーが存在しません');
+    }
+    if (error?.code === 'not_deleted') {
+      return emitError(ctx, '409', 'このユーザーは削除されていないため復元できません');
+    }
+    if (error?.code === 'forbidden_department') {
+      return emitError(ctx, '403', 'アクセス権限がありません');
+    }
+    return emitError(ctx, '500', 'ユーザーの復元に失敗しました');
+  }
+};
+
+export const permanentlyDeleteAdminUserController = async (ctx: Context, next: () => Promise<void>) => {
+  try {
+    const userId = Number(ctx.params.userId);
+    const scope = (ctx.state as any).accessScope as AccessScope;
+    await permanentlyDeleteAdminUser(userId, scope);
+    ctx.state.formatData = { success: true };
+    await next();
+  } catch (error: any) {
+    if (error?.code === 'validation_error') {
+      return emitError(ctx, '400', 'userId が不正です');
+    }
+    if (error?.code === 'not_found') {
+      return emitError(ctx, '404', 'ユーザーが存在しません');
+    }
+    if (error?.code === 'not_deleted') {
+      return emitError(ctx, '409', '削除済みユーザーのみ完全削除できます');
+    }
+    if (error?.code === 'forbidden_department') {
+      return emitError(ctx, '403', 'アクセス権限がありません');
+    }
+    return emitError(ctx, '500', 'ユーザーの完全削除に失敗しました');
   }
 };
 
@@ -134,12 +191,12 @@ export const bulkDeleteAdminUsersController = async (ctx: Context, next: () => P
   try {
     const rawIds = (ctx.request.body as any)?.userIds;
     if (!Array.isArray(rawIds) || rawIds.length === 0) {
-      return ctx.app.emit('error', { code: '400', message: 'userIds が必要です' }, ctx);
+      return emitError(ctx, '400', 'userIds が必要です');
     }
 
     const userIds = rawIds.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id));
     if (userIds.length !== rawIds.length) {
-      return ctx.app.emit('error', { code: '400', message: 'userIds が不正です' }, ctx);
+      return emitError(ctx, '400', 'userIds が不正です');
     }
 
     const scope = (ctx.state as any).accessScope as AccessScope;
@@ -148,21 +205,21 @@ export const bulkDeleteAdminUsersController = async (ctx: Context, next: () => P
     await next();
   } catch (error: any) {
     if (error?.code === 'validation_error') {
-      return ctx.app.emit('error', { code: '400', message: 'userIds が不正です' }, ctx);
+      return emitError(ctx, '400', 'userIds が不正です');
     }
     if (error?.code === 'cannot_delete_self') {
-      return ctx.app.emit('error', { code: '400', message: '自分自身は削除できません' }, ctx);
+      return emitError(ctx, '400', '自分自身は削除できません');
     }
     if (error?.code === 'not_found') {
-      return ctx.app.emit('error', { code: '404', message: '指定したユーザーが存在しません' }, ctx);
+      return emitError(ctx, '404', '指定したユーザーが存在しません');
     }
     if (error?.code === 'forbidden_role_delete') {
-      return ctx.app.emit('error', { code: '403', message: '削除できないロールが含まれています' }, ctx);
+      return emitError(ctx, '403', '削除できないロールが含まれています');
     }
     if (error?.code === 'forbidden_manage_users') {
-      return ctx.app.emit('error', { code: '403', message: 'アクセス権限がありません' }, ctx);
+      return emitError(ctx, '403', 'アクセス権限がありません');
     }
-    return ctx.app.emit('error', { code: '500', message: 'ユーザー削除に失敗しました' }, ctx);
+    return emitError(ctx, '500', 'ユーザー削除に失敗しました');
   }
 };
 
@@ -173,7 +230,7 @@ export const importAdminUsersCsvController = async (ctx: Context, next: () => Pr
     const file = Array.isArray(fileCandidate) ? fileCandidate[0] : fileCandidate;
 
     if (!file?.filepath) {
-      return ctx.app.emit('error', { code: '400', message: 'CSV ファイルが必要です' }, ctx);
+      return emitError(ctx, '400', 'CSV ファイルが必要です');
     }
 
     const scope = (ctx.state as any).accessScope as AccessScope;
@@ -194,6 +251,6 @@ export const importAdminUsersCsvController = async (ctx: Context, next: () => Pr
       };
       return;
     }
-    return ctx.app.emit('error', { code: '400', message: error?.message || 'CSV 取込に失敗しました' }, ctx);
+    return emitError(ctx, '400', error?.message || 'CSV 取込に失敗しました');
   }
 };

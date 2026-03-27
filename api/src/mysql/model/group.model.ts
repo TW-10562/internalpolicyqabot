@@ -32,7 +32,7 @@ const Group = seq.define(
       comment: 'グループの属性情報',
     },
     use_group_color: {
-      type: DataTypes.TINYINT,
+      type: DataTypes.SMALLINT,
       allowNull: false,
       defaultValue: 0,
       comment: 'グループカラーを使用するか（0:無効, 1:有効)',

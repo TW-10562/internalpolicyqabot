@@ -3,6 +3,7 @@ import path from 'node:path';
 import { translateQueryForRetrievalDetailed } from '@/utils/query_translation';
 import { canonicalizeQuery } from './canonicalizeQuery';
 import { normalizeQuery } from './normalizeQuery';
+import { routeQuery } from './queryRouter';
 
 export type ExpandQueryInput = {
   originalQueryText: string;
@@ -24,6 +25,10 @@ export type ExpandQueryOutput = {
   queryTranslationStatus: 'termbase' | 'term_map' | 'semantic_bridge' | 'none';
   translateCallsCount: number;
   translateMs: number;
+  queryType: 'procedural' | 'policy' | 'fact' | 'ambiguous';
+  domainDetected: 'HR' | 'GA' | 'ACC' | 'OTHER';
+  languageDetected: 'en' | 'ja' | 'mixed';
+  deterministicTermMapUsed: boolean;
 };
 
 const MAX_TOTAL_QUERIES = 10;
@@ -59,7 +64,7 @@ type SemanticBridgeVariants = {
 };
 
 type SemanticBridgeRule = {
-  key: 'disciplinary' | 'incident' | 'reporting' | 'procedure' | 'workplace';
+  key: 'disciplinary' | 'incident' | 'reporting' | 'procedure' | 'workplace' | 'fiscal';
   pattern: RegExp;
   englishVariants: string[];
   japaneseVariants: string[];
@@ -92,9 +97,15 @@ const EN_SEMANTIC_BRIDGE_RULES: SemanticBridgeRule[] = [
   },
   {
     key: 'workplace',
-    pattern: /\bworkplace\b|\binternal\b|\bemployee\b|\bstaff\b|\bcompany\b/i,
+    pattern: /\bworkplace\b|\binternal\s+(?:policy|rule|regulation)\b|\bemployee\s+(?:handbook|manual|guide)\b|\bstaff\s+(?:policy|regulation)\b/i,
     englishVariants: ['internal company process', 'employee procedure'],
     japaneseVariants: ['社内', '職場', '従業員'],
+  },
+  {
+    key: 'fiscal',
+    pattern: /\bfiscal\s+year\b|\bfinancial\s+year\b|\baccounting\s+(?:year|period)\b|\bfy\b/i,
+    englishVariants: ['fiscal year', 'accounting period'],
+    japaneseVariants: ['事業年度', '会計年度', '決算期', '経理規程'],
   },
 ];
 
@@ -309,8 +320,18 @@ type QueryExpansionRuleSet = {
   domainRules: DomainRule[];
 };
 
+type DomainProfileRule = {
+  id: 'HR' | 'GA' | 'ACC';
+  keywords: string[];
+  patterns: RegExp[];
+  languages: ('ja' | 'en')[];
+  minScore: number;
+};
+
 let cachedRuleSet: QueryExpansionRuleSet | null = null;
 let ruleLoadErrorLogged = false;
+let cachedDomainProfileRules: DomainProfileRule[] | null = null;
+let domainProfileLoadErrorLogged = false;
 
 const parseRuleList = (rows: unknown[]): ExpansionRule[] =>
   (Array.isArray(rows) ? rows : [])
@@ -366,6 +387,69 @@ const loadRuleSet = (): QueryExpansionRuleSet => {
   }
   cachedRuleSet = { shortIntentRules: [], domainRules: [] };
   return cachedRuleSet;
+};
+
+const parseDomainProfileRules = (rows: unknown[]): DomainProfileRule[] =>
+  (Array.isArray(rows) ? rows : [])
+    .map((row: any) => {
+      const id = String(row?.id || '').toUpperCase();
+      if (!['HR', 'GA', 'ACC'].includes(id)) return null;
+      const keywords = uniqueStringList(row?.keywords || [], 24);
+      const patterns = uniqueStringList(row?.patterns || [], 24).flatMap((pattern) => {
+        try {
+          return [new RegExp(pattern, 'i')];
+        } catch {
+          return [];
+        }
+      });
+      const languages = uniqueStringList(row?.languages || [], 2)
+        .map((value) => String(value || '').toLowerCase())
+        .filter((value): value is 'ja' | 'en' => value === 'ja' || value === 'en');
+      const minScore = Math.max(0, Number(row?.minScore || 0));
+      if (!keywords.length && !patterns.length) return null;
+      return {
+        id: id as DomainProfileRule['id'],
+        keywords,
+        patterns,
+        languages: languages.length > 0 ? languages : ['ja', 'en'],
+        minScore,
+      };
+    })
+    .filter(Boolean) as DomainProfileRule[];
+
+const loadDomainProfileRules = (): DomainProfileRule[] => {
+  if (cachedDomainProfileRules) return cachedDomainProfileRules;
+  const candidatePaths = uniqueStringList([
+    path.resolve(process.cwd(), 'config', 'rag_domain_rules.json'),
+    path.resolve(process.cwd(), 'api', 'config', 'rag_domain_rules.json'),
+    path.resolve(__dirname, '../../../../config/rag_domain_rules.json'),
+    path.resolve(__dirname, '../../../config/rag_domain_rules.json'),
+  ]);
+
+  for (const rulePath of candidatePaths) {
+    try {
+      if (!fs.existsSync(rulePath)) continue;
+      const raw = fs.readFileSync(rulePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      cachedDomainProfileRules = parseDomainProfileRules(parsed);
+      return cachedDomainProfileRules;
+    } catch (error) {
+      if (!domainProfileLoadErrorLogged) {
+        domainProfileLoadErrorLogged = true;
+        console.warn(
+          `[RAG EXPAND] failed to load rag_domain_rules.json from "${rulePath}": ${(error as any)?.message || error}`,
+        );
+      }
+    }
+  }
+
+  if (!domainProfileLoadErrorLogged) {
+    domainProfileLoadErrorLogged = true;
+    console.warn('[RAG EXPAND] rag_domain_rules.json not found; domain profiling is disabled.');
+  }
+
+  cachedDomainProfileRules = [];
+  return cachedDomainProfileRules;
 };
 
 const buildIntentVariants = (canonicalQuery: string): string[] => {
@@ -543,6 +627,65 @@ const buildJapaneseDomainCompositeQueries = (
   ], 2).filter((query) => query.split(/\s+/).length >= 2);
 };
 
+const determineQueryType = (queryText: string, language: 'ja' | 'en'): ExpandQueryOutput['queryType'] => {
+  const route = routeQuery({
+    query: String(queryText || ''),
+    language,
+    hasHistory: false,
+  });
+
+  switch (route.klass) {
+    case 'procedural':
+      return 'procedural';
+    case 'policy':
+      return 'policy';
+    case 'factual':
+    case 'comparison':
+      return 'fact';
+    case 'follow_up':
+    case 'ambiguous':
+    default:
+      return 'ambiguous';
+  }
+};
+
+const determineLanguageProfile = (texts: string[]): ExpandQueryOutput['languageDetected'] => {
+  const hasJapanese = texts.some((text) => containsJapanese(text));
+  const hasLatin = texts.some((text) => /[a-z]/i.test(String(text || '')));
+  if (hasJapanese && hasLatin) return 'mixed';
+  if (hasJapanese) return 'ja';
+  return 'en';
+};
+
+const determineDomainProfile = (texts: string[], userLanguage: 'ja' | 'en'): ExpandQueryOutput['domainDetected'] => {
+  const queryTexts = uniqueStringList(texts, 12);
+  if (!queryTexts.length) return 'OTHER';
+
+  const rules = loadDomainProfileRules();
+  let best: { id: ExpandQueryOutput['domainDetected']; score: number; index: number } = {
+    id: 'OTHER',
+    score: 0,
+    index: Number.POSITIVE_INFINITY,
+  };
+
+  for (const [index, rule] of rules.entries()) {
+    if (rule.languages.length > 0 && !rule.languages.includes(userLanguage)) {
+      continue;
+    }
+    const keywordMatches = rule.keywords.filter((keyword) => queryTexts.some((text) => hasPhrase(text, keyword)));
+    const patternMatches = rule.patterns.filter((pattern) => queryTexts.some((text) => pattern.test(text)));
+    const keywordScore = rule.keywords.length > 0 ? keywordMatches.length / rule.keywords.length : 0;
+    const patternScore = rule.patterns.length > 0 ? patternMatches.length / rule.patterns.length : 0;
+    const score = Math.max(keywordScore, patternScore);
+    if (score < rule.minScore) continue;
+    if (score > best.score || (score === best.score && index < best.index)) {
+      best = { id: rule.id, score, index };
+    }
+  }
+
+  return best.id;
+};
+
 export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryOutput> => {
   const translationExpansionEnabled = input.enableTranslationExpansion !== false;
   const requestedTotalLimit = Number(input.maxVariants || MAX_TOTAL_QUERIES);
@@ -662,6 +805,28 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
     nonWildcardLimit,
   );
 
+  const profileTexts = uniqueStringList(
+    [
+      rawQuery,
+      normalizedQuery,
+      canonical,
+      ...expandedQueries,
+      ...generatedJapaneseQueries,
+      ...semanticEnglishVariants,
+      ...translatedKeywords,
+      ...domainOnly,
+      ...japaneseDomainCompositeQueries,
+      ...intentOnly,
+      ...attendanceCorrectionOnly,
+      ...emailSignatureOnly,
+    ],
+    32,
+  );
+  const queryType = determineQueryType(canonical || rawQuery, input.userLanguage);
+  const domainDetected = determineDomainProfile(profileTexts, input.userLanguage);
+  const languageDetected = determineLanguageProfile(profileTexts);
+  const deterministicTermMapUsed = queryTranslationStatus === 'term_map';
+
   return {
     normalizedQuery,
     canonicalQuery: canonical,
@@ -674,5 +839,9 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
     queryTranslationStatus,
     translateCallsCount,
     translateMs,
+    queryType,
+    domainDetected,
+    languageDetected,
+    deterministicTermMapUsed,
   };
 };

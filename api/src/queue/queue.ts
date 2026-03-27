@@ -26,9 +26,9 @@ export class ChatQueueOverloadedError extends Error {
 
 const commonQueueOptions = {
   redis: {
-    port: config.Redis.port || Number(process.env.REDIS_PORT) || 6379,
-    host: config.Redis.host || process.env.REDIS_HOST || '127.0.0.1',
-    password: config.Redis.password || process.env.REDIS_PASSWORD || '',
+    port: Number(process.env.REDIS_PORT) || config.Redis.port || 6379,
+    host: process.env.REDIS_HOST || config.Redis.host || '127.0.0.1',
+    password: process.env.REDIS_PASSWORD || config.Redis.password || '',
     db: 6,
   },
   defaultJobOptions: {

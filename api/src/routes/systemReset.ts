@@ -17,7 +17,7 @@ router.post('/execute', async (ctx: any) => {
   }
 
   const schema = Joi.object({
-    accountPassword: Joi.string().trim().min(1).required(),
+    accountPassword: Joi.string().trim().optional().allow(''),
     confirmationText: Joi.string().trim().required(),
   });
 
@@ -28,7 +28,7 @@ router.post('/execute', async (ctx: any) => {
   }
 
   try {
-    const result = await resetSystemPermanently(scope, value.accountPassword, value.confirmationText);
+    const result = await resetSystemPermanently(scope, value.confirmationText);
     ctx.body = ok(result);
   } catch (e: any) {
     const message = String(e?.message || 'Failed to reset system');

@@ -1,5 +1,7 @@
 import User from '@/mysql/model/user.model';
 import UserRole from '@/mysql/model/user_role.model';
+import UserGroup from '@/mysql/model/user_group.model';
+import SsoUserBind from '@/mysql/model/sso_user_bind.model';
 import { detectDbMode } from '@/db/adapter';
 import { pgPool } from '@/clients/postgres';
 import { hashPassword } from '@/service/user';
@@ -15,11 +17,44 @@ import {
   canAssignRole,
   canManageUsers,
   emitAuditLog,
+  isSuperAdminRole,
   normalizeDepartmentCode,
   normalizeRoleCode,
   roleDepartmentForAdmin,
 } from '@/service/rbac';
 import { deleteRoleForEmail, upsertRoleForEmail } from '@/service/ssoRoleStore';
+import redis from '@/clients/redis';
+
+/**
+ * Invalidate all Redis sessions for a given user by scanning login_tokens.
+ * This ensures revoked/deleted users cannot continue using cached sessions.
+ */
+async function invalidateUserSessions(userId: number): Promise<number> {
+  let invalidated = 0;
+  try {
+    const sessionKeys = await redis.smembers('login_tokens');
+    if (!sessionKeys || !sessionKeys.length) return 0;
+    // Check each session to find ones belonging to this user
+    for (const key of sessionKeys) {
+      try {
+        const raw = await redis.get(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        const sessionUserId = Number(data?.userInfo?.userId ?? data?.userInfo?.user_id ?? 0);
+        if (sessionUserId === userId) {
+          await redis.del(key);
+          await redis.srem('login_tokens', key);
+          invalidated += 1;
+        }
+      } catch {
+        // Skip malformed session entries
+      }
+    }
+  } catch (err) {
+    console.error('[adminUser.invalidateUserSessions] failed:', { userId, error: err });
+  }
+  return invalidated;
+}
 
 export type AdminUserInput = {
   firstName: string;
@@ -35,6 +70,8 @@ export type AdminUserInput = {
   isActive?: boolean;
 };
 
+export type AdminUserView = 'ACTIVE' | 'RESTORED' | 'DELETED' | 'ALL';
+
 const normalizeJobRole = (value: string) => String(value || '').trim().toLowerCase();
 const normalizeArea = (value: string) => String(value || '').trim().toLowerCase();
 
@@ -44,6 +81,20 @@ const buildUserName = (firstName: string, lastName: string, employeeId: string) 
 };
 
 const normalizeUserName = (value: string) => String(value || '').trim().toLowerCase();
+
+const normalizeAdminUserView = (value: unknown): AdminUserView => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'RESTORED') return 'RESTORED';
+  if (normalized === 'DELETED') return 'DELETED';
+  if (normalized === 'ALL') return 'ALL';
+  return 'ACTIVE';
+};
+
+const inferUserLifecycleStatus = (user: any): 'ACTIVE' | 'RESTORED' | 'DELETED' => {
+  if (user?.deleted_at) return 'DELETED';
+  if (user?.restored_at && String(user?.status ?? '') === '1') return 'RESTORED';
+  return String(user?.status ?? '') === '1' ? 'ACTIVE' : 'ACTIVE';
+};
 
 async function findDeletedUserReuseCandidate(params: {
   employeeId?: string;
@@ -95,7 +146,10 @@ const toResponseUser = (user: any) => ({
   department_code: user.department_code,
   role_code: user.role_code,
   status: user.status,
+  lifecycle_status: inferUserLifecycleStatus(user),
   updated_at: user.updated_at,
+  deleted_at: user.deleted_at || null,
+  restored_at: user.restored_at || null,
 });
 
 function ensureCanManage(scope: AccessScope) {
@@ -156,12 +210,24 @@ async function syncSsoRoleMapping(email: string | null, roleCode: RoleCode) {
   }
 }
 
-export async function listAdminUsers(scope: AccessScope, opts?: { query?: string }) {
+export async function listAdminUsers(scope: AccessScope, opts?: { query?: string; statusFilter?: AdminUserView }) {
   ensureCanManage(scope);
 
-  const where: any = { deleted_at: null };
+  const statusFilter = normalizeAdminUserView(opts?.statusFilter);
+  const where: any = {};
   if (scope.roleCode !== 'SUPER_ADMIN') {
     where.department_code = scope.departmentCode;
+  }
+
+  if (statusFilter === 'ACTIVE') {
+    where.deleted_at = null;
+    where.status = '1';
+  } else if (statusFilter === 'RESTORED') {
+    where.deleted_at = null;
+    where.status = '1';
+    where.restored_at = { [Op.ne]: null } as any;
+  } else if (statusFilter === 'DELETED') {
+    where.deleted_at = { [Op.ne]: null } as any;
   }
 
   const mode = await detectDbMode();
@@ -201,7 +267,9 @@ export async function listAdminUsers(scope: AccessScope, opts?: { query?: string
       'department_code',
       'role_code',
       'status',
-      'updated_at',
+    'updated_at',
+    'deleted_at',
+    'restored_at',
     ],
     where,
     order: [['updated_at', 'DESC'], ['user_id', 'DESC']],
@@ -361,12 +429,10 @@ export async function updateAdminUser(userId: number, input: AdminUserInput, act
 
   const requestedUserName = String(input.userName || '').trim();
 
-  let resolvedDepartment = normalizeDepartmentCode(target.department_code || target.department);
-  if (actorScope.roleCode === 'SUPER_ADMIN' && input.departmentCode) {
-    resolvedDepartment = normalizeDepartmentCode(input.departmentCode);
-  } else if (actorScope.roleCode !== 'SUPER_ADMIN') {
-    resolvedDepartment = actorScope.departmentCode;
-  }
+  // Preserve the original department from the target user record.
+  // Department is managed by SSO and should not be changed via admin edit.
+  const resolvedDepartment = String(target.department || target.department_code || 'OTHER');
+  const resolvedDepartmentCode = normalizeDepartmentCode(target.department_code || target.department);
 
   const duplicate = await User.findOne({
     raw: true,
@@ -416,7 +482,7 @@ export async function updateAdminUser(userId: number, input: AdminUserInput, act
       status: input.isActive === false ? '0' : '1',
       create_by: target.create_by || actorScope.userId,
       department: resolvedDepartment,
-      department_code: resolvedDepartment,
+      department_code: resolvedDepartmentCode,
       role_code: requestedRole,
     };
 
@@ -455,12 +521,15 @@ export async function deleteAdminUser(userId: number, actorScope: AccessScope) {
   if (!target) throw new Error('not_found');
   ensureTargetUserScope(actorScope, target);
 
+
   await seq.transaction(async (transaction) => {
     await UserRole.destroy({ where: { user_id: userId }, transaction });
     await User.update(
       {
         deleted_at: new Date(),
         deleted_by: actorScope.userId,
+        restored_at: null,
+        restored_by: null,
       } as any,
       { where: { user_id: userId }, transaction },
     );
@@ -473,6 +542,97 @@ export async function deleteAdminUser(userId: number, actorScope: AccessScope) {
       details: { employeeId: target.emp_id },
     });
   });
+
+  // Invalidate active sessions so the deleted user cannot continue using the app
+  await invalidateUserSessions(userId);
+
+  const candidateEmail = looksLikeEmail(target?.email)
+    ? normalizeEmail(target.email)
+    : looksLikeEmail(target?.emp_id)
+      ? normalizeEmail(target.emp_id)
+      : null;
+  await syncSsoRoleMapping(candidateEmail, 'USER');
+
+  return { success: true };
+}
+
+export async function restoreAdminUser(userId: number, actorScope: AccessScope) {
+  ensureCanManage(actorScope);
+  if (!Number.isFinite(userId)) throw new Error('validation_error');
+
+  const target = await User.findOne({ raw: true, where: { user_id: userId } }) as any;
+  if (!target) throw new Error('not_found');
+  ensureTargetUserScope(actorScope, target);
+
+  const lifecycleStatus = inferUserLifecycleStatus(target);
+  if (lifecycleStatus !== 'DELETED') {
+    const err: any = new Error('not_deleted');
+    err.code = 'not_deleted';
+    throw err;
+  }
+
+  await seq.transaction(async (transaction) => {
+    await User.update(
+      {
+        deleted_at: null,
+        deleted_by: null,
+        status: '1',
+        restored_at: new Date(),
+        restored_by: actorScope.userId,
+      } as any,
+      { where: { user_id: userId }, transaction },
+    );
+
+    await emitAuditLog({
+      actor: actorScope,
+      action: 'USER_RESTORED',
+      targetType: 'user',
+      targetId: userId,
+      details: { employeeId: target.emp_id },
+    });
+  });
+
+  const candidateEmail = looksLikeEmail(target?.email)
+    ? normalizeEmail(target.email)
+    : looksLikeEmail(target?.emp_id)
+      ? normalizeEmail(target.emp_id)
+      : null;
+  await syncSsoRoleMapping(candidateEmail, target.role_code || 'USER');
+
+  return { success: true };
+}
+
+export async function permanentlyDeleteAdminUser(userId: number, actorScope: AccessScope) {
+  ensureCanManage(actorScope);
+  if (!Number.isFinite(userId)) throw new Error('validation_error');
+
+  const target = await User.findOne({ raw: true, where: { user_id: userId } }) as any;
+  if (!target) throw new Error('not_found');
+  ensureTargetUserScope(actorScope, target);
+
+  if (inferUserLifecycleStatus(target) !== 'DELETED') {
+    const err: any = new Error('not_deleted');
+    err.code = 'not_deleted';
+    throw err;
+  }
+
+  await seq.transaction(async (transaction) => {
+    await UserRole.destroy({ where: { user_id: userId }, transaction });
+    await UserGroup.destroy({ where: { user_id: userId }, transaction });
+    await SsoUserBind.destroy({ where: { user_id: userId }, transaction });
+    await User.destroy({ where: { user_id: userId }, transaction });
+
+    await emitAuditLog({
+      actor: actorScope,
+      action: 'USER_PERMANENTLY_DELETED',
+      targetType: 'user',
+      targetId: userId,
+      details: { employeeId: target.emp_id },
+    });
+  });
+
+  // Ensure any lingering sessions are cleaned up
+  await invalidateUserSessions(userId);
 
   const candidateEmail = looksLikeEmail(target?.email)
     ? normalizeEmail(target.email)
@@ -514,13 +674,6 @@ export async function bulkDeleteAdminUsers(userIds: number[], actorScope: Access
     throw err;
   }
 
-  const blockedRoleCodes = new Set<RoleCode>(['SUPER_ADMIN', 'GA_ADMIN']);
-  const blockedTargets = targets.filter((target) => blockedRoleCodes.has(normalizeRoleCode(target.role_code)));
-  if (blockedTargets.length) {
-    const err: any = new Error('forbidden_role_delete');
-    err.code = 'forbidden_role_delete';
-    throw err;
-  }
 
   await seq.transaction(async (transaction) => {
     await UserRole.destroy({

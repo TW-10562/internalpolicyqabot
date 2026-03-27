@@ -289,7 +289,11 @@ const canonicalizeJapanese = (query: string): string => {
   const text = normalizeUnicode(query).trim();
   if (!text) return '';
 
-  const chunks = text
+  // Step 1: Strip grammar endings before splitting so particles inside
+  // verb forms (でしょうか, ですか, etc.) don't cause wrong splits.
+  const stripped = normalizeJapaneseToken(text);
+
+  const chunks = (stripped || text)
     .replace(/[?？!！。、,，:：;；/／「」『』【】\[\]()（）]/g, ' ')
     .split(/\s+/)
     .map((v) => v.trim())
@@ -297,8 +301,10 @@ const canonicalizeJapanese = (query: string): string => {
 
   const candidates: string[] = [];
   for (const chunk of chunks) {
+    // Only split on particles that sit between content characters (kanji/katakana).
+    // This avoids destroying fragments like しょう, できる, etc.
     const pieces = String(chunk)
-      .split(/[をはがにでとへもやかの]+/)
+      .split(/(?<=[\u4e00-\u9fff\u30a0-\u30ffー])[をはがにへもと](?=[\u4e00-\u9fff\u30a0-\u30ffー])/g)
       .map((v) => v.trim())
       .filter(Boolean);
     for (const piece of pieces) {

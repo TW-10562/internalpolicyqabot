@@ -32,6 +32,7 @@ import express from 'express';
 
 // register repeatable jobs
 import { registerRepeatJobs } from './scheduler/repeatJobs';
+import { runEmbeddingStartupValidation } from '@/rag/validation/embeddingValidation';
 
 const STATIC_DIR = path.resolve(__dirname, '../../');
 
@@ -50,6 +51,11 @@ async function bootstrap() {
     console.error('Failed to initialize ZSet:', error);
   });
 
+  // Validate embedding/vector configuration (non-blocking — logs warnings but does not prevent startup)
+  runEmbeddingStartupValidation().catch((error) => {
+    console.error('[STARTUP] Embedding validation failed (non-fatal):', error?.message || error);
+  });
+
   // Backward-compatible preview aliases.
   router.get('/api/file/preview/:storage_key', requireScopedAccess, previewFile);
   router.get('/api/file/preview/:id', async (ctx) => {
@@ -59,9 +65,9 @@ async function bootstrap() {
     });
   });
 
-  // ✅ Allow PORT env override (so you can run PORT=8090 npm run dev safely)
-  const port = Number(process.env.PORT ?? config.Backend.port);
-  const host = config.Backend.host ?? '0.0.0.0';
+  // ✅ Allow PORT/HOST env override (docker-compose sets BACKEND_HOST=0.0.0.0)
+  const port = Number(process.env.PORT ?? process.env.BACKEND_PORT ?? config.Backend.port);
+  const host = process.env.BACKEND_HOST ?? config.Backend.host ?? '0.0.0.0';
   const listenHost = host === 'localhost' ? '127.0.0.1' : host;
 
   // job queue and bull board setup

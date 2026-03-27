@@ -184,28 +184,32 @@ class FileUploadService {
       console.warn('[FileUpload] Postgres metadata upsert skipped:', e?.message || e);
     });
 
-    // 4. Index to Solr with retries.
-    // If indexing still fails, keep file + DB metadata persisted and mark indexed=false.
-    // This avoids losing uploads when Solr is temporarily unavailable.
+    // 4. Index to Solr with retries (skipped when vector-only mode is active).
+    const vectorOnlyMode = String(process.env.RAG_SEMANTIC_VECTOR_ONLY || '0') === '1';
     let indexed = false;
-    try {
-      const normalizedDept = this.normalizeStorageFolder(departmentCode);
-      indexed = await this.retry(
-        () => solrService.indexDocument(
-          permanentPath,
-          storageKey,
-          file.originalFilename,
-          {
-            department_code_s: normalizedDept,
-            system_s: normalizedDept.toLowerCase(),
-          },
-        ),
-        3,
-        1200,
-      );
-    } catch (error: any) {
-      console.error(`[FileUpload] Solr indexing failed after retries: ${error?.message || error}`);
-      indexed = false;
+    if (vectorOnlyMode) {
+      console.log(`[FileUpload] Solr indexing skipped (RAG_SEMANTIC_VECTOR_ONLY=1): ${file.originalFilename}`);
+      indexed = true;
+    } else {
+      try {
+        const normalizedDept = this.normalizeStorageFolder(departmentCode);
+        indexed = await this.retry(
+          () => solrService.indexDocument(
+            permanentPath,
+            storageKey,
+            file.originalFilename,
+            {
+              department_code_s: normalizedDept,
+              system_s: normalizedDept.toLowerCase(),
+            },
+          ),
+          3,
+          1200,
+        );
+      } catch (error: any) {
+        console.error(`[FileUpload] Solr indexing failed after retries: ${error?.message || error}`);
+        indexed = false;
+      }
     }
 
     if (indexed) {

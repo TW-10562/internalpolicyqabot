@@ -73,7 +73,7 @@ export const handleAddGenTask = async (
   addContent: IGenTask,
   userName: string,
   userId?: number,
-  departmentCode: string = 'HR',
+  departmentCode: string = 'OTHER',
 ): Promise<GenTaskResponse> => {
   let taskId = nanoid();
   const addTaskContent = {

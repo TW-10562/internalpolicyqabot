@@ -298,7 +298,7 @@ const purgeMessagesHandler = async (ctx: any) => {
     }
 
     const where = {
-      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: ['HR', 'GA', 'ACC'] } : scope.departmentCode,
+      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: ['HR', 'GA', 'ACC', 'OTHER'] } : scope.departmentCode,
       ...(whereConditions.length > 1 ? { [Op.or]: whereConditions } : whereConditions[0]),
     } as any;
 

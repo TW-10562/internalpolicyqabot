@@ -1,7 +1,7 @@
 /**
  * Analytics Dashboard – Professional (Clean KPIs)
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Clock,
   MessageSquare,
@@ -180,11 +180,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
   const [loadError, setLoadError] = useState('');
   const { t } = useLang();
 
-  useEffect(() => {
-    void loadAnalytics();
-  }, [timeRange]);
-
-  const loadAnalytics = async () => {
+  const loadAnalytics = useCallback(async () => {
     setLoading(true);
     setLoadError('');
     try {
@@ -255,7 +251,11 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
     } finally {
       setLoading(false);
     }
-  };
+  }, [timeRange, t]);
+
+  useEffect(() => {
+    void loadAnalytics();
+  }, [loadAnalytics]);
 
   if (loading) {
     return (
@@ -366,8 +366,8 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
               return (
                 <div key={i}>
                   <div className="flex justify-between text-sm mb-2">
-                    <span className="text-[#6E7680]">{label}</span>
-                    <span className="text-[#232333] font-medium">{f.value}</span>
+                    <span className="text-[#6E7680] dark:text-dark-text-muted transition-colors">{label}</span>
+                    <span className="text-[#232333] dark:text-dark-text font-medium transition-colors">{f.value}</span>
                   </div>
                   <div className="h-2.5 bg-[#F6F6F6] dark:bg-dark-border rounded-full transition-colors">
                     <div
@@ -444,7 +444,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
           ) : (
             <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
               {data.contentSafety.incidents.map((incident) => {
-                const user = incident.userProfile;
+                const profile = incident.userProfile;
                 const sortedReasons = [...incident.reasons].sort((a, b) => b.severity - a.severity);
                 return (
                   <div
@@ -459,13 +459,13 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
                         {formatDateTimeJP(incident.createdAt)}
                       </span>
                     </div>
-                    {user ? (
+                    {profile ? (
                       <div className="text-xs mb-2 text-[#6E7680] dark:text-dark-text-muted grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
-                        <div><span className="font-semibold">{t('analytics.firstName')}:</span> {user.firstName || '-'}</div>
-                        <div><span className="font-semibold">{t('analytics.lastName')}:</span> {user.lastName || '-'}</div>
-                        <div><span className="font-semibold">{t('analytics.employeeId')}:</span> {user.employeeId || '-'}</div>
-                        <div><span className="font-semibold">{t('analytics.userJobRole')}:</span> {user.userJobRole || '-'}</div>
-                        <div><span className="font-semibold">{t('analytics.areaOfWork')}:</span> {user.areaOfWork || '-'}</div>
+                        <div><span className="font-semibold">{t('analytics.firstName')}:</span> {profile.firstName || '-'}</div>
+                        <div><span className="font-semibold">{t('analytics.lastName')}:</span> {profile.lastName || '-'}</div>
+                        <div><span className="font-semibold">{t('analytics.employeeId')}:</span> {profile.employeeId || '-'}</div>
+                        <div><span className="font-semibold">{t('analytics.userJobRole')}:</span> {profile.userJobRole || '-'}</div>
+                        <div><span className="font-semibold">{t('analytics.areaOfWork')}:</span> {profile.areaOfWork || '-'}</div>
                       </div>
                     ) : null}
                     <div className="text-xs mb-2 text-[#6E7680] dark:text-dark-text-muted">

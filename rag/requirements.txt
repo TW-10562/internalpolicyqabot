@@ -6,7 +6,6 @@ PyPDF2
 python-pptx
 python-docx
 jaconv
-transformers
 pydantic
 pydantic-settings
 pytest
@@ -22,11 +21,10 @@ langchain-ollama==0.3.10
 langchain-chroma==0.2.6
 langchain-core==0.3.78
 langchain-community==0.3.30
-torch
 langchain-huggingface==0.3.1
-sentence-transformers 
-huggingface_hub 
-transformers 
+sentence-transformers
+huggingface_hub
+transformers>=4.57.0
 accelerate
 sudachipy
 sudachidict_core

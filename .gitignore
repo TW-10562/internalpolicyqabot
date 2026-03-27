@@ -38,8 +38,8 @@ reports/
 config/
 !rag/config/
 !rag/config/**
-faq_database/database/chroma_db/*
-faq_database/files/*
+archive/legacy/faq_database/database/chroma_db/*
+archive/legacy/faq_database/files/*
 config/*.env
 .env.local
 .env.*.local

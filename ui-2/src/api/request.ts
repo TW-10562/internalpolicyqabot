@@ -95,10 +95,13 @@ export async function request<T = any>(url: string, options: RequestOptions = {}
     try {
       result = rawText ? JSON.parse(rawText) : {};
     } catch (e) {
-      // If parsing fails, normalize to an error-like shape using the raw text
+      // If parsing fails (e.g. nginx HTML error page), return a clean message
+      const isHtml = rawText && (rawText.includes('<html') || rawText.includes('<!DOCTYPE'));
       result = {
         code: response.status,
-        message: rawText || response.statusText || 'Request failed',
+        message: isHtml
+          ? `Server error (${response.status}). Please try again.`
+          : rawText || response.statusText || 'Request failed',
       };
     }
 

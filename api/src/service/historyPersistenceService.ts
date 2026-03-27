@@ -363,6 +363,41 @@ type FaqItem = {
 
 type FaqAggregate = FaqItem & { answerScore: number };
 
+const FAQ_SEED_ITEMS: Array<{ key: string } & Omit<FaqItem, 'count' | 'lastAsked'>> = [
+  {
+    key: 'how-to-use-faq',
+    question: 'How do I use this FAQ page?',
+    answer: 'Use the search box to find a topic, filter by department, and open a question to read the answer.',
+    departmentCode: 'OTHER',
+    sourceCount: 0,
+    qualityLabel: 'RELAXED',
+  },
+  {
+    key: 'faq-empty-department',
+    question: 'What if my department has no FAQs yet?',
+    answer: 'You will still see general FAQs here. New FAQ entries appear automatically as more repeated questions are collected.',
+    departmentCode: 'OTHER',
+    sourceCount: 0,
+    qualityLabel: 'RELAXED',
+  },
+  {
+    key: 'faq-origin',
+    question: 'Where do FAQ items come from?',
+    answer: 'FAQ items are built from repeated support questions and validated answer history in the system.',
+    departmentCode: 'OTHER',
+    sourceCount: 0,
+    qualityLabel: 'RELAXED',
+  },
+  {
+    key: 'faq-access-scope',
+    question: 'Who can see FAQs?',
+    answer: 'Valid users can see FAQs according to their access scope and available FAQ data.',
+    departmentCode: 'OTHER',
+    sourceCount: 0,
+    qualityLabel: 'RELAXED',
+  },
+];
+
 const FAQ_STOPWORDS_EN = new Set([
   'a',
   'an',
@@ -571,6 +606,7 @@ const collectFaqItems = (
     qualityLabel: 'VERIFIED' | 'RELAXED';
     requireRagUsed: boolean;
     requireSources: boolean;
+    skipAnswerRelevance?: boolean;
   },
 ): FaqItem[] => {
   const map = new Map<string, FaqAggregate>();
@@ -594,11 +630,11 @@ const collectFaqItems = (
     if (options.requireRagUsed && !ragUsed) continue;
     if (options.requireSources && sourceIds.length === 0) continue;
     if (isLowValueAnswer(answer)) continue;
-    if (!isFaqAnswerRelevant(q, answer)) continue;
+    if (!options.skipAnswerRelevance && !isFaqAnswerRelevant(q, answer)) continue;
 
     const lastAsked = new Date(m.created_at || Date.now()).getTime();
     const prev = map.get(key);
-    const dept = String(m.department_code || '').toUpperCase() || 'HR';
+    const dept = String(m.department_code || '').toUpperCase() || 'OTHER';
     const nextSourceCount = sourceIds.length;
     const nextQualityLabel = options.qualityLabel;
     const nextAnswerScore = scoreAnswerQuality(answer, ragUsed, nextSourceCount);
@@ -642,10 +678,12 @@ export async function listFaqItems(params: {
   departmentCode?: string;
   roleCode?: string;
   sampleSize?: number;
+  allowedCategories?: string[];
 }) {
   const limit = Math.max(1, Math.min(50, Number(params.limit) || 10));
   const minCount = Math.max(1, Number(params.minCount) || 1);
   const sampleSize = Math.max(200, Math.min(5000, Number(params.sampleSize) || 1200));
+  const faqLog = (...args: any[]) => console.info('[FAQ]', ...args);
   const includeNonUserRoles = String(process.env.FAQ_INCLUDE_NON_USER_ROLES || '1') === '1';
   const strictRequireSources = String(process.env.FAQ_STRICT_REQUIRE_SOURCES || '1') === '1';
   const strictRequireRag = String(process.env.FAQ_STRICT_REQUIRE_RAG || '1') === '1';
@@ -657,47 +695,84 @@ export async function listFaqItems(params: {
       .filter(Boolean),
   );
 
-  const whereBase: any = { role: 'user' };
   const roleCode = String(params.roleCode || '').toUpperCase();
-  if (roleCode === 'HR_ADMIN') {
-    // HR admin: HR FAQ only
-    whereBase.department_code = 'HR';
-  } else if (roleCode === 'GA_ADMIN') {
-    // GA admin: GA FAQ only
-    whereBase.department_code = 'GA';
-  } else if (roleCode === 'ACC_ADMIN') {
-    // ACC admin: ACC FAQ only
-    whereBase.department_code = 'ACC';
-  } else if (roleCode === 'USER') {
-    // User: scope FAQ to current department when available.
-    if (params.departmentCode) {
-      whereBase.department_code = params.departmentCode;
+
+  // Role-based category access: restrict which department_codes can appear in results.
+  // HR FAQs are only visible to SUPER_ADMIN and HR_ADMIN.
+  const { departmentToFaqCategory } = await import('@/service/faqAccess');
+  const allowedCategories = (params.allowedCategories || ['HR', 'GA', 'ACC', 'OTHERS'])
+    .map((c) => String(c || '').toUpperCase());
+  const canSeeHR = allowedCategories.includes('HR');
+
+  // Map allowed FAQ categories back to department_codes for DB filtering.
+  // FAQ category OTHERS maps to all department_codes except HR, GA, ACC.
+  const allowedDeptCodes: string[] = [];
+  if (allowedCategories.includes('HR')) allowedDeptCodes.push('HR');
+  if (allowedCategories.includes('GA')) allowedDeptCodes.push('GA');
+  if (allowedCategories.includes('ACC')) allowedDeptCodes.push('ACC');
+  // OTHERS covers: OTHER, SYSTEMS, and any other non-standard code
+  const includesOthers = allowedCategories.includes('OTHERS');
+
+  // Build the base where clause that enforces category access.
+  const buildWhereBase = () => {
+    const whereBase: any = { role: 'user' };
+    if (!canSeeHR) {
+      // Non-HR users: exclude HR department messages at the DB level.
+      whereBase.department_code = { [Op.ne]: 'HR' };
     }
-  } else if (params.departmentCode) {
-    whereBase.department_code = params.departmentCode;
-  }
+    return whereBase;
+  };
 
-  const userMessages = await ChatHistoryMessage.findAll({
-    raw: true,
-    where: whereBase,
-    order: [['created_at', 'DESC']],
-    limit: sampleSize,
-  }) as any[];
+  const globalWhere = buildWhereBase();
 
-  if (!userMessages.length) {
-    return { items: [] as FaqItem[] };
-  }
+  type Attempt = {
+    stage: string;
+    where: any;
+    minCount: number;
+    qualityLabel: 'VERIFIED' | 'RELAXED';
+    requireRagUsed: boolean;
+    requireSources: boolean;
+    skipAnswerRelevance?: boolean;
+  };
 
-  // Optional role scoping for FAQ pool. Default keeps real usage from all roles.
-  const userIds = Array.from(
-    new Set(
-      userMessages
-        .map((m) => Number(m.user_id))
-        .filter((id) => Number.isFinite(id) && id > 0),
-    ),
-  );
-  let scopedMessages = userMessages;
-  if (userIds.length > 0) {
+  const attempts: Attempt[] = [
+    {
+      stage: 'global_strict',
+      where: globalWhere,
+      minCount,
+      qualityLabel: 'VERIFIED',
+      requireRagUsed: strictRequireRag,
+      requireSources: strictRequireSources,
+    },
+    {
+      stage: 'global_relaxed',
+      where: globalWhere,
+      minCount: relaxedMinCount,
+      qualityLabel: 'RELAXED',
+      requireRagUsed: false,
+      requireSources: false,
+      skipAnswerRelevance: true,
+    },
+  ];
+
+  faqLog('request', {
+    roleCode: roleCode || null,
+    allowedCategories,
+    canSeeHR,
+    limit,
+    sampleSize,
+  });
+
+  const applyOwnerRoleFilters = async (messages: any[]) => {
+    const userIds = Array.from(
+      new Set(
+        messages
+          .map((m) => Number(m.user_id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+    if (userIds.length === 0) return messages;
+
     const owners = await User.findAll({
       raw: true,
       attributes: ['user_id', 'role_code'],
@@ -710,69 +785,124 @@ export async function listFaqItems(params: {
     for (const owner of owners) {
       ownerRoleMap.set(Number(owner.user_id), String(owner.role_code || 'USER').toUpperCase());
     }
-    scopedMessages = userMessages.filter((m) => {
+    return messages.filter((m) => {
       const ownerRoleCode = String(ownerRoleMap.get(Number(m.user_id)) || 'USER').toUpperCase();
       if (!includeNonUserRoles && ownerRoleCode !== 'USER') return false;
       if (excludedRoleCodes.has(ownerRoleCode)) return false;
       return true;
     });
+  };
+
+  const buildFaqItemsForAttempt = async (attempt: Attempt) => {
+    const messages = await ChatHistoryMessage.findAll({
+      raw: true,
+      where: attempt.where,
+      order: [['created_at', 'DESC']],
+      limit: sampleSize,
+    }) as any[];
+    if (!messages.length) {
+      faqLog('stage', { stage: attempt.stage, count: 0 });
+      return [] as FaqItem[];
+    }
+
+    const scopedMessages = await applyOwnerRoleFilters(messages);
+    if (!scopedMessages.length) {
+      faqLog('stage', { stage: attempt.stage, count: 0, note: 'role_filter_excluded_all' });
+      return [] as FaqItem[];
+    }
+
+    const outputIds = scopedMessages
+      .map((m) => String(m.message_id || '').split(':')[0])
+      .filter((v) => v && v !== 'undefined');
+    const assistantIds = Array.from(new Set(outputIds.map((id) => `${id}:assistant`)));
+    const assistantRows = await ChatHistoryMessage.findAll({
+      raw: true,
+      where: { message_id: assistantIds },
+    }) as any[];
+    const assistantById = new Map<string, any>();
+    for (const a of assistantRows) assistantById.set(String(a.message_id), a);
+    const items = collectFaqItems(scopedMessages, assistantById, {
+      minCount: attempt.minCount,
+      qualityLabel: attempt.qualityLabel,
+      requireRagUsed: attempt.requireRagUsed,
+      requireSources: attempt.requireSources,
+      skipAnswerRelevance: Boolean(attempt.skipAnswerRelevance),
+    });
+    faqLog('stage', {
+      stage: attempt.stage,
+      count: items.length,
+      minCount: attempt.minCount,
+      qualityLabel: attempt.qualityLabel,
+    });
+    return items;
+  };
+
+  const buildSeedItems = (): FaqItem[] => {
+    const now = Date.now();
+    return FAQ_SEED_ITEMS.map((item, index) => ({
+      ...item,
+      count: 1,
+      lastAsked: now - (index * 1000),
+    }));
+  };
+
+  // Safety filter: after collecting FAQ items, remove any whose departmentCode
+  // maps to a category the user is not allowed to see (defense in depth).
+  const filterByAllowedCategories = (items: FaqItem[]): FaqItem[] => {
+    return items.filter((item) => {
+      const cat = departmentToFaqCategory(item.departmentCode);
+      return allowedCategories.includes(cat);
+    });
+  };
+
+  let selectedItems: FaqItem[] = [];
+  let selectedMode: 'VERIFIED' | 'RELAXED' = 'VERIFIED';
+  let fallbackStage = 'none';
+  for (const attempt of attempts) {
+    const items = await buildFaqItemsForAttempt(attempt);
+    const filtered = filterByAllowedCategories(items);
+    if (filtered.length > 0) {
+      selectedItems = filtered.slice(0, limit);
+      selectedMode = attempt.qualityLabel;
+      fallbackStage = attempt.stage;
+      break;
+    }
+    fallbackStage = attempt.stage;
   }
-  if (!scopedMessages.length) {
-    return { items: [] as FaqItem[] };
-  }
 
-  const outputIds = scopedMessages
-    .map((m) => String(m.message_id || '').split(':')[0])
-    .filter((v) => v && v !== 'undefined');
-
-  const assistantIds = Array.from(new Set(outputIds.map((id) => `${id}:assistant`)));
-  const assistantRows = await ChatHistoryMessage.findAll({
-    raw: true,
-    where: { message_id: assistantIds },
-  }) as any[];
-
-  const assistantById = new Map<string, any>();
-  for (const a of assistantRows) assistantById.set(String(a.message_id), a);
-  const strictItems = collectFaqItems(scopedMessages, assistantById, {
-    minCount,
-    qualityLabel: 'VERIFIED',
-    requireRagUsed: strictRequireRag,
-    requireSources: strictRequireSources,
+  faqLog('result', {
+    roleCode: roleCode || null,
+    allowedCategories,
+    fallbackStage,
+    count: selectedItems.length,
   });
 
-  if (strictItems.length >= limit) {
-    return { items: strictItems.slice(0, limit), mode: 'STRICT' as const };
-  }
-
-  const relaxedItems = collectFaqItems(scopedMessages, assistantById, {
-    minCount: relaxedMinCount,
-    qualityLabel: 'RELAXED',
-    requireRagUsed: false,
-    requireSources: false,
-  });
-  const merged: FaqItem[] = [];
-  const seenKeys = new Set<string>();
-  for (const item of strictItems) {
-    const key = buildFaqQuestionKey(item.question);
-    if (!key || seenKeys.has(key)) continue;
-    seenKeys.add(key);
-    merged.push(item);
-    if (merged.length >= limit) break;
-  }
-  for (const item of relaxedItems) {
-    if (merged.length >= limit) break;
-    const key = buildFaqQuestionKey(item.question);
-    if (!key || seenKeys.has(key)) continue;
-    seenKeys.add(key);
-    merged.push(item);
-  }
-
-  if (merged.length > 0) {
+  if (selectedItems.length === 0) {
+    const seedItems = filterByAllowedCategories(buildSeedItems()).slice(0, limit);
+    faqLog('seeded', {
+      roleCode: roleCode || null,
+      count: seedItems.length,
+    });
     return {
-      items: merged.slice(0, limit),
-      mode: strictItems.length > 0 ? ('HYBRID' as const) : ('RELAXED' as const),
+      items: seedItems,
+      mode: 'SEEDED' as const,
+      scope: {
+        roleCode: roleCode || null,
+        allowedCategories,
+      },
+      fallbackStage: 'seeded',
+      totalCount: seedItems.length,
     };
   }
 
-  return { items: strictItems.slice(0, limit), mode: 'STRICT' as const };
+  return {
+    items: selectedItems,
+    mode: selectedMode,
+    scope: {
+      roleCode: roleCode || null,
+      allowedCategories,
+    },
+    fallbackStage,
+    totalCount: selectedItems.length,
+  };
 }

@@ -54,7 +54,7 @@ export const tryNormalizeDepartmentCode = (value: unknown): DepartmentCode | nul
 export const normalizeDepartmentCode = (value: unknown): DepartmentCode => {
   const resolved = tryNormalizeDepartmentCode(value);
   if (resolved) return resolved;
-  return 'HR';
+  return 'OTHER';
 };
 
 export const departmentNameForCode = (value: unknown): string => {

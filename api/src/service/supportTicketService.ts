@@ -99,33 +99,33 @@ export async function replyToTicket(data: ReplyTicketData) {
 export async function listSupportTickets(params: ListTicketsParams) {
   try {
     const where: any = {};
-    
+
     if (params.userId) {
       where.user_id = { [Op.eq]: params.userId };
     }
     if (params.departmentCode) {
       where.department_code = { [Op.eq]: params.departmentCode };
     }
-    
     if (params.status) {
       where.status = { [Op.eq]: params.status };
     }
 
-    const tickets = await queryList(SupportTicket, where);
-    
-    // Sort by created_at desc and paginate
-    const sorted = tickets.sort((a: any, b: any) => 
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-    
-    const start = (params.pageNum - 1) * params.pageSize;
-    const paginated = sorted.slice(start, start + params.pageSize);
-    
+    const limit = Math.max(1, Math.min(100, Number(params.pageSize) || 20));
+    const offset = (Math.max(1, Number(params.pageNum) || 1) - 1) * limit;
+
+    const { rows, count } = await SupportTicket.findAndCountAll({
+      where,
+      order: [['created_at', 'DESC']],
+      limit,
+      offset,
+      raw: true,
+    });
+
     return {
-      rows: paginated,
-      total: tickets.length,
-      pageNum: params.pageNum,
-      pageSize: params.pageSize,
+      rows,
+      total: count,
+      pageNum: Math.max(1, Number(params.pageNum) || 1),
+      pageSize: limit,
     };
   } catch (error) {
     console.error('[Support] Failed to list tickets:', error);

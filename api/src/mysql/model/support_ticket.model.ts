@@ -64,7 +64,7 @@ export const initSupportTicket = (sequelize: Sequelize) => {
         allowNull: false,
       },
       status: {
-        type: DataTypes.ENUM('open', 'in_progress', 'resolved', 'closed'),
+        type: DataTypes.STRING(32),
         defaultValue: 'open',
         allowNull: false,
       },

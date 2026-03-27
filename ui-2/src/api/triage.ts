@@ -92,10 +92,10 @@ export async function getTriageSummary() {
   return normalize(raw) as { code: number; result?: TriageSummary; message?: string };
 }
 
-export async function purgeTriageTickets(adminPassword: string) {
+export async function purgeTriageTickets() {
   const raw = await request<any>(
     '/api/triage/tickets/purge',
-    { method: 'DELETE', data: { adminPassword } },
+    { method: 'DELETE' },
   );
   return normalize(raw) as { code: number; result?: { deletedTickets: number; deletedPayloadRows: number; sequenceReset?: boolean }; message?: string };
 }

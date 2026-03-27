@@ -32,7 +32,7 @@
 AZURE_AD_TENANT_ID=<Tenant ID>
 AZURE_AD_CLIENT_ID=<Client ID>
 AZURE_AD_CLIENT_SECRET=<後で生成>
-AZURE_AD_REDIRECT_URI=http://hrbot.corp.twave:7001/dev-api/user/auth/callback
+AZURE_AD_REDIRECT_URI=https://policybot.twave.co.jp/dev-api/user/auth/callback
 ```
 
 ### (2) クライアントシークレットの作成
@@ -66,7 +66,7 @@ AZURE_AD_REDIRECT_URI=http://hrbot.corp.twave:7001/dev-api/user/auth/callback
 1. **Authentication（認証）** ページ → **Redirect URIs** にて設定します。
 
    * 開発環境：`http://localhost:8080/user/auth/callback`
-   * 本番環境：`https://yourdomain.com/user/auth/callback`
+   * 本番環境：`https://policybot.twave.co.jp/dev-api/user/auth/callback`
 
 2. 以下のオプションにチェックを入れます：
 
@@ -90,8 +90,8 @@ AZURE_AD_REDIRECT_URI=http://hrbot.corp.twave:7001/dev-api/user/auth/callback
 3. バックエンドが `/oauth2/v2.0/token` エンドポイントを呼び出し、`id_token` を取得し、`oid`・`email`・`name` をデコードします。
 4. データベースにユーザーが登録済みであれば JWT を返し、未登録の場合は自動登録し基本権限を付与します。
 5. バックエンドはフロントエンドへリダイレクトします：
-   `http://localhost:7000/loginSuccess?authCode=xxx`
+   `https://policybot.twave.co.jp/ssoLoginSuccess?auth_code=xxx`
 6. フロントエンドはバックエンドの `/auth/exchange` にリクエストを送り、一時的な `authCode` をアプリ内の `app_jwt` に交換してログイン完了。
 
 ## SSOログインリンク
-http://localhost:7000/login?sso=true
+https://policybot.twave.co.jp/login?sso=true

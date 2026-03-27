@@ -121,9 +121,7 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
   useEffect(() => {
     const loadDocumentHistory = async () => {
       try {
-        console.log('📂 [AdminDashboard] Fetching document history from database...');
         const files = await loadAllDocuments();
-        console.log('✅ [AdminDashboard] Document history loaded:', { total: files.length });
         setDocumentHistory(files);
       } catch (error) {
         console.error('❌ [AdminDashboard] Error fetching document history:', error);
@@ -135,8 +133,6 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
 
   // Load users and activity
   useEffect(() => {
-    console.log('📊 [AdminDashboard] Setting up users and activity...');
-
     const activities: ActivityLog[] = documentHistory.slice(0, 10).map((doc, index) => ({
       id: String(index + 1),
       user: doc.create_by || t('activity.admin'),

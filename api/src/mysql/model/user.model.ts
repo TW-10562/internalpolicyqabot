@@ -68,7 +68,7 @@ const User = seq.define(
       comment: 'アカウント有効化フラグ(0=無効, 1=有効。アカウント作成時の承認前の状態に使用)',
     },
     sso_bound: {
-      type: DataTypes.TINYINT,
+      type: DataTypes.SMALLINT,
       allowNull: false,
       defaultValue: 0,
       comment: 'SSO連携済みフラグ',
@@ -116,6 +116,16 @@ const User = seq.define(
       type: DataTypes.DATE,
       allowNull: true,
       comment: 'ユーザ削除日時',
+    },
+    restored_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      comment: 'ユーザ復元日時',
+    },
+    restored_by: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      comment: '当ユーザの復元者の id',
     },
   },
   {

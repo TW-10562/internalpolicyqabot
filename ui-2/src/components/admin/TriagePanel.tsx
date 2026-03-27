@@ -33,7 +33,6 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
   const [updatingId, setUpdatingId] = useState<number | null>(null);
   const [purging, setPurging] = useState(false);
   const [showPurgeDialog, setShowPurgeDialog] = useState(false);
-  const [purgePassword, setPurgePassword] = useState('');
   const [tickets, setTickets] = useState<TriageTicket[]>([]);
   const [replyDraft, setReplyDraft] = useState<Record<number, string>>({});
   const strictDepartment = currentUser?.roleCode === 'HR_ADMIN'
@@ -120,17 +119,12 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
   const closePurgeDialog = () => {
     if (purging) return;
     setShowPurgeDialog(false);
-    setPurgePassword('');
   };
 
   const handlePurge = async () => {
-    if (!purgePassword.trim()) {
-      toast.error(t('common.error'), t('triage.purgePasswordRequired'));
-      return;
-    }
     setPurging(true);
     try {
-      const res: any = await purgeTriageTickets(purgePassword);
+      const res: any = await purgeTriageTickets();
       if (res?.code === 200) {
         const deleted = Number(res?.result?.deletedTickets || 0);
         toast.success(t('common.success'), t('triage.purgeSuccess', { count: deleted }));
@@ -299,19 +293,6 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
                 {t('triage.purgeIrreversible')}
               </div>
-              <div>
-                <label className="block text-sm font-medium text-foreground dark:text-dark-text mb-1">
-                  {t('triage.purgePasswordLabel')}
-                </label>
-                <input
-                  type="password"
-                  value={purgePassword}
-                  onChange={(e) => setPurgePassword(e.target.value)}
-                  placeholder={t('triage.purgePasswordPlaceholder')}
-                  className="w-full bg-surface dark:bg-dark-surface-alt border border-default dark:border-default rounded-lg px-3 py-2 text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors"
-                  autoFocus
-                />
-              </div>
               <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
@@ -324,7 +305,7 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
                 <button
                   type="button"
                   onClick={handlePurge}
-                  disabled={purging || !purgePassword.trim()}
+                  disabled={purging}
                   className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {purging ? t('triage.purging') : t('triage.purgeButton')}

@@ -194,18 +194,20 @@
     "deleteSelectedTitle": "選択したドキュメントを削除",
     "deleteSelected": "選択したものを削除",
     "searchPlaceholder": "ドキュメントを検索...",
-    "upload": "アップロード",
+    "upload": "新規ドキュメントをアップロード",
     "deleteSuccess": "ファイル「{{filename}}」は正常に削除されました",
     "deleteError": "ドキュメントの削除中にエラーが発生しました。もう一度お試しください。",
     "viewError": "ファイルを開けませんでした。もう一度お試しください。",
     "previewUnavailable": "このファイル形式はプレビューに対応していません。ダウンロードしてご確認ください。",
     "skippedExisting": "既に存在するためスキップしました: {{files}}",
-    "pipelineTitle": "アップロードパイプライン",
+    "pipelineTitle": "アップロード進捗",
     "pipelineStatusDone": "完了",
+    "pipelineStatusPending": "待機中",
+    "pipelineStatusFailed": "失敗",
     "uploadSuccess": "{{count}} 件のファイルが正常にアップロードされました。カテゴリ: {{category}}",
-    "pipelineStatusProcessing": "処理中...",
+    "pipelineStatusProcessing": "進行中",
     "nextContinue": "次へ / 続行",
-    "defaultCategory": "デフォルトカテゴリ",
+    "defaultCategory": "アップロード用のデフォルトカテゴリを選択",
     "removeSelected": "選択した項目を削除",
     "cancelUpload": "アップロードをキャンセル",
     "categoryLabel": "カテゴリ",
@@ -216,16 +218,26 @@
       "procedure": "⚙️ 手順",
       "faq": "❓ よくある質問"
     },
-    "filesSelected": "📄 {{count}} 件のファイルが選択されました",
+    "filesSelected": "{{count}} 件のファイルが選択されました",
     "totalSize": "合計: {{size}} MB",
+    "uploadNewDocument": "新規ドキュメントをアップロード",
     "pipeline": {
-      "fileUpload": "ファイルアップロード",
-      "contentExtraction": "コンテンツ抽出",
-      "embeddingIndexing": "埋め込み・インデックス作成",
-      "ragIntegration": "RAG 統合",
-      "start": "🚀 アップロードパイプラインを開始",
-      "processing": "処理中..."
+      "upload": "アップロード",
+      "processing": "処理中",
+      "ready": "完了",
+      "start": "アップロード開始",
+      "inProgress": "処理中..."
     },
+    "progress": "{{done}} / {{total}} ファイル処理中 ({{percent}}%)",
+    "progressComplete": "{{done}} / {{total}} ファイル完了",
+    "progressWithErrors": "{{done}} / {{total}} ファイル ({{failed}} 件失敗)",
+    "fileStatus": {
+      "done": "完了",
+      "uploading": "アップロード中...",
+      "processing": "処理中...",
+      "failed": "失敗"
+    },
+    "uploadPartial": "{{success}} 件アップロード完了、{{failed}} 件失敗",
     "uploadCanceled": "アップロードをキャンセルしました。",
     "uploadFailed": "アップロードに失敗しました: {{error}}",
     "fileName": "ファイル名",
@@ -237,6 +249,18 @@
     "title": "ユーザー管理",
     "uploadCsv": "CSVをアップロード",
     "addUser": "ユーザーを追加",
+    "tab": {
+      "active": "アクティブ",
+      "restored": "復元済み",
+      "deleted": "削除済み",
+      "all": "すべて"
+    },
+    "action": {
+      "edit": "編集",
+      "delete": "削除",
+      "restore": "復元",
+      "permanentDelete": "完全に削除"
+    },
     "search": {
       "placeholder": "名前またはメールで検索",
       "clear": "クリア"
@@ -264,7 +288,8 @@
       "save": "保存",
       "cancel": "キャンセル",
       "delete": "削除",
-      "edit": "編集"
+      "edit": "編集",
+      "requiredFields": "必須項目が未入力です"
     },
     "password": {
       "show": "パスワードを表示",
@@ -275,6 +300,9 @@
       "confirmTitle": "削除を確認",
       "confirmMessage": "このユーザーを削除してもよろしいですか？",
       "confirmButton": "削除",
+      "permanentConfirmTitle": "完全削除の確認",
+      "permanentConfirmMessage": "このユーザーは完全に削除され、復元できなくなります。",
+      "permanentConfirmButton": "完全に削除",
       "deleting": "削除中...",
       "deleted": "削除完了"
     },
@@ -581,7 +609,9 @@
     "changePasswordTitle": "パスワードの変更",
     "changePasswordMessage": "パスワードを変更するには、HR部門にお問い合わせください。",
     "defaultTitle": "人事へ連絡",
-    "defaultMessage": "サポートが必要な場合は人事部へお問い合わせください。"
+    "defaultMessage": "サポートが必要な場合は人事部へお問い合わせください。",
+    "accountDeactivatedTitle": "ログインできません",
+    "accountDeactivatedMessage": "アカウントが無効化されています。人事部にお問い合わせください。"
   },
   "app": {
     "version": "{{appName}} v1.0.0"

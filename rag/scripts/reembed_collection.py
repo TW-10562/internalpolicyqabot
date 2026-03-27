@@ -12,13 +12,14 @@ from typing import Any
 import numpy as np
 from chromadb import PersistentClient
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 
 
 def parse_args() -> argparse.Namespace:
     project_root = Path(__file__).resolve().parents[2]
     rag_root = project_root / "rag"
     default_db_path = rag_root / "app" / "rag_db"
-    default_model = "BAAI/bge-m3"
+    default_model = "Qwen/Qwen3-VL-Embedding-8B"
     default_model_dir = rag_root / "data" / "model" / default_model.replace("/", "_")
 
     parser = argparse.ArgumentParser(
@@ -51,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--device",
-        default="cpu",
+        default="cuda",
         help="Embedding device passed to HuggingFaceEmbeddings.",
     )
     parser.add_argument(
@@ -101,7 +102,50 @@ def load_collection_dimension(db_path: Path, collection_name: str) -> int | None
     return int(value) if value is not None else None
 
 
-def build_embedder(model_dir: Path, device: str) -> HuggingFaceEmbeddings:
+def _is_qwen_vl_model(model_name: str) -> bool:
+    return "qwen3-vl-embedding" in model_name.lower()
+
+
+class _Qwen3VLEmbeddingWrapperStandalone(Embeddings):
+    """Standalone LangChain wrapper for Qwen3-VL-Embedding (for use in scripts)."""
+
+    def __init__(self, model_dir: str, device: str = "cuda"):
+        import sys
+        import torch
+
+        model_path = Path(model_dir)
+        model_dir_str = str(model_path)
+        if model_dir_str not in sys.path:
+            sys.path.insert(0, model_dir_str)
+        try:
+            from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
+        finally:
+            if model_dir_str in sys.path:
+                sys.path.remove(model_dir_str)
+
+        kwargs = {}
+        if device == "cuda":
+            kwargs["dtype"] = torch.float16
+        self._embedder = Qwen3VLEmbedder(
+            model_name_or_path=model_dir,
+            default_instruction="Represent the following text for retrieval.",
+            **kwargs,
+        )
+
+    def embed_query(self, text: str) -> list[float]:
+        emb = self._embedder.process([{"text": text}], normalize=True)
+        return emb[0].cpu().tolist()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        inputs = [{"text": t} for t in texts]
+        emb = self._embedder.process(inputs, normalize=True)
+        return [e.cpu().tolist() for e in emb]
+
+
+def build_embedder(model_dir: Path, device: str, model_name: str = "") -> Embeddings:
+    if _is_qwen_vl_model(model_name) or _is_qwen_vl_model(str(model_dir)):
+        return _Qwen3VLEmbeddingWrapperStandalone(model_dir=str(model_dir), device=device)
+
     return HuggingFaceEmbeddings(
         model_name=str(model_dir),
         model_kwargs={
@@ -228,7 +272,7 @@ def main() -> int:
         flush=True,
     )
 
-    embedder = build_embedder(model_dir, args.device)
+    embedder = build_embedder(model_dir, args.device, model_name=args.model)
     sample_vector = embedder.embed_query("dimension probe")
     target_dimension = len(sample_vector)
     print(f"[reembed] target_dimension={target_dimension}", flush=True)

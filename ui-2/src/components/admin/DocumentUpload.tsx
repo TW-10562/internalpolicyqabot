@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   X,
   FileText,
   CheckCircle,
   Clock,
   AlertCircle,
+  Loader2,
 } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
@@ -29,6 +30,9 @@ interface DocumentUploadProps {
   onTriggerReset?: () => void;
   currentUser?: Pick<UserType, 'roleCode' | 'departmentCode'>;
 }
+
+type FileStatus = 'pending' | 'uploading' | 'indexing' | 'success' | 'error';
+type PipelineStatus = 'pending' | 'in-progress' | 'completed' | 'failed';
 
 export default function DocumentUpload({
   onUploadComplete,
@@ -56,22 +60,69 @@ export default function DocumentUpload({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadControllerRef = useRef<AbortController | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState<File[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, 'pending' | 'uploading' | 'success' | 'error'>>({});
+  const [uploadProgress, setUploadProgress] = useState<Record<string, FileStatus>>({});
   const [uploadCategory, setUploadCategory] = useState<'HR' | 'GA' | 'ACC' | 'OTHER'>(defaultDepartment);
   const [reviewMode, setReviewMode] = useState<boolean>(false);
   const [fileCategories, setFileCategories] = useState<Record<string, string>>({});
   const [selectedToRemove, setSelectedToRemove] = useState<Set<string>>(new Set());
   const [isUploading, setIsUploading] = useState<boolean>(false);
-  const [pipelineSteps, setPipelineSteps] = useState<{
-    step: number;
-    status: 'pending' | 'in-progress' | 'completed' | 'error';
-    labelKey: string;
-  }[]>([
-    { step: 1, status: 'pending', labelKey: 'documentTable.pipeline.fileUpload' },
-    { step: 2, status: 'pending', labelKey: 'documentTable.pipeline.contentExtraction' },
-    { step: 3, status: 'pending', labelKey: 'documentTable.pipeline.embeddingIndexing' },
-    { step: 4, status: 'pending', labelKey: 'documentTable.pipeline.ragIntegration' },
-  ]);
+
+  // Derive pipeline status from actual file states
+  const fileCounts = useMemo(() => {
+    const statuses = Object.values(uploadProgress);
+    const total = uploadingFiles.length;
+    const uploading = statuses.filter(s => s === 'uploading').length;
+    const indexing = statuses.filter(s => s === 'indexing').length;
+    const success = statuses.filter(s => s === 'success').length;
+    const error = statuses.filter(s => s === 'error').length;
+    const done = success + error;
+    const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+    return { total, uploading, indexing, success, error, done, percent };
+  }, [uploadProgress, uploadingFiles.length]);
+
+  const pipelineSteps = useMemo((): { labelKey: string; status: PipelineStatus }[] => {
+    const { total, uploading, indexing, success, error, done } = fileCounts;
+    if (total === 0 || !isUploading && done === 0) {
+      return [
+        { labelKey: 'documentTable.pipeline.upload', status: 'pending' },
+        { labelKey: 'documentTable.pipeline.processing', status: 'pending' },
+        { labelKey: 'documentTable.pipeline.ready', status: 'pending' },
+      ];
+    }
+
+    const allDone = done === total;
+    const anyUploading = uploading > 0;
+    const anyIndexing = indexing > 0;
+    const allFailed = error === total;
+
+    // Step 1: Upload — in-progress if any file is uploading, completed when all past upload stage
+    let uploadStatus: PipelineStatus = 'pending';
+    if (anyUploading) {
+      uploadStatus = 'in-progress';
+    } else if (done > 0 || anyIndexing) {
+      uploadStatus = allFailed ? 'failed' : 'completed';
+    }
+
+    // Step 2: Processing — in-progress if any file indexing or some done but not all
+    let processingStatus: PipelineStatus = 'pending';
+    if (anyIndexing || (done > 0 && !allDone)) {
+      processingStatus = 'in-progress';
+    } else if (allDone) {
+      processingStatus = allFailed ? 'failed' : 'completed';
+    }
+
+    // Step 3: Ready — only completed when ALL files are done
+    let readyStatus: PipelineStatus = 'pending';
+    if (allDone) {
+      readyStatus = allFailed ? 'failed' : (error > 0 ? 'completed' : 'completed');
+    }
+
+    return [
+      { labelKey: 'documentTable.pipeline.upload', status: uploadStatus },
+      { labelKey: 'documentTable.pipeline.processing', status: processingStatus },
+      { labelKey: 'documentTable.pipeline.ready', status: readyStatus },
+    ];
+  }, [fileCounts, isUploading]);
 
   // Handle external trigger to open file input
   useEffect(() => {
@@ -97,7 +148,6 @@ export default function DocumentUpload({
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const newFiles = Array.from(e.target.files);
-      console.log('📎 [DocumentUpload] Files selected:', newFiles.length);
 
       const duplicates: string[] = [];
       const validFiles: File[] = [];
@@ -141,102 +191,65 @@ export default function DocumentUpload({
     setReviewMode(false);
     setIsUploading(true);
 
-    console.log('🚀 [DocumentUpload] Starting upload pipeline...');
+    const controller = new AbortController();
+    uploadControllerRef.current = controller;
+    const token = getToken();
+    let completed = 0;
+    let failed = 0;
 
     try {
-      const controller = new AbortController();
-      uploadControllerRef.current = controller;
+      for (const file of uploadingFiles) {
+        if (controller.signal.aborted) break;
 
-      const abortableDelay = (ms: number, signal: AbortSignal) =>
-        new Promise<void>((resolve, reject) => {
-          if (signal.aborted) {
-            reject(new DOMException('Aborted', 'AbortError'));
-            return;
+        setUploadProgress((prev) => ({ ...prev, [file.name]: 'uploading' }));
+
+        try {
+          const formData = new FormData();
+          formData.append('files', file);
+          const fileDept = fileCategories[file.name] || uploadCategory || defaultDepartment;
+          formData.append('category', fileDept);
+          formData.append('departmentCode', fileDept);
+          formData.append('fileCategories', JSON.stringify({ [file.name]: fileDept }));
+
+          const uploadResponse = await fetch('/dev-api/api/files/upload', {
+            method: 'POST',
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            body: formData,
+            signal: controller.signal,
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error(`HTTP ${uploadResponse.status}`);
           }
-          const timer = window.setTimeout(resolve, ms);
-          const onAbort = () => {
-            window.clearTimeout(timer);
-            reject(new DOMException('Aborted', 'AbortError'));
-          };
-          signal.addEventListener('abort', onAbort, { once: true });
-        });
 
-      console.log('🔄 [DocumentUpload] STEP 1: File Upload - IN PROGRESS');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 1 ? { ...s, status: 'in-progress' } : s))
-      );
+          const result = await uploadResponse.json();
+          const hasErrors = result?.result?.errors?.length > 0 || result?.errors?.length > 0;
 
-      const formData = new FormData();
-      uploadingFiles.forEach(file => {
-        formData.append('files', file);
-        setUploadProgress(prev => ({ ...prev, [file.name]: 'uploading' }));
-      });
-      formData.append('category', uploadCategory);
-      formData.append('departmentCode', uploadCategory);
+          if (hasErrors) {
+            throw new Error('Server reported error');
+          }
 
-      try {
-        const mapping: Record<string, string> = {};
-        uploadingFiles.forEach(f => {
-          mapping[f.name] = fileCategories[f.name] || uploadCategory || defaultDepartment;
-        });
-        formData.append('fileCategories', JSON.stringify(mapping));
-      } catch (err) {
-        console.warn('Could not append fileCategories mapping');
+          // Backend processes extraction + indexing during upload call
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 'indexing' }));
+
+          // Brief pause so the user can see the processing state
+          await new Promise<void>((resolve, reject) => {
+            if (controller.signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+            const t = setTimeout(resolve, 300);
+            controller.signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+          });
+
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 'success' }));
+          completed++;
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') throw err;
+          console.error(`[DocumentUpload] Failed to upload ${file.name}:`, err);
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 'error' }));
+          failed++;
+        }
       }
 
-      const token = getToken();
-      const uploadResponse = await fetch('/dev-api/api/files/upload', {
-        method: 'POST',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-        body: formData,
-        signal: controller.signal,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error(`Upload failed with status ${uploadResponse.status}`);
-      }
-
-      const uploadResult = await uploadResponse.json();
-      console.log('✅ [DocumentUpload] STEP 1: File Upload - COMPLETED', uploadResult);
-      const successProgress: Record<string, 'success'> = {};
-      uploadingFiles.forEach(f => { successProgress[f.name] = 'success'; });
-      setUploadProgress(prev => ({ ...prev, ...successProgress }));
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 1 ? { ...s, status: 'completed' } : s))
-      );
-
-      console.log('🔄 [DocumentUpload] STEP 2: Content Extraction - IN PROGRESS');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 2 ? { ...s, status: 'in-progress' } : s))
-      );
-      await abortableDelay(1500, controller.signal);
-      console.log('✅ [DocumentUpload] STEP 2: Content Extraction - COMPLETED');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 2 ? { ...s, status: 'completed' } : s))
-      );
-
-      console.log('🔄 [DocumentUpload] STEP 3: Embedding & Indexing - IN PROGRESS');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 3 ? { ...s, status: 'in-progress' } : s))
-      );
-      await abortableDelay(2000, controller.signal);
-      console.log('✅ [DocumentUpload] STEP 3: Embedding & Indexing - COMPLETED');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 3 ? { ...s, status: 'completed' } : s))
-      );
-
-      console.log('🔄 [DocumentUpload] STEP 4: RAG Integration - IN PROGRESS');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 4 ? { ...s, status: 'in-progress' } : s))
-      );
-      await abortableDelay(1000, controller.signal);
-      console.log('✅ [DocumentUpload] STEP 4: RAG Integration - COMPLETED');
-      setPipelineSteps((prev) =>
-        prev.map((s) => (s.step === 4 ? { ...s, status: 'completed' } : s))
-      );
-
-      console.log('🎉 [DocumentUpload] Upload pipeline completed successfully!');
-
+      // Refresh the file list
       const refreshResponse = await fetch('/dev-api/api/files?pageNum=1&pageSize=100', {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       });
@@ -246,36 +259,37 @@ export default function DocumentUpload({
         onUploadComplete?.(files);
       }
 
-      toast.success(t('documentTable.uploadSuccess', { count: uploadingFiles.length, category: uploadCategory }));
-      resetUpload();
+      if (failed === 0) {
+        toast.success(t('documentTable.uploadSuccess', { count: completed, category: uploadCategory }));
+      } else if (completed > 0) {
+        toast.info(t('documentTable.uploadPartial', { success: completed, failed }, `${completed} uploaded, ${failed} failed`));
+      } else {
+        toast.error(t('documentTable.uploadFailed', { error: `All ${failed} files failed` }));
+      }
+
+      // Auto-reset after a short delay so user can see final status
+      setTimeout(() => resetUpload(), failed > 0 ? 3000 : 1500);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        console.warn('⏹️ [DocumentUpload] Upload cancelled by user.');
-        const cancelledFileNames = uploadingFiles.map((file) => file.name);
-        void cleanupCancelledUploads(cancelledFileNames);
-        setPipelineSteps([
-          { step: 1, status: 'pending', labelKey: 'documentTable.pipeline.fileUpload' },
-          { step: 2, status: 'pending', labelKey: 'documentTable.pipeline.contentExtraction' },
-          { step: 3, status: 'pending', labelKey: 'documentTable.pipeline.embeddingIndexing' },
-          { step: 4, status: 'pending', labelKey: 'documentTable.pipeline.ragIntegration' },
-        ]);
+        const uploadedFileNames = Object.entries(uploadProgress)
+          .filter(([, status]) => status === 'success')
+          .map(([name]) => name);
+        const pendingFileNames = uploadingFiles
+          .map((f) => f.name)
+          .filter((name) => !uploadedFileNames.includes(name) && uploadProgress[name] === 'uploading');
+        void cleanupCancelledUploads(pendingFileNames);
         setReviewMode(true);
         setUploadProgress((prev) => {
           const next = { ...prev };
           Object.keys(next).forEach((key) => {
-            if (next[key] === 'uploading') next[key] = 'pending';
+            if (next[key] === 'uploading' || next[key] === 'indexing') next[key] = 'pending';
           });
           return next;
         });
         toast.info(t('documentTable.uploadCanceled'));
         return;
       }
-      console.error('❌ [DocumentUpload] Upload failed:', error);
-      setPipelineSteps((prev) =>
-        prev.map((s) =>
-          s.status === 'in-progress' ? { ...s, status: 'error' } : s
-        )
-      );
+      console.error('[DocumentUpload] Upload failed:', error);
       toast.error(t('documentTable.uploadFailed', { error: error instanceof Error ? error.message : t('common.error') }));
     } finally {
       setIsUploading(false);
@@ -322,7 +336,7 @@ export default function DocumentUpload({
         )
       );
     } catch (err) {
-      console.warn('⚠️ [DocumentUpload] Cleanup after cancel failed:', err);
+      console.warn('[DocumentUpload] Cleanup after cancel failed:', err);
     }
   };
 
@@ -336,8 +350,7 @@ export default function DocumentUpload({
   };
 
   const resetUpload = () => {
-    console.log('🔄 [DocumentUpload] Resetting upload form...');
-    if (pipelineSteps.some((step) => step.status === 'in-progress')) {
+    if (isUploading) {
       uploadControllerRef.current?.abort();
     }
     setUploadingFiles([]);
@@ -346,12 +359,6 @@ export default function DocumentUpload({
     setFileCategories({});
     setSelectedToRemove(new Set());
     setReviewMode(false);
-    setPipelineSteps([
-      { step: 1, status: 'pending', labelKey: 'documentTable.pipeline.fileUpload' },
-      { step: 2, status: 'pending', labelKey: 'documentTable.pipeline.contentExtraction' },
-      { step: 3, status: 'pending', labelKey: 'documentTable.pipeline.embeddingIndexing' },
-      { step: 4, status: 'pending', labelKey: 'documentTable.pipeline.ragIntegration' },
-    ]);
   };
 
   const removeSelectedFiles = () => {
@@ -359,7 +366,7 @@ export default function DocumentUpload({
     const names = new Set(selectedToRemove);
     setUploadingFiles(prev => prev.filter(f => !names.has(f.name)));
     setUploadProgress(prev => {
-      const next = { ...prev } as Record<string, 'pending' | 'uploading' | 'success' | 'error'>;
+      const next = { ...prev } as Record<string, FileStatus>;
       names.forEach(n => { delete next[n]; });
       return next;
     });
@@ -371,9 +378,55 @@ export default function DocumentUpload({
     setSelectedToRemove(new Set());
   };
 
-  /* pipeline icons intentionally removed — UI shows label + progress bar only */
-  /* step icons were removed to declutter the pipeline; status is still communicated via
-     badge + progress bar (accessible and theme-aware) */
+  const getPipelineStatusBadge = (status: PipelineStatus) => {
+    switch (status) {
+      case 'completed':
+        return (
+          <span className="inline-flex items-center gap-1 text-xs font-medium bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full">
+            <CheckCircle className="w-3 h-3" />
+            {t('documentTable.pipelineStatusDone')}
+          </span>
+        );
+      case 'in-progress':
+        return (
+          <span className="inline-flex items-center gap-1 text-xs font-medium bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full animate-pulse">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            {t('documentTable.pipelineStatusProcessing')}
+          </span>
+        );
+      case 'failed':
+        return (
+          <span className="inline-flex items-center gap-1 text-xs font-medium bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-2 py-0.5 rounded-full">
+            <AlertCircle className="w-3 h-3" />
+            {t('documentTable.pipelineStatusFailed')}
+          </span>
+        );
+      default:
+        return (
+          <span className="text-xs font-medium text-muted dark:text-dark-text-muted px-2 py-0.5">
+            {t('documentTable.pipelineStatusPending')}
+          </span>
+        );
+    }
+  };
+
+  const getProgressBarWidth = (status: PipelineStatus) => {
+    switch (status) {
+      case 'completed': return 'w-full';
+      case 'in-progress': return 'w-2/3';
+      case 'failed': return 'w-full';
+      default: return 'w-0';
+    }
+  };
+
+  const getProgressBarColor = (status: PipelineStatus) => {
+    switch (status) {
+      case 'completed': return 'bg-green-500';
+      case 'in-progress': return 'bg-blue-500';
+      case 'failed': return 'bg-red-400';
+      default: return 'bg-surface-alt';
+    }
+  };
 
   return (
     <>
@@ -390,7 +443,7 @@ export default function DocumentUpload({
             >
               <X className="w-5 h-5 text-icon-muted dark:text-dark-text-muted icon-current" />
             </button>
-          </div> 
+          </div>
 
           <div className="space-y-2 max-h-60 overflow-y-auto">
             {uploadingFiles.map((file, index) => (
@@ -413,10 +466,28 @@ export default function DocumentUpload({
                   <span className="text-sm text-foreground dark:text-dark-text truncate transition-colors" title={file.name}>{file.name}</span>
                   <span className="text-xs text-muted dark:text-dark-text-muted transition-colors">({(file.size / 1024 / 1024).toFixed(2)} MB)</span>
                   {uploadProgress[file.name] === 'success' && (
-                    <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0" />
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-0.5 rounded-full flex-shrink-0">
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      {t('documentTable.fileStatus.done')}
+                    </span>
                   )}
                   {uploadProgress[file.name] === 'uploading' && (
-                    <Clock className="w-4 h-4 text-yellow-400 animate-pulse flex-shrink-0" />
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 px-2 py-0.5 rounded-full animate-pulse flex-shrink-0">
+                      <Clock className="w-3.5 h-3.5" />
+                      {t('documentTable.fileStatus.uploading')}
+                    </span>
+                  )}
+                  {uploadProgress[file.name] === 'indexing' && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full animate-pulse flex-shrink-0">
+                      <Clock className="w-3.5 h-3.5" />
+                      {t('documentTable.fileStatus.processing')}
+                    </span>
+                  )}
+                  {uploadProgress[file.name] === 'error' && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded-full flex-shrink-0">
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      {t('documentTable.fileStatus.failed')}
+                    </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -463,16 +534,14 @@ export default function DocumentUpload({
               {t('documentTable.defaultCategory')}
             </label>
             <div className="grid grid-cols-2 gap-2">
-              {[
-                ...departmentOptions,
-              ].map((cat) => (
+              {departmentOptions.map((cat) => (
                 <button
                   key={cat.value}
                   onClick={() => handleDefaultCategoryChange(cat.value)}
                   disabled={isUploading || !isSuperAdmin}
                   className={`px-4 py-2 rounded-xl font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                     uploadCategory === cat.value
-                      ? 'btn-primary text-white shadow-lg'
+                      ? 'btn-primary text-white shadow-lg ring-2 ring-accent ring-offset-1'
                       : 'bg-surface dark:bg-dark-surface text-muted dark:text-dark-text-muted hover:bg-surface-alt dark:hover:bg-dark-border border border-default'
                   }`}
                 >
@@ -482,42 +551,56 @@ export default function DocumentUpload({
             </div>
           </div>
 
+          {/* Pipeline Progress */}
           <div className="space-y-4">
-            <h5 className="text-sm font-semibold text-[#232333] dark:text-white transition-colors">
-              {t('documentTable.pipelineTitle')}
-            </h5>
-            <div className="space-y-3">
-              {pipelineSteps.map((step) => (
-                <div key={step.step}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm font-medium text-foreground dark:text-dark-text transition-colors">
-                      {t(step.labelKey)}
-                    </span>
+            <div className="flex items-center justify-between">
+              <h5 className="text-sm font-semibold text-[#232333] dark:text-white transition-colors">
+                {t('documentTable.pipelineTitle')}
+              </h5>
+            </div>
 
-                    {step.status === 'completed' && (
-                      <span className="text-xs bg-surface-alt text-success px-2 py-1 rounded">
-                        {t('documentTable.pipelineStatusDone')}
-                      </span>
-                    )}
-                    {step.status === 'in-progress' && (
-                      <span className="text-xs bg-surface-alt text-warning px-2 py-1 rounded">
-                        {t('documentTable.pipelineStatusProcessing')}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        step.status === 'completed'
-                          ? 'w-full btn-success'
-                          : step.status === 'in-progress'
-                          ? 'w-2/3 bg-accent'
-                          : 'w-0 bg-surface-alt'
-                      }`}
-                    />
-                  </div>
+            {/* Global progress bar */}
+            {isUploading || fileCounts.done > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-foreground dark:text-dark-text">
+                    {fileCounts.done === fileCounts.total
+                      ? (fileCounts.error > 0
+                        ? t('documentTable.progressWithErrors', { done: fileCounts.done, total: fileCounts.total, failed: fileCounts.error })
+                        : t('documentTable.progressComplete', { done: fileCounts.done, total: fileCounts.total }))
+                      : t('documentTable.progress', { done: fileCounts.done, total: fileCounts.total, percent: fileCounts.percent })}
+                  </span>
+                  <span className="text-lg font-bold text-foreground dark:text-dark-text tabular-nums">
+                    {fileCounts.percent}%
+                  </span>
                 </div>
+                <div className="w-full bg-gray-200 dark:bg-white/10 rounded-full h-3 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ease-out ${
+                      fileCounts.done === fileCounts.total
+                        ? (fileCounts.error > 0 ? 'bg-amber-500' : 'bg-green-500')
+                        : 'bg-blue-500'
+                    }`}
+                    style={{ width: `${fileCounts.percent}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {/* Pipeline steps */}
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-2">
+              {pipelineSteps.map((step, idx) => (
+                <>
+                  <span key={`num-${idx}`} className="inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold bg-surface dark:bg-dark-surface text-muted dark:text-dark-text-muted border border-default">
+                    {idx + 1}
+                  </span>
+                  <span key={`label-${idx}`} className="text-sm font-medium text-foreground dark:text-dark-text transition-colors">
+                    {t(step.labelKey)}
+                  </span>
+                  <span key={`badge-${idx}`}>
+                    {getPipelineStatusBadge(step.status)}
+                  </span>
+                </>
               ))}
             </div>
           </div>
@@ -545,10 +628,10 @@ export default function DocumentUpload({
               </button>
               <button
                 onClick={handleStartUpload}
-                disabled={pipelineSteps[0].status !== 'pending' || isUploading}
+                disabled={isUploading}
                 className="px-6 py-3 btn-primary text-white disabled:opacity-50 disabled:cursor-not-allowed font-semibold rounded-xl transition-all"
               >
-                {pipelineSteps[0].status === 'pending' ? t('documentTable.pipeline.start') : t('documentTable.pipeline.processing')}
+                {isUploading ? t('documentTable.pipeline.inProgress') : t('documentTable.pipeline.start')}
               </button>
             </div>
           )}

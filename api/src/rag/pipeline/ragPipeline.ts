@@ -51,6 +51,7 @@ export type RunRagPipelineInput = {
     contextBudgetChars?: number;
     docContextChars?: number;
   };
+  allowLlmGeneration?: boolean;
   logger?: (line: string) => void;
   retrieveDocuments?: (args: {
     queryForRAG: string;
@@ -113,15 +114,22 @@ export type RunRagPipelineResult = {
   sources: ContextSource[];
   metrics: {
     documentCount: number;
+    finalEvidenceChunkCount: number;
     promptLength: number;
     retrievalMs: number;
     llmMs: number;
+    totalPipelineMs: number;
     topScore: number;
     topTermHits: number;
     retrievalConfidence: number;
     confidenceLevel: 'high' | 'medium' | 'low';
     usedSemanticFallback: boolean;
     solrCallsCount: number;
+    queryType: 'procedural' | 'policy' | 'fact' | 'ambiguous';
+    domainDetected: 'HR' | 'GA' | 'ACC' | 'OTHER';
+    languageDetected: 'en' | 'ja' | 'mixed';
+    deterministicTermMapUsed: boolean;
+    responseMode?: 'direct' | 'llm_stream' | 'cached' | 'blocked';
   };
 };
 
@@ -158,7 +166,7 @@ const RESPONSE_CACHE_INDEX_VERSION = String(
   process.env.SOLR_INDEX_VERSION ||
   '',
 ).trim();
-const FAST_EXTRACTIVE_MODE_ENABLED = String(process.env.FAST_EXTRACTIVE_MODE_ENABLED || '1') !== '0';
+const FAST_EXTRACTIVE_MODE_ENABLED = String(process.env.FAST_EXTRACTIVE_MODE_ENABLED || '0') !== '0';
 const FAST_EXTRACTIVE_TOP_DOC_ONLY = String(process.env.RAG_FAST_EXTRACTIVE_TOP_DOC_ONLY || '1') !== '0';
 const FAST_EXTRACTIVE_CONFIDENCE_THRESHOLD = Math.max(
   0,
@@ -195,8 +203,6 @@ const RAG_EARLY_EXIT_MIN_SOURCE_CONSISTENCY = Math.max(
   Math.min(1, Number(process.env.RAG_EARLY_EXIT_MIN_SOURCE_CONSISTENCY || 0.34)),
 );
 const RAG_SELECTIVE_RERANK_ENABLED = String(process.env.RAG_SELECTIVE_RERANK_ENABLED || '0') === '1';
-const RAG_ANCHOR_VALIDATION_ENABLED = String(process.env.RAG_ANCHOR_VALIDATION_ENABLED || '1') !== '0';
-const RAG_ANCHOR_MIN_OVERLAP = Math.max(1, Number(process.env.RAG_ANCHOR_MIN_OVERLAP || 1));
 const RAG_MIN_DOCS_FOR_LLM_GENERATION = Math.max(
   1,
   Number(process.env.RAG_MIN_DOCS_FOR_LLM_GENERATION || 1),
@@ -211,8 +217,9 @@ const RAG_MIN_TERM_OVERLAP_STRICT = Math.max(1, Number(process.env.RAG_MIN_TERM_
 const RAG_MIN_SEMANTIC_SIMILARITY = Math.max(0, Number(process.env.RAG_MIN_SEMANTIC_SIMILARITY || 0.25));
 const RAG_CONTEXT_MAX_TOKENS = Math.max(256, Number(process.env.RAG_CONTEXT_MAX_TOKENS || 1500));
 const RAG_EVIDENCE_ALLOW_CROSS_DOC_FALLBACK =
-  String(process.env.RAG_EVIDENCE_ALLOW_CROSS_DOC_FALLBACK || '0') === '1';
+  String(process.env.RAG_EVIDENCE_ALLOW_CROSS_DOC_FALLBACK || '1') === '1';
 const RAG_FAST_EXTRACTIVE_MIN_CONFIDENCE = Math.max(0, Number(process.env.RAG_FAST_EXTRACTIVE_MIN_CONFIDENCE || 120));
+const RAG_GENERATION_MIN_CONFIDENCE = Math.max(0, Number(process.env.RAG_GENERATION_MIN_CONFIDENCE || 3));
 const RAG_FAST_EXTRACTIVE_REQUIRED_DOC_COUNT = Math.max(
   1,
   Number(process.env.RAG_FAST_EXTRACTIVE_REQUIRED_DOC_COUNT || 1),
@@ -334,7 +341,7 @@ const hasPolicyArticleMarker = (row: any): boolean => {
 };
 
 const CHUNK_METADATA_LINE_PATTERN =
-  /(?:^\s*(?:source|document|section|article|page)\s*[:：]|作成ユーザー|更新ユーザー|作成者|更新者|システム管理者|バックオフィスポータル|^\s*exment\s*[|｜])/i;
+  /(?:^\s*(?:source|document|section|article|page)\s*[:：]|作成ユーザー|更新ユーザー|作成者|更新者|システム管理者|バックオフィスポータル|^\s*exment\s*[|｜]|\bver\.?\s*\d+[\d.]*\b|\d{4}\.\d{2}\s+ver\b|^\s*\d{6}\s*$|版$|^\s*\d{4}年\d{1,2}月\d{1,2}日\s*(?:版|改定|更新|作成)\s*$)/i;
 const CHUNK_ACTION_LINE_PATTERN =
   /(?:\b(?:must|shall|required|apply|request|submit|report|record|return|delete|notify|approve)\b|申請|承認|提出|届出|報告|返還|返却|削除|入力|記録|通知|連絡|第\s*[0-9０-９]+\s*条)/i;
 
@@ -779,32 +786,38 @@ export const selectEvidence = (args: {
       score: chunks.reduce((acc, row) => acc + row.chunkRelevanceScore, 0) / Math.max(1, chunks.length),
     }))
     .sort((a, b) => b.score - a.score);
+
+  // When cross-document fallback is enabled and we have multiple docs,
+  // reserve at least 1 slot for the second-ranked document so the LLM
+  // can compare evidence across sources (e.g. general vs part-timer rules).
+  const crossDoc = Boolean(args.allowCrossDocumentFallback) && rankedDocs.length > 1;
+  const reserveForSecondary = crossDoc && maxChunks >= 2 ? 1 : 0;
+  const primaryBudget = maxChunks - reserveForSecondary;
+
   const primary = rankedDocs[0];
   const primaryChunks = primary?.chunks || [];
   const primarySection = getSectionTitle(primaryChunks[0]?.row || '').toLowerCase();
   const sectionMatched = primarySection
     ? primaryChunks.filter((chunk) => getSectionTitle(chunk.row).toLowerCase() === primarySection)
     : [];
-  const selected = (sectionMatched.length > 0 ? sectionMatched : primaryChunks).slice(0, maxChunks);
-  if (selected.length < maxChunks && primaryChunks.length > selected.length) {
+  const selected = (sectionMatched.length > 0 ? sectionMatched : primaryChunks).slice(0, primaryBudget);
+  if (selected.length < primaryBudget && primaryChunks.length > selected.length) {
     const selectedChunkIds = new Set(selected.map((row) => row.chunkId));
     for (const chunk of primaryChunks) {
-      if (selected.length >= maxChunks) break;
+      if (selected.length >= primaryBudget) break;
       if (selectedChunkIds.has(chunk.chunkId)) continue;
       selected.push(chunk);
       selectedChunkIds.add(chunk.chunkId);
     }
   }
   let fallbackTriggered = false;
-  if (
-    selected.length < maxChunks &&
-    Boolean(args.allowCrossDocumentFallback) &&
-    rankedDocs.length > 1
-  ) {
+  if (selected.length < maxChunks && crossDoc) {
     fallbackTriggered = true;
     const remaining = maxChunks - selected.length;
-    const fallback = rankedDocs[1].chunks.slice(0, remaining);
-    selected.push(...fallback);
+    for (let i = 1; i < rankedDocs.length && selected.length < maxChunks; i++) {
+      const fallback = rankedDocs[i].chunks.slice(0, remaining);
+      selected.push(...fallback);
+    }
   }
   return {
     chunks: selected.slice(0, maxChunks),
@@ -897,8 +910,15 @@ export const buildPrompt = (args: {
       page: Number.isFinite(pageNumber) ? Number(pageNumber) : undefined,
     });
   }
-  const rawContext = contextBlocks.join('\n\n---\n\n');
-  const trimmedContext = trimToTokenBudget(rawContext, maxContextTokens);
+  // Distribute the token budget evenly across document blocks so no single
+  // large document monopolises the context window and starves other docs.
+  const perBlockBudget = contextBlocks.length > 0
+    ? Math.floor(maxContextTokens / contextBlocks.length)
+    : maxContextTokens;
+  const trimmedBlocks = contextBlocks.map((block) =>
+    trimToTokenBudget(block, Math.max(200, perBlockBudget)),
+  );
+  const trimmedContext = trimmedBlocks.join('\n\n---\n\n');
   const prompt = `USER QUESTION:\n${queryText}\n\nDOCUMENT CONTEXT:\n${trimmedContext}`;
   return {
     prompt,
@@ -929,10 +949,27 @@ const buildFastExtractiveAnswer = (params: {
   const query = String(params.query || '').trim().toLowerCase();
   const queryLooksProcedural = /(?:\bwhat\s+should\b|\bdo\s+if\b|\bhow\s+to\b|\bsteps?\b|\bprocedure\b|\bprocess\b|\bapply\b|\bapplication\b|\brequest\b|\bsubmit\b|\bchange\b|\bcorrect(?:ion)?\b|\bforgot\b|\bforget\b|\bmiss(?:ed)?\b|\bclock[\s-]?in\b|\battendance\b|\bbreak\b|\bno\s*break\b|\bwithout\s+taking\s+a?\s*break\b|申請|手順|方法|やり方|流れ|打刻|打刻漏れ|勤怠修正|修正申請|休憩|休憩なし|無休憩|休憩を取らず)/i
     .test(query);
+  const noisyAnchorTerms = new Set([
+    'exment',
+    'github',
+    'microsoft',
+    'laravel',
+    'laravel-admin',
+    'laravel admin',
+    'interface',
+    'portal',
+    'admin',
+    'dashboard',
+    'tool',
+    'tools',
+    'system',
+    'platform',
+  ]);
   const queryTokens = query
     .split(/\s+/)
     .map((token) => token.replace(/[^A-Za-z0-9_\-\u3040-\u30ff\u3400-\u9fff]/g, '').trim())
     .filter((token) => token.length >= 2)
+    .filter((token) => !noisyAnchorTerms.has(token.toLowerCase()))
     .slice(0, 10);
 
   const metadataPattern =
@@ -950,6 +987,7 @@ const buildFastExtractiveAnswer = (params: {
     const value = String(line || '').trim();
     if (!value) return true;
     if (metadataPattern.test(value)) return true;
+    if ([...noisyAnchorTerms].some((token) => value.toLowerCase().includes(token))) return true;
     const symbolCount = (value.match(/[|~_=\[\]{}<>]/g) || []).length;
     const letterCount = (value.match(/[A-Za-z\u3040-\u30ff\u3400-\u9fff]/g) || []).length;
     if (letterCount <= 8 && symbolCount >= 3) return true;
@@ -977,10 +1015,11 @@ const buildFastExtractiveAnswer = (params: {
       const tokenHits = queryTokens.reduce((count, token) => (lower.includes(token) ? count + 1 : count), 0);
       const actionHit = actionPattern.test(fragment) ? 1 : 0;
       const score = tokenHits * 3 + actionHit * 2 + (docIndex === 0 ? 1 : 0);
-      // Guard against generic policy boilerplate by requiring at least one
-      // query-token hit when query terms are available.
-      if (queryTokens.length > 0 && tokenHits <= 0) continue;
-      if (score <= 0 && queryTokens.length > 0) continue;
+      const actionableProceduralFallback = queryLooksProcedural && actionHit > 0;
+      // Guard against generic boilerplate, but allow actionable procedural
+      // lines even when the source language differs from the query language.
+      if (queryTokens.length > 0 && tokenHits <= 0 && !actionableProceduralFallback) continue;
+      if (score <= 0 && !actionableProceduralFallback) continue;
       const dedupeKey = lower.replace(/\s+/g, ' ').trim();
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
@@ -1107,6 +1146,8 @@ export const runRagPipeline = async (
   input: RunRagPipelineInput,
 ): Promise<RunRagPipelineResult> => {
   const log = input.logger || ((line: string) => console.log(line));
+  const pipelineStartedAt = Date.now();
+  const allowLlmGeneration = input.allowLlmGeneration !== false;
   const logMetricStage = (stage: string, payload: Record<string, any>) => {
     log(`[RAG_METRIC] ${stage}=${JSON.stringify(payload)}`);
   };
@@ -1124,107 +1165,6 @@ export const runRagPipeline = async (
       value: params.pipelineMode,
       cache_hit: params.cacheHit ? 1 : 0,
     });
-  };
-  const EN_ANCHOR_STOPWORDS = new Set([
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
-    'how', 'i', 'in', 'is', 'it', 'me', 'my', 'of', 'on', 'or', 'please',
-    'the', 'to', 'what', 'when', 'where', 'which', 'who', 'why', 'with',
-    'must', 'should', 'do', 'does', 'did', 'can', 'could', 'would', 'will',
-    'employees', 'employee', 'company',
-    'they', 'them', 'their', 'has', 'have', 'had', 'happens', 'happen',
-  ]);
-  const ANCHOR_NOISE_RE =
-    /^(?:https?|javascript|data|file|blob)$/i;
-  const UUID_RE =
-    /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
-  const HASH_RE =
-    /\b[a-f0-9]{24,128}\b/i;
-  const NUMERIC_ID_RE =
-    /^\d{4,}$/;
-  const isNoiseAnchorToken = (token: string): boolean => {
-    const value = String(token || '').trim().toLowerCase();
-    if (!value) return true;
-    if (ANCHOR_NOISE_RE.test(value)) return true;
-    if (UUID_RE.test(value)) return true;
-    if (HASH_RE.test(value)) return true;
-    if (NUMERIC_ID_RE.test(value)) return true;
-    if (/^https?:\/\//i.test(value)) return true;
-    if (/^[a-f0-9]{8,}-[a-f0-9-]{8,}$/i.test(value)) return true;
-    return false;
-  };
-  const toDocText = (doc: any): string => {
-    const title = Array.isArray(doc?.title) ? String(doc.title[0] || '') : String(doc?.title || '');
-    const content = Array.isArray(doc?.content_txt)
-      ? String(doc.content_txt.join(' ') || '')
-      : String(doc?.content_txt || doc?.content || '');
-    const fileName = String(doc?.file_name_s || '');
-    return `${title}\n${fileName}\n${content}`.toLowerCase();
-  };
-  const extractAnchorTokens = (queryText: string): string[] => {
-    const value = String(queryText || '').trim().toLowerCase();
-    if (!value) return [];
-    const englishTokens = value
-      .split(/[^a-z0-9_-]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3)
-      .filter((token) => /[a-z]/.test(token))
-      .filter((token) => !EN_ANCHOR_STOPWORDS.has(token));
-    const cjkTokens = (value.match(/[\u30a0-\u30ffー]{2,}|[\u3400-\u9fff]{2,}/g) || [])
-      .map((token) => token.trim())
-      .filter(Boolean);
-    const mixedJapaneseTokens = (value.match(/[\u3040-\u30ff\u3400-\u9fffー]{2,}/g) || [])
-      .map((token) => token.trim())
-      .filter(Boolean);
-    const japaneseKeywordTerms = extractJapaneseKeywordTerms(value);
-    return Array.from(new Set([
-      ...englishTokens,
-      ...cjkTokens,
-      ...mixedJapaneseTokens,
-      ...japaneseKeywordTerms,
-    ]))
-      .filter((token) => !isNoiseAnchorToken(String(token || '')))
-      .slice(0, 28);
-  };
-  const countAnchorOverlapForDoc = (doc: any, anchors: string[]): number => {
-    if (!anchors.length) return 0;
-    const hay = toDocText(doc);
-    let hits = 0;
-    for (const anchor of anchors) {
-      const token = String(anchor || '').trim().toLowerCase();
-      if (!token) continue;
-      if (/[\u30a0-\u30ffー\u3400-\u9fff]/.test(token)) {
-        if (hay.includes(token)) hits += 1;
-        continue;
-      }
-      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const wordBoundary = new RegExp(`\\b${escaped}\\b`, 'i');
-      if (wordBoundary.test(hay) || (token.length >= 4 && hay.includes(token))) {
-        hits += 1;
-      }
-    }
-    return hits;
-  };
-  const findMatchedAnchorTokens = (docs: any[], anchors: string[]): string[] => {
-    if (!anchors.length || !Array.isArray(docs) || docs.length === 0) return [];
-    const hay = docs
-      .slice(0, 6)
-      .map((doc) => toDocText(doc))
-      .join('\n');
-    const matched: string[] = [];
-    for (const anchor of anchors) {
-      const token = String(anchor || '').trim().toLowerCase();
-      if (!token) continue;
-      if (/[\u30a0-\u30ffー\u3400-\u9fff]/.test(token)) {
-        if (hay.includes(token)) matched.push(token);
-        continue;
-      }
-      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const wordBoundary = new RegExp(`\\b${escaped}\\b`, 'i');
-      if (wordBoundary.test(hay) || (token.length >= 4 && hay.includes(token))) {
-        matched.push(token);
-      }
-    }
-    return Array.from(new Set(matched)).slice(0, 20);
   };
   const computeTopScoreMargin = (rows: any[], fallbackTopScore: number): number => {
     const ranked = Array.isArray(rows) ? rows : [];
@@ -1254,22 +1194,13 @@ export const runRagPipeline = async (
   const userLanguage = detectRagLanguage(input.query);
   const retrievalIndexLanguage = resolveRetrievalIndexLanguage(input.retrievalIndexLanguage || 'multi');
   let pipelineMode: PipelineMode = 'LLM_GENERATION';
+  let responseMode: 'direct' | 'llm_stream' | 'cached' | 'blocked' = 'llm_stream';
   const routingEnabled = RAG_QUERY_ROUTER_ENABLED;
-  const route = routingEnabled
-    ? routeQuery({
-        query: String(input.query || ''),
-        language: userLanguage,
-        hasHistory: Array.isArray(input.historyMessages) && input.historyMessages.length > 0,
-      })
-    : {
-        klass: 'ambiguous' as const,
-        confidence: 0,
-        enableExpansion: true,
-        maxExpansionVariants: 6,
-        allowEarlyExit: false,
-        preferLexicalFirst: true,
-        preferNarrowDomain: false,
-      };
+  const route = routeQuery({
+    query: String(input.query || ''),
+    language: userLanguage,
+    hasHistory: Array.isArray(input.historyMessages) && input.historyMessages.length > 0,
+  });
   if (routingEnabled) {
     log(
       `[RAG_ROUTE] classification=${route.klass} confidence=${route.confidence.toFixed(3)} expansion=${route.enableExpansion ? 1 : 0} max_variants=${route.maxExpansionVariants} early_exit=${route.allowEarlyExit ? 1 : 0}`,
@@ -1296,6 +1227,12 @@ export const runRagPipeline = async (
   logMetricStage('query_normalized', { value: expanded.normalizedQuery });
   logMetricStage('canonical_query', { value: expanded.canonicalQuery });
   logMetricStage('expanded_queries', { values: expanded.expandedQueries });
+  logMetricStage('query_profile', {
+    query_type: expanded.queryType,
+    domain_detected: expanded.domainDetected,
+    language_detected: expanded.languageDetected,
+    deterministic_term_map_used: expanded.deterministicTermMapUsed ? 1 : 0,
+  });
   logMetricStage('translation_status', {
     value: expanded.queryTranslationStatus,
     applied: expanded.queryTranslationApplied ? 1 : 0,
@@ -1304,6 +1241,7 @@ export const runRagPipeline = async (
   log(`[RAG PIPELINE] detected_query_language="${userLanguage}"`);
   log(`[RAG PIPELINE] query_normalized="${expanded.normalizedQuery}"`);
   log(`[RAG PIPELINE] canonical_query="${expanded.canonicalQuery}"`);
+  log(`[RAG PIPELINE] query_profile type=${expanded.queryType} domain=${expanded.domainDetected} language=${expanded.languageDetected} deterministic_term_map_used=${expanded.deterministicTermMapUsed ? 1 : 0}`);
   log(`[RAG PIPELINE] expanded_queries=${expanded.expandedQueries.join(' | ')}`);
   if (expanded.generatedJapaneseQueries.length > 0) {
     log(`[RAG PIPELINE] generated_japanese_retrieval_queries=${expanded.generatedJapaneseQueries.join(' | ')}`);
@@ -1663,88 +1601,6 @@ export const runRagPipeline = async (
     })}`,
   );
 
-  const anchorEvidenceText = docs
-    .slice(0, 3)
-    .map((doc) => {
-      const content = Array.isArray(doc?.content_txt)
-        ? String(doc.content_txt.join(' ') || '')
-        : String(doc?.content_txt || doc?.content || '');
-      return content;
-    })
-    .filter(Boolean)
-    .join(' ');
-  const anchorContextText = [
-    String(input.query || '').trim(),
-    anchorEvidenceText,
-  ].filter(Boolean).join(' ');
-  const anchorTokens = extractAnchorTokens(anchorContextText);
-  const hasCrossLanguageExpansion =
-    /[a-z]/i.test(String(expanded.canonicalQuery || '')) &&
-    expanded.expandedQueries.some((query) => hasJapaneseChars(String(query || '')));
-  const effectiveAnchorMinOverlap =
-    hasCrossLanguageExpansion && expanded.expandedQueries.length >= 3
-      ? Math.max(RAG_ANCHOR_MIN_OVERLAP, 2)
-      : RAG_ANCHOR_MIN_OVERLAP;
-  const anchorValidationActive = RAG_ANCHOR_VALIDATION_ENABLED && anchorTokens.length > 0;
-  if (docs.length > 0 && anchorValidationActive) {
-    const candidateDocs = docs;
-    const beforeCount = candidateDocs.length;
-    const filtered = candidateDocs.filter((doc) => countAnchorOverlapForDoc(doc, anchorTokens) >= effectiveAnchorMinOverlap);
-    const removedCount = Math.max(0, beforeCount - filtered.length);
-    if (removedCount > 0) {
-      log(
-        `[RAG] irrelevant_docs_filtered ${JSON.stringify({
-          before_count: beforeCount,
-          after_count: filtered.length,
-          removed_count: removedCount,
-          anchor_tokens: anchorTokens.slice(0, 12),
-          min_overlap: effectiveAnchorMinOverlap,
-        })}`,
-      );
-    }
-    if (filtered.length > 0) {
-      docs = filtered;
-      topScore = Number(docs?.[0]?.score || 0);
-      topTermHits = Math.max(
-        ...docs.map((doc) => countAnchorOverlapForDoc(doc, anchorTokens)),
-        0,
-      );
-      retrievalConfidence = Number(topScore || 0) * Math.log(Math.max(0, docs.length) + 1);
-      confidenceLevel =
-        retrievalConfidence > confidenceHighThreshold
-          ? 'high'
-          : (retrievalConfidence >= confidenceMediumThreshold ? 'medium' : 'low');
-      log(
-        `[RAG] anchor_validation_passed ${JSON.stringify({
-          doc_count: docs.length,
-          anchor_overlap_threshold: effectiveAnchorMinOverlap,
-          matched_anchor_tokens: findMatchedAnchorTokens(docs, anchorTokens),
-        })}`,
-      );
-    } else {
-      docs = candidateDocs;
-      topScore = Number(docs?.[0]?.score || 0);
-      topTermHits = Math.max(
-        ...docs.map((doc) => countAnchorOverlapForDoc(doc, anchorTokens)),
-        0,
-      );
-      retrievalConfidence = Number(topScore || 0) * Math.log(Math.max(0, docs.length) + 1);
-      confidenceLevel =
-        retrievalConfidence > confidenceHighThreshold
-          ? 'high'
-          : (retrievalConfidence >= confidenceMediumThreshold ? 'medium' : 'low');
-      log(
-        `[RAG] anchor_validation_relaxed_no_overlap ${JSON.stringify({
-          before_count: beforeCount,
-          after_count: docs.length,
-          anchor_overlap_threshold: effectiveAnchorMinOverlap,
-          retrieval_query_used: retrievalQueryUsed,
-          anchor_tokens: anchorTokens.slice(0, 12),
-        })}`,
-      );
-    }
-  }
-
   if (docs.length > 0) {
     const filtered = filterChunks({
       docs,
@@ -1820,16 +1676,13 @@ export const runRagPipeline = async (
     }
   }
 
-  const matchedAnchorTokens = findMatchedAnchorTokens(docs, anchorTokens);
   if (docs.length > 0) {
     log(
-      `[RAG PIPELINE] generation_gate_relaxed ${JSON.stringify({
+      `[RAG PIPELINE] generation_gate_ready ${JSON.stringify({
         doc_count: docs.length,
         top_score: Number(topScore.toFixed(3)),
         top_term_hits: topTermHits,
         retrieval_confidence: Number(retrievalConfidence.toFixed(3)),
-        anchor_tokens: anchorTokens,
-        matched_anchor_tokens: matchedAnchorTokens,
         allow_generation: 1,
       })}`,
     );
@@ -1851,10 +1704,17 @@ export const runRagPipeline = async (
     indexVersion: cacheIndexVersion,
     documentLastUpdated: cacheFingerprint.documentLastUpdated,
   });
+  const cacheBlockedLowConfidence =
+    docs.length > 0 &&
+    (
+      retrievalConfidence < RAG_GENERATION_MIN_CONFIDENCE ||
+      topTermHits < 1
+    );
   if (RESPONSE_CACHE_ENABLED && docs.length > 0) {
     const cached = getCachedResponse<CachedPipelineResponse>(responseCacheKey);
-    if (cached && String(cached.answer || '').trim()) {
+    if (cached && String(cached.answer || '').trim() && !cacheBlockedLowConfidence) {
       pipelineMode = 'CACHE_HIT';
+      responseMode = 'cached';
       log(
         `[RAG PIPELINE] response_cache_hit=true docs=${docs.length} doc_ids=${cacheFingerprint.docIds.length} chunk_ids=${cacheFingerprint.chunkIds.length} updated_markers=${cacheFingerprint.documentLastUpdated.length} index_version=${cacheIndexVersion || 'none'}`,
       );
@@ -1864,6 +1724,19 @@ export const runRagPipeline = async (
         translationMs: queryTranslationMs,
         cacheHit: true,
         pipelineMode,
+      });
+      logMetricStage('final_evidence', {
+        chunk_count: Array.isArray(cached.sources) ? cached.sources.length : 0,
+        document_count: countDistinctDocuments(docs),
+        query_type: expanded.queryType,
+        domain_detected: expanded.domainDetected,
+        language_detected: expanded.languageDetected,
+      });
+      logMetricStage('pipeline_timing', {
+        total_ms: Date.now() - pipelineStartedAt,
+        retrieval_ms: retrievalMs,
+        llm_total_ms: 0,
+        llm_ttft_ms: 0,
       });
       logRagTiming(0);
       return {
@@ -1883,18 +1756,36 @@ export const runRagPipeline = async (
         sources: Array.isArray(cached.sources) ? cached.sources : [],
         metrics: {
           documentCount: countDistinctDocuments(docs),
+          finalEvidenceChunkCount: Array.isArray(cached.sources) ? cached.sources.length : 0,
           promptLength: String(cached.prompt || '').length,
           retrievalMs,
           llmMs: 0,
+          totalPipelineMs: Date.now() - pipelineStartedAt,
           topScore,
           topTermHits,
           retrievalConfidence: Number(retrievalConfidence.toFixed(3)),
           confidenceLevel,
           usedSemanticFallback,
           solrCallsCount,
+          queryType: expanded.queryType,
+          domainDetected: expanded.domainDetected,
+          languageDetected: expanded.languageDetected,
+          deterministicTermMapUsed: expanded.deterministicTermMapUsed,
+          responseMode,
         },
       };
     }
+  }
+  if (RESPONSE_CACHE_ENABLED && docs.length > 0 && cacheBlockedLowConfidence) {
+    log(
+      `[RAG PIPELINE] response_cache_bypassed_low_confidence ${JSON.stringify({
+        doc_count: docs.length,
+        retrieval_confidence: Number(retrievalConfidence.toFixed(3)),
+        top_term_hits: topTermHits,
+        query_type: expanded.queryType,
+        route_class: route.klass,
+      })}`,
+    );
   }
 
   let prompt = String(input.prompt || '');
@@ -1905,7 +1796,7 @@ export const runRagPipeline = async (
   const proceduralQuery = isProceduralQuery(
     String(input.query || input.prompt || '').trim(),
     route.klass,
-  );
+  ) || expanded.queryType === 'procedural';
   const fastExtractiveBlockedByComplianceIntent =
     /(?:\bwhat\s+should\b|\bdo\s+if\b|\bwithout\s+taking\s+a?\s*break\b|\bno\s*break\b|休憩なし|無休憩|休憩を取らず)/i
       .test(String(input.query || input.prompt || ''));
@@ -1936,12 +1827,14 @@ export const runRagPipeline = async (
         }
         fastAnswerApplied = true;
         pipelineMode = 'FAST_EXTRACTIVE';
+        responseMode = 'direct';
         log(
           `[RAG PIPELINE] fast_answer_applied ${JSON.stringify({
             source_count: sources.length,
             query: String(input.query || '').slice(0, 120),
           })}`,
         );
+        log('[RAG PIPELINE] direct_answer_selected=true direct_answer_llm_skipped=true response_mode=direct');
       }
     } catch (fastAnswerError) {
       log(
@@ -1949,6 +1842,57 @@ export const runRagPipeline = async (
           message: (fastAnswerError as any)?.message || String(fastAnswerError),
         })}`,
       );
+    }
+  }
+
+  const proceduralExtractiveEligibility =
+    FAST_EXTRACTIVE_MODE_ENABLED &&
+    !fastAnswerApplied &&
+    proceduralQuery &&
+    !fastExtractiveBlockedByComplianceIntent &&
+    docs.length > 0 &&
+    (
+      retrievalConfidence >= RAG_GENERATION_MIN_CONFIDENCE ||
+      topTermHits >= 1
+    );
+
+  if (proceduralExtractiveEligibility) {
+    const extractive = buildFastExtractiveAnswer({
+      docs,
+      query: [
+        String(input.query || '').trim(),
+        String(retrievalQueryUsed || '').trim(),
+        ...expanded.expandedQueries.map((query) => String(query || '').trim()).filter(Boolean),
+      ].filter(Boolean).join(' '),
+      language: userLanguage,
+    });
+    if (extractive && String(extractive.answer || '').trim()) {
+      answer = extractive.answer;
+      sources = extractive.sources;
+      fastAnswerApplied = true;
+      pipelineMode = 'FAST_EXTRACTIVE';
+      responseMode = 'direct';
+      log('[RAG PIPELINE] procedural_extractive_mode_enabled');
+      logMetricStage('extractive_answer_used', {
+        mode: 'procedural',
+        source_count: sources.length,
+        retrieval_confidence: Number(retrievalConfidence.toFixed(3)),
+        top_term_hits: topTermHits,
+      });
+      log(
+        `[RAG PIPELINE] fast_extractive_mode ${JSON.stringify({
+          retrieval_confidence_score: Number(retrievalConfidence.toFixed(3)),
+          doc_count: docs.length,
+          source_count: sources.length,
+          top_term_hits: topTermHits,
+        })}`,
+      );
+    } else {
+      log('[RAG PIPELINE] procedural_extractive_disabled reason=no_actionable_evidence');
+      logMetricStage('generation_blocked_low_confidence', {
+        query_type: expanded.queryType,
+        reason: 'no_actionable_procedural_evidence',
+      });
     }
   }
 
@@ -1975,6 +1919,7 @@ export const runRagPipeline = async (
       sources = extractive.sources;
       fastAnswerApplied = true;
       pipelineMode = 'FAST_EXTRACTIVE';
+      responseMode = 'direct';
       log('FAST_EXTRACTIVE_MODE_ENABLED');
       log(
         `[RAG PIPELINE] fast_extractive_mode ${JSON.stringify({
@@ -1984,6 +1929,12 @@ export const runRagPipeline = async (
           top_term_hits: topTermHits,
         })}`,
       );
+      logMetricStage('extractive_answer_used', {
+        mode: 'generic',
+        source_count: sources.length,
+        retrieval_confidence: Number(retrievalConfidence.toFixed(3)),
+        top_term_hits: topTermHits,
+      });
     }
   }
   if (
@@ -2000,16 +1951,16 @@ export const runRagPipeline = async (
   if (!FAST_EXTRACTIVE_MODE_ENABLED && !proceduralQuery) {
     log('[RAG PIPELINE] fast_extractive_disabled reason=flag_off');
   }
-  if (proceduralQuery) {
-    log('[RAG PIPELINE] fast_extractive_disabled reason=procedural_query');
-  }
 
   if (!fastAnswerApplied && docs.length > 0) {
     const promptBuildStart = Date.now();
+    const promptContextTokenLimit = proceduralQuery
+      ? Math.min(RAG_CONTEXT_MAX_TOKENS, 900)
+      : RAG_CONTEXT_MAX_TOKENS;
     const builtPrompt = buildPrompt({
       query: String(input.query || input.prompt || '').trim(),
       chunks: docs,
-      maxContextTokens: RAG_CONTEXT_MAX_TOKENS,
+      maxContextTokens: promptContextTokenLimit,
     });
     if (builtPrompt.contextTokens > 0) {
       prompt = builtPrompt.prompt;
@@ -2038,10 +1989,10 @@ export const runRagPipeline = async (
         sources = built.sources;
       }
     }
-    prompt = enforcePromptTokenLimit(prompt, RAG_CONTEXT_MAX_TOKENS);
+    prompt = enforcePromptTokenLimit(prompt, promptContextTokenLimit);
     log(
       `[RAG] llm_prompt_tokens ${JSON.stringify({
-        context_token_limit: RAG_CONTEXT_MAX_TOKENS,
+        context_token_limit: promptContextTokenLimit,
         prompt_tokens: estimateTokenCount(prompt),
       })}`,
     );
@@ -2050,13 +2001,36 @@ export const runRagPipeline = async (
 
   const hasRetrievedContext = /(?:RETRIEVED\s+)?DOCUMENT CONTEXT:/i.test(String(prompt || ''));
   const systemPrompt = buildEnterpriseRagSystemPrompt(userLanguage, hasRetrievedContext);
+  const generationBlockedLowConfidence =
+    !fastAnswerApplied &&
+    docs.length > 0 &&
+    hasRetrievedContext &&
+    (
+      retrievalConfidence < RAG_GENERATION_MIN_CONFIDENCE ||
+      topTermHits < 1
+    );
   const canRunSafeGeneration =
     docs.length > 0 &&
-    hasRetrievedContext;
+    hasRetrievedContext &&
+    !generationBlockedLowConfidence;
   if (fastAnswerApplied) {
     llmMs = 0;
     llmTtftMs = 0;
+  } else if (generationBlockedLowConfidence) {
+    responseMode = 'blocked';
+    answer = noEvidenceReply(userLanguage);
+    llmMs = 0;
+    llmTtftMs = 0;
+    log('[RAG PIPELINE] generation_blocked_low_confidence');
+    logMetricStage('generation_blocked_low_confidence', {
+      query_type: expanded.queryType,
+      route_class: route.klass,
+      retrieval_confidence: Number(retrievalConfidence.toFixed(3)),
+      top_term_hits: topTermHits,
+      doc_count: docs.length,
+    });
   } else if (!canRunSafeGeneration) {
+    responseMode = 'blocked';
     answer = noEvidenceReply(userLanguage);
     llmMs = 0;
     llmTtftMs = 0;
@@ -2071,8 +2045,15 @@ export const runRagPipeline = async (
         has_retrieved_context: hasRetrievedContext,
       })}`,
     );
+  } else if (!allowLlmGeneration) {
+    responseMode = 'blocked';
+    answer = '';
+    llmMs = 0;
+    llmTtftMs = 0;
+    log('[RAG PIPELINE] llm_generation_skipped reason=allowLlmGeneration=false');
   } else if (input.generateAnswer) {
     const llmStart = Date.now();
+    responseMode = 'llm_stream';
     answer = await input.generateAnswer({
       prompt,
       userLanguage,
@@ -2083,6 +2064,7 @@ export const runRagPipeline = async (
     llmTtftMs = llmMs;
   } else {
     const llmStart = Date.now();
+    responseMode = 'llm_stream';
     log('[RAG PIPELINE] generation_started mode=llm');
     answer = await generateEvidenceFirstGroundedAnswer({
       query: String(input.query || input.prompt || '').trim(),
@@ -2147,19 +2129,26 @@ export const runRagPipeline = async (
     prompt,
     answer: finalAnswer,
     sources: finalSources,
-    metrics: {
-      documentCount: countDistinctDocuments(docs),
-      promptLength: prompt.length,
-      retrievalMs,
+      metrics: {
+        documentCount: countDistinctDocuments(docs),
+        finalEvidenceChunkCount: sources.length,
+        promptLength: prompt.length,
+        retrievalMs,
       llmMs,
+      totalPipelineMs: Date.now() - pipelineStartedAt,
       topScore,
       topTermHits,
       retrievalConfidence: Number(retrievalConfidence.toFixed(3)),
       confidenceLevel,
       usedSemanticFallback,
       solrCallsCount,
-    },
-  };
+        queryType: expanded.queryType,
+        domainDetected: expanded.domainDetected,
+        languageDetected: expanded.languageDetected,
+        deterministicTermMapUsed: expanded.deterministicTermMapUsed,
+        responseMode,
+      },
+    };
 
   try {
     const retrievalHit = docs.length > 0;
@@ -2192,6 +2181,19 @@ export const runRagPipeline = async (
     translationMs: queryTranslationMs,
     cacheHit: false,
     pipelineMode,
+  });
+  logMetricStage('final_evidence', {
+    chunk_count: sources.length,
+    document_count: countDistinctDocuments(docs),
+    query_type: expanded.queryType,
+    domain_detected: expanded.domainDetected,
+    language_detected: expanded.languageDetected,
+  });
+  logMetricStage('pipeline_timing', {
+    total_ms: Date.now() - pipelineStartedAt,
+    retrieval_ms: retrievalMs,
+    llm_total_ms: llmMs,
+    llm_ttft_ms: llmTtftMs,
   });
   logRagTiming(llmMs);
 

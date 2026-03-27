@@ -197,12 +197,6 @@ export default function DocumentTable({
     filename: string,
     options?: { suppressToast?: boolean },
   ): Promise<boolean> => {
-    console.log('🗑️  [DocumentTable] Deleting file:', {
-      fileId,
-      filename,
-      timestamp: new Date().toISOString(),
-    });
-
     setOperationError(null);
     setDeletingFileIds(prev => {
       const next = new Set(prev);
@@ -219,11 +213,6 @@ export default function DocumentTable({
       if (!response.ok) {
         throw new Error(await getDeleteErrorMessage(response));
       }
-
-      console.log('✅ [DocumentTable] File deleted successfully:', {
-        fileId,
-        filename,
-      });
 
       if (!options?.suppressToast) {
         toast.success(t('documentTable.deleteSuccess', { filename }));
@@ -281,10 +270,11 @@ export default function DocumentTable({
           <button
             onClick={onUploadClick}
             className="flex items-center justify-center gap-2 h-10 px-4 btn-primary dark:bg-accent-strong text-on-accent rounded-xl transition-colors cursor-pointer whitespace-nowrap font-medium shadow-sm"
-            title={t('documentTable.upload')}
+            title={t('documentTable.uploadNewDocument')}
+            aria-label={t('documentTable.uploadNewDocument')}
           >
             <Upload className="w-4 h-4 icon-current" />
-            <span className="hidden sm:inline">{t('documentTable.upload')}</span>
+            <span className="hidden sm:inline">{t('documentTable.uploadNewDocument')}</span>
           </button>
         </div>
         ) : null}
@@ -515,9 +505,9 @@ export default function DocumentTable({
         </div>
       )}
 
-      <div className="bg-white dark:bg-dark-surface border border-[#E8E8E8] dark:border-dark-border rounded-2xl overflow-hidden shadow-sm transition-colors">
-        <div className="flex items-center justify-between p-3 border-b border-[#E8E8E8] dark:border-dark-border bg-[#F6F6F6] dark:bg-dark-bg-primary transition-colors">
-          <div className="text-sm text-[#6E7680] dark:text-dark-text-muted transition-colors">
+      <div className="overflow-x-auto rounded-2xl border border-default bg-surface shadow-sm transition-colors dark:border-default dark:bg-dark-surface">
+        <div className="flex items-center justify-between p-3 border-b border-default dark:border-default bg-surface-alt dark:bg-dark-bg-primary transition-colors">
+          <div className="text-sm text-muted dark:text-dark-text-muted transition-colors">
             {selectedDocIds.size > 0 ? t('documentTable.selectedCount', { count: selectedDocIds.size }) : t('documentTable.manage')}
           </div>
           <button
@@ -534,25 +524,14 @@ export default function DocumentTable({
           </button>
         </div>
 
-        <table className="w-full table-fixed">
-          <colgroup>
-            <col className="w-12" />
-            <col />
-            <col className="w-12" />
-            <col className="w-28" />
-            <col className="w-32" />
-            <col className="w-24" />
-            <col className="w-24" />
-            <col className="w-28" />
-            <col className="w-24" />
-          </colgroup>
-          <thead className="sticky top-0 z-10 bg-[#F6F6F6] dark:bg-dark-bg-primary border-b border-[#E8E8E8] dark:border-dark-border transition-colors">
+        <table className="w-full table-auto">
+          <thead className="sticky top-0 z-10 bg-surface-alt dark:bg-dark-bg-primary border-b border-default dark:border-default transition-colors">
             <tr>
-              <th className="px-4 py-3 text-left">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 <input
                   ref={selectAllRef}
                   type="checkbox"
-                  className="w-4 h-4 accent-[#1d2089]"
+                  className="h-4 w-4 rounded border-default text-accent-strong focus:ring-2 focus:ring-accent-strong"
                   checked={allFilteredSelected}
                   onChange={(e) => {
                     const next = new Set(selectedDocIds);
@@ -565,28 +544,28 @@ export default function DocumentTable({
                   }}
                 />
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.documentName')}
               </th>
-              <th className="px-2 py-3 text-center text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-center text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.view')}
               </th>
-              <th className="px-3 py-3 text-right text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-right text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.size')}
               </th>
-              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.uploadedBy')}
               </th>
-              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.uploadDate')}
               </th>
-              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.department')}
               </th>
-              <th className="px-3 py-3 text-left text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-left text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.status')}
               </th>
-              <th className="px-3 py-3 text-right text-sm font-medium text-[#6E7680] dark:text-dark-text-muted transition-colors">
+              <th className="px-4 py-3 text-center text-sm font-medium text-muted dark:text-dark-text-muted transition-colors">
                 {t('documentTable.delete')}
               </th>
             </tr>
@@ -594,11 +573,11 @@ export default function DocumentTable({
           <tbody>
             {filteredDocs.length > 0 ? (
               filteredDocs.map((doc) => (
-                <tr key={doc.id} className="border-b border-[#E8E8E8] dark:border-dark-border hover:bg-[#F6F6F6] dark:hover:bg-dark-border transition-colors">
-                  <td className="px-3 py-3 align-middle">
+                <tr key={doc.id} className="border-b border-default dark:border-default hover:bg-surface-alt dark:hover:bg-dark-border transition-colors">
+                  <td className="px-4 py-3">
                     <input
                       type="checkbox"
-                      className="w-4 h-4 accent-[#1d2089]"
+                      className="h-4 w-4 rounded border-default text-accent-strong focus:ring-2 focus:ring-accent-strong"
                       checked={selectedDocIds.has(doc.id)}
                       onChange={(e) => {
                         setSelectedDocIds(prev => {
@@ -609,63 +588,63 @@ export default function DocumentTable({
                       }}
                     />
                   </td>
-                  <td className="px-4 py-3 align-middle text-[#232333] dark:text-dark-text font-medium transition-colors truncate" title={doc.filename}>
-                  {doc.filename}
+                  <td className="px-4 py-3 text-[#232333] dark:text-dark-text font-medium transition-colors" title={doc.filename}>
+                    {doc.filename}
                   </td>
-                  <td className="px-2 py-3 align-middle">
+                  <td className="px-4 py-3">
                     <div className="flex items-center justify-center">
                       <button
                         onClick={() => handleViewFile(doc)}
                         disabled={isViewing(doc.id) || isDeleting(doc.id)}
-                        className="p-1 text-blue-600 dark:text-dark-accent-blue hover:bg-blue-50 dark:hover:bg-blue-500/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="inline-flex items-center justify-center rounded-lg p-2 text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         title={t('documentTable.view')}
                         aria-label={t('documentTable.view')}
                       >
-                        <Eye className={`w-4 h-4 ${isViewing(doc.id) ? 'animate-pulse' : ''}`} />
+                        <Eye className={`w-5 h-5 ${isViewing(doc.id) ? 'animate-pulse' : ''}`} />
                       </button>
                     </div>
                   </td>
-                  <td className="px-3 py-3 align-middle text-right text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
+                  <td className="px-4 py-3 text-right text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums whitespace-nowrap">
                     {(doc.size / 1024 / 1024).toFixed(2)} MB
                   </td>
-                  <td className="px-3 py-3 align-middle text-[#6E7680] dark:text-dark-text-muted transition-colors truncate" title={doc.create_by || t('documentTable.system')}>
+                  <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors" title={doc.create_by || t('documentTable.system')}>
                     {doc.create_by || t('documentTable.system')}
                   </td>
-                  <td className="px-3 py-3 align-middle text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums">
+                  <td className="px-4 py-3 text-[#6E7680] dark:text-dark-text-muted transition-colors tabular-nums whitespace-nowrap">
                     {formatDateJP(doc.created_at)}
                   </td>
-                  <td className="px-3 py-3 align-middle">
+                  <td className="px-4 py-3">
                     <span
                       title={getDepartmentLabel(doc.department_code)}
-                      className={`inline-block max-w-[7rem] truncate px-2 py-1 rounded-full text-xs font-medium ${
+                      className={`inline-block px-2 py-1 rounded text-xs font-medium ${
                         doc.department_code === 'HR'
-                          ? 'bg-blue-50 text-blue-700'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
                           : doc.department_code === 'GA'
-                            ? 'bg-emerald-50 text-emerald-700'
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
                             : doc.department_code === 'ACC'
-                              ? 'bg-amber-50 text-amber-700'
-                              : 'bg-slate-100 text-slate-700'
+                              ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                              : 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300'
                       }`}
                     >
                       {getDepartmentLabel(doc.department_code)}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-green-50 text-green-600">
-                      <CheckCircle className="w-3 h-3" />
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                      <CheckCircle className="w-3.5 h-3.5" />
                       {t('documentTable.active')}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex items-center justify-center">
                       <button
                         onClick={() => setPendingDelete({ id: doc.id, filename: doc.filename })}
                         disabled={isDeleting(doc.id) || isViewing(doc.id)}
-                        className="p-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="inline-flex items-center justify-center rounded-lg p-2 text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         title={t('documentTable.delete')}
                         aria-label={t('documentTable.delete')}
                       >
-                        <Trash2 className={`w-4 h-4 ${isDeleting(doc.id) ? 'animate-pulse' : ''}`} />
+                        <Trash2 className={`w-5 h-5 ${isDeleting(doc.id) ? 'animate-pulse' : ''}`} />
                       </button>
                     </div>
                   </td>

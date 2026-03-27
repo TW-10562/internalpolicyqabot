@@ -102,6 +102,11 @@ const PROCEDURAL_QUERY_HINT_PATTERN = /(申請|手続|手続き|手順|方法|�
 const hasProceduralHint = (value: string): boolean =>
   PROCEDURAL_QUERY_HINT_PATTERN.test(String(value || '').trim());
 const GENERATED_QUERY_ARTIFACT_PATTERN = /(報告書|フォーマット|テンプレート|様式|ひな形|雛形|ガイド|マニュアル|承認フロー|作成手順|作成方法)/;
+const GENERIC_LOW_SIGNAL_SINGLE_TERMS = new Set([
+  '社内', '職場', '従業員', '会社', '社員', '組織', '部署',
+  '何', 'いくら', 'どこ', 'いつ', 'どう',
+]);
+
 const scoreQueryShape = (query: string): number => {
   const normalized = String(query || '').trim();
   if (!normalized) return -100;
@@ -110,8 +115,9 @@ const scoreQueryShape = (query: string): number => {
   const artifactPenalty = GENERATED_QUERY_ARTIFACT_PATTERN.test(normalized) ? 2.4 : 0;
   const longPenalty = Math.max(0, normalized.length - 18) * 0.12;
   const proceduralOverloadPenalty = Math.max(0, proceduralHints - 2) * 0.8;
+  const isSingleGenericTerm = terms.length === 1 && GENERIC_LOW_SIGNAL_SINGLE_TERMS.has(normalized);
   const termBonus =
-    terms.length === 1 ? 0.8
+    terms.length === 1 ? (isSingleGenericTerm ? -3 : 0.8)
       : terms.length <= 3 ? 1.6
         : 0.4;
   const proceduralBonus = proceduralHints > 0 ? 1.2 : 0;
@@ -312,7 +318,7 @@ export const retrieveDocumentsWithSolr = async (
   const lexicalStrictFirst = readBooleanEnv('RAG_LEXICAL_STRICT_FIRST', true);
   const lexicalFallbackStrongBreakEnabled = readBooleanEnv('RAG_LEXICAL_FALLBACK_STRONG_BREAK_ENABLED', false);
   const domainPrefilterEnabled = readBooleanEnv('RAG_DOMAIN_PREFILTER_ENABLED', true);
-  const vectorOnlyOnLexicalFail = readBooleanEnv('RAG_VECTOR_ONLY_ON_LEXICAL_FAIL', true);
+  const vectorOnlyOnLexicalFail = readBooleanEnv('RAG_VECTOR_ONLY_ON_LEXICAL_FAIL', false);
   const lexicalEarlyBreakTopScore = Math.max(
     0,
     readNumberEnv('RAG_LEXICAL_EARLY_BREAK_TOP_SCORE', 60),
@@ -426,7 +432,7 @@ export const retrieveDocumentsWithSolr = async (
     const pf = encodeURIComponent(
       'title^8 file_name_s^6 section_title_s^6 article_number_s^4 policy_type_s^4 content_txt^2 content_txt_ja^2',
     );
-    const mm = encodeURIComponent(isMostlyJapaneseQuery ? '2<75%' : '2<70%');
+    const mm = encodeURIComponent(isMostlyJapaneseQuery ? '2<60%' : '2<55%');
     const url = `${config.ApacheSolr.url}/solr/${coreName}/select?q=${solrQuery}${fq}&defType=edismax&qf=${qf}&pf=${pf}&q.op=OR&mm=${mm}&fl=id,title,file_name_s,content_txt,content_txt_ja,department_code_s,chunk_id_s,document_id_s,doc_id_s,section_title_s,article_number_s,page_number_i,page_i,policy_type_s,updated_at_s,last_revised_s,modified_at_s,document_last_updated_s,importance_weight_f,score&rows=${solrRows}&wt=json`;
 
     solrCallsCount += 1;
@@ -486,12 +492,12 @@ export const retrieveDocumentsWithSolr = async (
 
   if (effectiveCrossLanguageBridgeEnabled && canonicalQuery && input.userLanguage === 'en') {
     const existingJapaneseQueries = expandedQueries.filter((query) => hasJapaneseChars(query));
-    let bridgeGeneratedTerms: string[] = [];
-    if (existingJapaneseQueries.length === 0) {
-      bridgeGeneratedTerms = await generateJapaneseQueryVariants(canonicalQuery);
-    }
+    // Always run LLM bridge for English queries — semantic bridge rules produce
+    // generic terms (社内, 職場) while the LLM generates query-specific terms
+    // (食事補助, 年次有給休暇) that are critical for accurate retrieval.
+    const bridgeGeneratedTerms = await generateJapaneseQueryVariants(canonicalQuery);
     japaneseRetrievalQueries = uniqueStrings(
-      [...existingJapaneseQueries, ...bridgeGeneratedTerms].filter((query) => hasJapaneseChars(query)),
+      [...bridgeGeneratedTerms, ...existingJapaneseQueries].filter((query) => hasJapaneseChars(query)),
       6,
     );
     if (japaneseRetrievalQueries.length > 0) {
@@ -855,7 +861,7 @@ export const retrieveDocumentsWithSolr = async (
       initialConfidence >= highConfidenceThreshold ||
       lexicalBestTopTermHits >= 2
     );
-  if (lexicalStrictFirst && lexicalHasStrongEvidence) {
+  if (lexicalStrictFirst && lexicalHasStrongEvidence && !vectorRetrievalEnabled) {
     log('lexical_lock_applied', {
       top_score: Number(lexicalBestTopScore.toFixed(3)),
       top_term_hits: lexicalBestTopTermHits,
@@ -878,18 +884,11 @@ export const retrieveDocumentsWithSolr = async (
     };
   }
 
+  // Always run vector retrieval when enabled — vector search finds the
+  // correct article-level chunks from Chroma regardless of lexical results.
   const shouldApplyVectorRetrieval =
     vectorRetrievalEnabled &&
-    Boolean(canonicalQuery) &&
-    (
-      vectorOnlyOnLexicalFail
-        ? lexicalBestDocs.length === 0
-        : (
-          lexicalBestDocs.length === 0 ||
-          initialConfidence < vectorTriggerConfidence ||
-          lexicalBestTopTermHits <= vectorTriggerMaxTermHits
-        )
-    );
+    Boolean(canonicalQuery);
   if (shouldApplyVectorRetrieval) {
     const lexicalBeforeMerge = lexicalBestDocs;
     const lexicalBeforeTopScore = lexicalBestTopScore;

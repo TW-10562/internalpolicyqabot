@@ -13,7 +13,7 @@ const initDB = async () => {
     initNotification(seq);
     initSupportTicket(seq);
 
-    await seq.sync();
+    await seq.sync({ alter: true });
   } catch (error) {
     console.log(`[${dayjs().format('YYYY-MM-DD HH:mm:ss')}] PostgreSQLデータベース接続に失敗しました`, error);
     throw error;

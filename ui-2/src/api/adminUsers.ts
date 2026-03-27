@@ -14,7 +14,12 @@ export type AdminUser = {
   department_code: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   status: string;
   updated_at: string;
+  lifecycle_status?: 'ACTIVE' | 'RESTORED' | 'DELETED';
+  deleted_at?: string | null;
+  restored_at?: string | null;
 };
+
+export type AdminUserView = 'ACTIVE' | 'RESTORED' | 'DELETED' | 'ALL';
 
 export type AdminUserPayload = {
   firstName: string;
@@ -27,14 +32,17 @@ export type AdminUserPayload = {
   userJobRole?: string;
   areaOfWork?: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS';
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
   isActive?: boolean;
   password?: string;
 };
 
-export async function fetchAdminUsers(query?: string) {
+export async function fetchAdminUsers(query?: string, status?: AdminUserView) {
   const q = String(query || '').trim();
-  const url = q ? `/api/admin/users?q=${encodeURIComponent(q)}` : '/api/admin/users';
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (status) params.set('status', status);
+  const url = params.toString() ? `/api/admin/users?${params.toString()}` : '/api/admin/users';
   return request<{ code: number; result?: AdminUser[]; message?: string }>(url, {
     method: 'GET',
   });
@@ -56,6 +64,18 @@ export async function updateAdminUser(userId: string, payload: AdminUserPayload)
 
 export async function deleteAdminUser(userId: string) {
   return request<{ code: number; result?: { success: boolean }; message?: string }>(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function restoreAdminUser(userId: string) {
+  return request<{ code: number; result?: { success: boolean }; message?: string }>(`/api/admin/users/${userId}/restore`, {
+    method: 'POST',
+  });
+}
+
+export async function permanentlyDeleteAdminUser(userId: string) {
+  return request<{ code: number; result?: { success: boolean }; message?: string }>(`/api/admin/users/${userId}/permanent-delete`, {
     method: 'DELETE',
   });
 }

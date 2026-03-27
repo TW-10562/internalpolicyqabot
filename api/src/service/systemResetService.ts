@@ -42,43 +42,71 @@ const TABLES_TO_WIPE = [
 
 const quoteIdentifier = (name: string): string => `"${String(name || '').replace(/"/g, '""')}"`;
 
+async function wipeDirectoryContents(dirPath: string): Promise<number> {
+  let removed = 0;
+  try {
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    console.info(`[SystemReset] wipeDirectoryContents: ${dirPath} has ${entries.length} entries`);
+    for (const entry of entries) {
+      const targetPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        const children = await fs.promises.readdir(targetPath, { withFileTypes: true });
+        console.info(`[SystemReset]   subdir ${entry.name}/ has ${children.length} files to delete`);
+        for (const child of children) {
+          await fs.promises.rm(path.join(targetPath, child.name), { recursive: true, force: true });
+          removed += 1;
+        }
+        continue;
+      }
+      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      removed += 1;
+    }
+  } catch (err) {
+    console.error(`[SystemReset] wipeDirectoryContents FAILED for ${dirPath}:`, err);
+  }
+  return removed;
+}
+
 async function wipeUploadedDocumentsFromDisk() {
-  const uploadRoot = path.resolve(String(FILE_UPLOAD_DIR || '').trim());
-  if (!uploadRoot || uploadRoot === '/' || uploadRoot.length < 5) {
-    throw new Error(`Unsafe upload root path: ${uploadRoot}`);
+  // Collect all possible document storage roots
+  const roots = new Set<string>();
+  const primaryRoot = path.resolve(String(FILE_UPLOAD_DIR || '').trim());
+  if (primaryRoot && primaryRoot !== '/' && primaryRoot.length >= 5) roots.add(primaryRoot);
+  const configFilesDir = String((config as any)?.RAG?.Uploads?.filesDir || '').trim();
+  if (configFilesDir && configFilesDir.length >= 5) roots.add(path.resolve(configFilesDir));
+  // Docker mount paths — always include /data/docs (the standard container mount)
+  // and /srv/tbot/storage/docs (host path, in case running outside Docker)
+  for (const candidate of ['/data/docs', '/srv/tbot/storage/docs']) {
+    try {
+      const stat = await fs.promises.stat(candidate);
+      if (stat.isDirectory()) roots.add(candidate);
+    } catch {
+      // Path doesn't exist, skip
+    }
   }
 
-  await fs.promises.mkdir(uploadRoot, { recursive: true });
-  const entries = await fs.promises.readdir(uploadRoot, { withFileTypes: true });
+  console.info(`[SystemReset] wipeUploadedDocumentsFromDisk roots: ${JSON.stringify(Array.from(roots))}`);
 
   let removedEntries = 0;
-  for (const entry of entries) {
-    const targetPath = path.join(uploadRoot, entry.name);
-    if (entry.isDirectory()) {
-      // Keep the department folder itself, remove only its contents.
-      // eslint-disable-next-line no-await-in-loop
-      const children = await fs.promises.readdir(targetPath, { withFileTypes: true });
-      for (const child of children) {
-        // eslint-disable-next-line no-await-in-loop
-        await fs.promises.rm(path.join(targetPath, child.name), { recursive: true, force: true });
-        removedEntries += 1;
-      }
-      continue;
-    }
-
-    // eslint-disable-next-line no-await-in-loop
-    await fs.promises.rm(targetPath, { recursive: true, force: true });
-    removedEntries += 1;
+  const wipedRoots: string[] = [];
+  for (const root of roots) {
+    const removed = await wipeDirectoryContents(root);
+    removedEntries += removed;
+    if (removed > 0) wipedRoots.push(root);
+    console.info(`[SystemReset] wiped ${removed} entries from ${root}`);
   }
 
+  // Re-create standard department folders in all roots
   const standardDepartmentFolders = ['HR', 'GA', 'ACC', 'OTHER', 'SYSTEMS'] as const;
-  for (const folder of standardDepartmentFolders) {
-    // eslint-disable-next-line no-await-in-loop
-    await fs.promises.mkdir(path.join(uploadRoot, folder), { recursive: true });
+  for (const root of roots) {
+    for (const folder of standardDepartmentFolders) {
+      await fs.promises.mkdir(path.join(root, folder), { recursive: true });
+    }
   }
 
   return {
-    uploadRoot,
+    uploadRoot: Array.from(roots).join(', '),
     removedEntries,
   };
 }
@@ -429,8 +457,8 @@ async function seedDefaultAdmin(client: { query: (...args: any[]) => Promise<any
   if (legacyAdminRoleId > 0) {
     await client.query(
       `
-      INSERT INTO user_role (user_id, role_id)
-      SELECT $1, $2
+      INSERT INTO user_role (user_id, role_id, created_at, updated_at)
+      SELECT $1, $2, NOW(), NOW()
       WHERE NOT EXISTS (
         SELECT 1
         FROM user_role
@@ -445,8 +473,8 @@ async function seedDefaultAdmin(client: { query: (...args: any[]) => Promise<any
   if (sysAdminRoleId > 0) {
     await client.query(
       `
-      INSERT INTO sys_user_role (user_id, role_id)
-      SELECT $1, $2
+      INSERT INTO sys_user_role (user_id, role_id, created_at, updated_at)
+      SELECT $1, $2, NOW(), NOW()
       WHERE NOT EXISTS (
         SELECT 1
         FROM sys_user_role
@@ -533,7 +561,6 @@ async function wipeExternalIndexesAfterReset() {
 
 export async function resetSystemPermanently(
   scope: AccessScope,
-  accountPassword: string,
   confirmationText: string,
 ) {
   const normalizedConfirmation = String(confirmationText || '').trim().toUpperCase();
@@ -548,8 +575,6 @@ export async function resetSystemPermanently(
   const client = await pgPool.connect();
   try {
     await client.query('BEGIN');
-
-    await validateSuperAdminPassword(scope, accountPassword, client);
     const diskWipeResult = await wipeUploadedDocumentsFromDisk();
     console.info(
       `[SystemReset] upload_root_wiped path=${diskWipeResult.uploadRoot} removed_entries=${diskWipeResult.removedEntries}`,
@@ -559,7 +584,6 @@ export async function resetSystemPermanently(
       `[SystemReset] tables_truncated count=${truncated.tables.length}`,
     );
     await ensureBaseRolesAndDepartments(client);
-    await seedDefaultAdmin(client);
 
     await client.query('COMMIT');
 
@@ -569,8 +593,6 @@ export async function resetSystemPermanently(
     const invalidatedSessions = await clearAllLoginSessions();
     return {
       confirmationText: RESET_CONFIRMATION_TEXT,
-      adminUserName: DEFAULT_ADMIN_USERNAME,
-      adminPassword: DEFAULT_ADMIN_PASSWORD,
       tablesTruncated: truncated.tables,
       deletedByTable: truncated.deletedByTable,
       invalidatedSessions,

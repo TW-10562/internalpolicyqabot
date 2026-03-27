@@ -2,8 +2,6 @@ import request from './request';
 
 export interface SystemResetResult {
   confirmationText: string;
-  adminUserName: string;
-  adminPassword: string;
   tablesTruncated: string[];
   deletedByTable: Record<string, number>;
   invalidatedSessions: number;
@@ -32,11 +30,10 @@ const normalize = (raw: any) => {
   return raw;
 };
 
-export async function executeSystemReset(accountPassword: string, confirmationText: string) {
+export async function executeSystemReset(confirmationText: string) {
   const raw = await request<any>('/api/system-reset/execute', {
     method: 'POST',
     data: {
-      accountPassword,
       confirmationText,
     },
   });

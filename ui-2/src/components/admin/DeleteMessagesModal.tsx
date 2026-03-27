@@ -73,9 +73,8 @@ export default function DeleteMessagesModal({
         try {
           localStorage.removeItem('notifications_messages');
           localStorage.removeItem('read_message_ids');
-          console.log('Cleared all message-related localStorage data');
-        } catch (err) {
-          console.error('Failed to clear localStorage:', err);
+        } catch {
+          // localStorage cleanup is best-effort
         }
 
         setTimeout(() => {

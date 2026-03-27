@@ -7,7 +7,7 @@ services:
     command: >
       redis-server /usr/local/etc/redis/redis.conf
       --appendonly yes
-      --requirepass "${REDIS_PASSWORD:-abcd1234}"
+      --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}"
     volumes:
       - /srv/tbot/redis:/data
       - ./data/volumes/redis.conf:/usr/local/etc/redis/redis.conf:ro
@@ -23,7 +23,7 @@ services:
     environment:
       POSTGRES_DB: "${PG_DATABASE:-qa_db}"
       POSTGRES_USER: "${PG_USER:-twave_01}"
-      POSTGRES_PASSWORD: "${PG_PASSWORD:-twave_01password}"
+      POSTGRES_PASSWORD: "${PG_PASSWORD:?PG_PASSWORD must be set in .env}"
       TZ: "Asia/Tokyo"
       PGTZ: "Asia/Tokyo"
     volumes:
@@ -165,9 +165,9 @@ services:
       BACKEND_PORT: 8080
       FRONTEND_HOST: "${FRONTEND_HOST:-ui}"
       FRONTEND_PORT: 7001
-      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-https://policybot.twave.co.jp}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
-      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
+      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-https://policybot.twave.co.jp/dev-api/user/auth/callback}"
       NODE_ENV: "production"
     volumes:
       - ./api/config:/app/config:ro
@@ -223,9 +223,9 @@ services:
       BACKEND_PORT: 8080
       FRONTEND_HOST: "${FRONTEND_HOST:-ui}"
       FRONTEND_PORT: 7001
-      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-https://policybot.twave.co.jp}"
       PUBLIC_API_BASE_URL: "${PUBLIC_API_BASE_URL:-}"
-      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-}"
+      AZURE_AD_REDIRECT_URI: "${AZURE_AD_REDIRECT_URI:-https://policybot.twave.co.jp/dev-api/user/auth/callback}"
       NODE_ENV: "production"
     volumes:
       - ./api/config:/app/config:ro

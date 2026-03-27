@@ -6,6 +6,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { loginWithMicrosoft } from '../../api/auth';
 import { getBrandDisplayName } from '../../lib/branding';
 import BrandLogo from '../ui/BrandLogo';
+import ContactHRPopup from '../modals/ContactHRPopup';
 import { beginMicrosoftLoginRedirect, completeMicrosoftLoginRedirect, hasMicrosoftSsoConfig, type MicrosoftUserInfo } from '../../auth/microsoftAuth';
 
 interface LoginPageProps {
@@ -35,6 +36,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showDeactivatedPopup, setShowDeactivatedPopup] = useState(false);
 
   const finishLogin = useCallback(async (accessToken: string, userInfo: MicrosoftUserInfo) => {
     const clientDepartment = String(userInfo.department || '').trim() || undefined;
@@ -96,6 +98,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         roleCode,
         lastLogin: new Date().toISOString(),
       });
+    } else if (response.message === 'account_deactivated' || String(response.code) === '403') {
+      setShowDeactivatedPopup(true);
     } else {
       setError(response.message || t('login.invalidCredentials'));
     }
@@ -286,6 +290,18 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           </div>
         </div>
       </div>
+
+      {/* ================= DEACTIVATED ACCOUNT POPUP ================= */}
+      {showDeactivatedPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+          <ContactHRPopup
+            isOpen={showDeactivatedPopup}
+            onClose={() => setShowDeactivatedPopup(false)}
+            title={t('contactHR.accountDeactivatedTitle', undefined, 'Unable to Login')}
+            message={t('contactHR.accountDeactivatedMessage', undefined, 'Your account has been deactivated. Please contact the HR department for assistance.')}
+          />
+        </div>
+      )}
     </div>
   );
 }

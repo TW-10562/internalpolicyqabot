@@ -3675,7 +3675,7 @@ export const chatGenProcess = async (job) => {
 
     // Outputs can legitimately remain QUEUED until the worker publishes the first live update,
     // so treat all pre-terminal in-flight states as writable.
-    const activeOutputStatuses = new Set(['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING']);
+    const activeOutputStatuses = new Set(['WAIT', 'QUEUED', 'IN_PROCESS', 'PROCESSING', 'RETRIEVING', 'STREAMING']);
     let outputWritesAborted = false;
     let outputFinalizedLocally = false;
     let liveMutationChain: Promise<void> = Promise.resolve();
@@ -3767,7 +3767,7 @@ export const chatGenProcess = async (job) => {
       `[CHAT PROCESS] Query intent: ${sharedQueryIntent.intent} (confidence=${sharedQueryIntent.confidence.toFixed(2)}, matchedRule=${sharedQueryIntent.matchedRule || 'default'})`,
     );
 
-    const moderation = moderateUserQuery(originalQueryText);
+    const moderation = await moderateUserQuery(originalQueryText);
     if (moderation.blocked) {
       const finalAnswer = moderation.reply;
       const content = formatSingleLanguageOutput(finalAnswer, moderation.language as LanguageCode, {
@@ -3858,7 +3858,9 @@ export const chatGenProcess = async (job) => {
             moderation,
           }),
         )
-        .catch(() => undefined);
+        .catch((analyticsError) =>
+          console.warn('[Analytics] analytics event write failed:', (analyticsError as any)?.message || analyticsError),
+        );
 
       return { outputId, isOk: true, content };
     }

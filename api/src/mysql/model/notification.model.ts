@@ -56,7 +56,7 @@ export const initNotification = (sequelize: Sequelize) => {
         allowNull: false,
       },
       type: {
-        type: DataTypes.ENUM('info', 'success', 'warning', 'error', 'admin_reply'),
+        type: DataTypes.STRING(50),
         defaultValue: 'info',
         allowNull: false,
       },

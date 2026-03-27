@@ -1301,7 +1301,7 @@ async function validateScopePassword(scope: AccessScope, adminPassword: string, 
   }
 }
 
-export async function purgeTriageTickets(scope: AccessScope, adminPassword: string) {
+export async function purgeTriageTickets(scope: AccessScope) {
   if (!(isSuperAdminRole(scope.roleCode) || isDepartmentAdminRole(scope.roleCode))) {
     return {
       deletedTickets: 0,
@@ -1315,7 +1315,6 @@ export async function purgeTriageTickets(scope: AccessScope, adminPassword: stri
   const client = await pgPool.connect();
   try {
     await client.query('BEGIN');
-    await validateScopePassword(scope, adminPassword, client);
 
     const params: any[] = [];
     let where = '';
@@ -1417,23 +1416,25 @@ export async function purgeTriageTickets(scope: AccessScope, adminPassword: stri
     deletedNotificationRows += Number(orphanNotificationRes.rowCount || 0);
     deletedMessageRows += Number(orphanMessageRes.rowCount || 0);
 
+    // Reset the sequence so new IDs follow the current max, avoiding large gaps.
     const remainingRes = await client.query(
-      `
-      SELECT COUNT(*)::int AS count
-      FROM triage_tickets
-      `,
+      `SELECT COUNT(*)::int AS count, COALESCE(MAX(id), 0)::bigint AS max_id FROM triage_tickets`,
     );
     const remaining = Number(remainingRes.rows?.[0]?.count || 0);
+    const maxId = Number(remainingRes.rows?.[0]?.max_id || 0);
     let sequenceReset = false;
-    if (remaining === 0) {
-      const seqRes = await client.query(
-        `
-        SELECT pg_get_serial_sequence('triage_tickets', 'id') AS seq_name
-        `,
-      );
-      const seqName = String(seqRes.rows?.[0]?.seq_name || '').trim();
-      if (seqName) {
+    const seqRes = await client.query(
+      `SELECT pg_get_serial_sequence('triage_tickets', 'id') AS seq_name`,
+    );
+    const seqName = String(seqRes.rows?.[0]?.seq_name || '').trim();
+    if (seqName) {
+      if (remaining === 0) {
+        // No tickets left — reset to 1
         await client.query('SELECT setval($1::regclass, 1, false)', [seqName]);
+        sequenceReset = true;
+      } else if (maxId > 0) {
+        // Tickets remain — set sequence to max existing ID so next insert is max+1
+        await client.query('SELECT setval($1::regclass, $2, true)', [seqName, maxId]);
         sequenceReset = true;
       }
     }

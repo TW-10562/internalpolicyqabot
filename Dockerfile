@@ -21,6 +21,7 @@ COPY api/src ./src
 COPY api/scripts ./scripts
 COPY api/mcp-servers.json ./mcp-servers.json
 RUN pnpm exec tsc -p tsconfig.json && pnpm exec tsc-alias -p tsconfig.json
+RUN mkdir -p dist/config && cp src/config/*.json dist/config/
 RUN pnpm prune --prod
 
 FROM node:${NODE_VERSION}-bookworm-slim AS api
@@ -60,13 +61,14 @@ skip = [
 filtered = [line for line in src if not any(re.match(pat, line) for pat in skip)]
 Path('/app/rag/requirements.docker.txt').write_text("\n".join(filtered) + "\n")
 PY
-RUN conda create -y -n rag -c conda-forge python=3.11 pip pytorch compilers cmake make rust && conda clean -afy
+RUN conda create -y -n rag -c conda-forge python=3.11 pip compilers cmake make rust && conda clean -afy
 ENV PATH=/opt/conda/envs/rag/bin:$PATH
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
 RUN pip install --no-cache-dir -r /app/rag/requirements.docker.txt
 COPY rag /app/rag
 COPY config /app/config
 EXPOSE 8010
-CMD ["bash","-lc","python -c \"from services.gpu_guard import ensure_cuda_or_raise; ensure_cuda_or_raise('rag-api-startup')\" && python -m uvicorn api.main:app --host 0.0.0.0 --port 8010"]
+CMD ["bash","-lc","echo '[rag-python] Waiting 10s for GPU memory to stabilize...' && sleep 10 && python -c \"from services.gpu_guard import ensure_cuda_or_raise; ensure_cuda_or_raise('rag-api-startup')\" && python -m uvicorn api.main:app --host 0.0.0.0 --port 8010"]
 
 FROM node:${NODE_VERSION}-bookworm-slim AS ui-build
 ARG PNPM_VERSION

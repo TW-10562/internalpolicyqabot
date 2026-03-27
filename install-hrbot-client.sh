@@ -9,17 +9,17 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-HOSTNAME_FQDN="${HOSTNAME_FQDN:-hrbot.twave.internal}"
+HOSTNAME_FQDN="${HOSTNAME_FQDN:-policybot.twave.co.jp}"
 
-# If `hrbot.twave.internal` is not published in DNS, clients on the twave
+# If `policybot.twave.co.jp` is not published in DNS, clients on the twave
 # private network still need a working server IP to bootstrap trust (CA install)
 # and hostname mapping (/etc/hosts). We probe a few likely IPs and pick the
 # first one that serves the bootstrap CA.
 SERVER_IP="${SERVER_IP:-}"
 SERVER_IP_CANDIDATES="${SERVER_IP_CANDIDATES:-"10.17.0.221 172.30.140.148"}"
 BOOTSTRAP_BASE="${BOOTSTRAP_BASE:-}"
-CA_CERT_TMP="${CA_CERT_TMP:-/tmp/hrbot-root-ca.crt}"
-CA_CERT_DEST="${CA_CERT_DEST:-/usr/local/share/ca-certificates/hrbot-root-ca.crt}"
+CA_CERT_TMP="${CA_CERT_TMP:-/tmp/policybot-root-ca.crt}"
+CA_CERT_DEST="${CA_CERT_DEST:-/usr/local/share/ca-certificates/policybot-root-ca.crt}"
 CA_CERT_NAME="${CA_CERT_NAME:-HRBot Internal Root CA}"
 
 is_ipv4() {

@@ -153,7 +153,7 @@ export const retrieveVectorDocuments = async (
     process.env.RAG_VECTOR_EMBEDDING_MODEL ||
       process.env.RAG_EMBEDDING_MODEL ||
       process.env.EMBEDDING_MODEL_NAME ||
-      'BAAI/bge-m3',
+      'Qwen/Qwen3-Embedding-8B',
   ).trim();
   const topK = Math.max(8, Number(process.env.RAG_VECTOR_TOP_K || 20));
 

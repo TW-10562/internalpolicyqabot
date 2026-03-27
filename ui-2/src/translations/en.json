@@ -194,18 +194,20 @@
     "deleteSelectedTitle": "Delete Selected Documents",
     "deleteSelected": "Delete Selected",
     "searchPlaceholder": "Search documents...",
-    "upload": "Upload",
+    "upload": "Upload New Document",
     "deleteSuccess": "File \"{{filename}}\" has been deleted successfully",
     "deleteError": "Error deleting file. Please try again.",
     "viewError": "Error opening file. Please try again.",
     "previewUnavailable": "Preview not available for this file type. Please download to view.",
     "skippedExisting": "Skipped existing: {{files}}",
-    "pipelineTitle": "Upload Pipeline",
-    "pipelineStatusDone": "Done",
+    "pipelineTitle": "Upload Progress",
+    "pipelineStatusDone": "Completed",
+    "pipelineStatusPending": "Pending",
+    "pipelineStatusFailed": "Failed",
     "uploadSuccess": "{{count}} file(s) uploaded successfully. Category: {{category}}",
-    "pipelineStatusProcessing": "Processing...",
+    "pipelineStatusProcessing": "In Progress",
     "nextContinue": "Next / Continue",
-    "defaultCategory": "Default Category",
+    "defaultCategory": "Select Default Category for Upload",
     "removeSelected": "Remove Selected",
     "cancelUpload": "Cancel Upload",
     "categoryLabel": "Category",
@@ -216,16 +218,26 @@
       "procedure": "⚙️ Procedure",
       "faq": "❓ FAQ"
     },
-    "filesSelected": "📄 {{count}} file(s) selected",
+    "filesSelected": "{{count}} file(s) selected",
     "totalSize": "Total: {{size}} MB",
+    "uploadNewDocument": "Upload New Document",
     "pipeline": {
-      "fileUpload": "File Upload",
-      "contentExtraction": "Content Extraction",
-      "embeddingIndexing": "Embedding & Indexing",
-      "ragIntegration": "RAG Integration",
-      "start": "🚀 Start Upload Pipeline",
-      "processing": "Processing..."
+      "upload": "Upload",
+      "processing": "Processing",
+      "ready": "Ready",
+      "start": "Start Upload",
+      "inProgress": "Processing..."
     },
+    "progress": "Processing {{done}} / {{total}} files ({{percent}}%)",
+    "progressComplete": "{{done}} / {{total}} files completed",
+    "progressWithErrors": "{{done}} / {{total}} files ({{failed}} failed)",
+    "fileStatus": {
+      "done": "Done",
+      "uploading": "Uploading...",
+      "processing": "Processing...",
+      "failed": "Failed"
+    },
+    "uploadPartial": "{{success}} uploaded, {{failed}} failed",
     "uploadCanceled": "Upload canceled.",
     "uploadFailed": "Upload failed: {{error}}",
     "fileName": "File Name",
@@ -234,9 +246,21 @@
     "bulkDeletePartial": "{{success}} deleted, {{failed}} failed"
   },
   "userManagement": {
-    "title": "uermanagement",
+    "title": "User Management",
     "uploadCsv": "Upload CSV",
     "addUser": "Add User",
+    "tab": {
+      "active": "Active",
+      "restored": "Restored",
+      "deleted": "Deleted",
+      "all": "All"
+    },
+    "action": {
+      "edit": "Edit",
+      "delete": "Delete",
+      "restore": "Restore",
+      "permanentDelete": "Delete Permanently"
+    },
     "search": {
       "placeholder": "Search by name or email",
       "clear": "Clear"
@@ -264,7 +288,8 @@
       "save": "Save",
       "cancel": "Cancel",
       "delete": "Delete",
-      "edit": "Edit"
+      "edit": "Edit",
+      "requiredFields": "Required fields missing"
     },
     "password": {
       "show": "Show Password",
@@ -275,6 +300,9 @@
       "confirmTitle": "Confirm Delete",
       "confirmMessage": "Are you sure you want to delete this user?",
       "confirmButton": "Delete",
+      "permanentConfirmTitle": "Confirm Permanent Delete",
+      "permanentConfirmMessage": "This user will be permanently removed and cannot be restored.",
+      "permanentConfirmButton": "Delete Permanently",
       "deleting": "Deleting...",
       "deleted": "Deleted"
     },
@@ -581,7 +609,9 @@
     "changePasswordTitle": "Change Password",
     "changePasswordMessage": "Please contact your HR department to change your password.",
     "defaultTitle": "Contact HR",
-    "defaultMessage": "Please contact your HR department for assistance."
+    "defaultMessage": "Please contact your HR department for assistance.",
+    "accountDeactivatedTitle": "Unable to Login",
+    "accountDeactivatedMessage": "Your account has been deactivated. Please contact the HR department for assistance."
   },
   "app": {
     "version": "{{appName}} v1.0.0"

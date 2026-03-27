@@ -214,11 +214,21 @@ const getStaticModerationReply = (language: 'ja' | 'en') =>
   language === 'ja' ? MODERATION_REPLY_JA : MODERATION_REPLY_EN;
 
 const NARROW_ALLOWLIST_PATTERNS = [
+  // Technical terms
   /\bkill\s+-?9\b/i,
   /\bkill\s+process(?:es)?\b/i,
   /\bkiller\s+feature\b/i,
   /\bkill\s+the\s+job\b/i,
   /\bslap\s+function\b/i,
+  // HR policy questions — these contain sensitive words in a non-abusive context
+  /\b(what|how|where|who|when|does|is|are|can|do|please|tell me about|explain)\b[\s\S]{0,40}\b(policy|policies|regulation|rule|guideline|procedure|process)\b/i,
+  /\b(anti[- ]?)?bull(y|ying)\s+(policy|prevention|regulation|guideline|report|complaint|measure)/i,
+  /\b(harassment|discrimination|abuse|threat|violence)\s+(policy|prevention|regulation|guideline|report|complaint|training|procedure|measure|support)/i,
+  /\b(report|reporting|complaint|consult)\s+(harassment|discrimination|abuse|bullying|violence|threat)/i,
+  /\b(how to|where to|can i|how do i)\s+(report|file|raise|submit|discuss)\b/i,
+  // Japanese policy question patterns
+  /(?:規則|規程|規定|ルール|ガイドライン|ポリシー|手続き|方法|対策|防止|措置|研修|相談)/,
+  /(?:パワハラ|セクハラ|いじめ|嫌がらせ|ハラスメント)(?:防止|対策|規則|規程|研修|相談|報告|窓口)/,
 ];
 
 const REPORT_CONTEXT_PATTERNS_EN = [
@@ -326,20 +336,12 @@ const RULES: RuleDef[] = [
     severity: 3,
     target: 'compactAsciiCollapsed',
     patterns: [
+      // Only match strong profanity in compact form — these are rarely substrings of innocent words
       /fuck/,
       /shit/,
       /asshole/,
-      /bitch/,
       /motherfucker/,
-      /bastard/,
-      /idiot/,
-      /moron/,
-      /stupid/,
-      /dumb/,
-      /loser/,
       /scumbag/,
-      /trash/,
-      /garbage/,
     ],
   },
   {
@@ -349,9 +351,11 @@ const RULES: RuleDef[] = [
     severity: 3,
     target: 'compact',
     patterns: [
-      /(?:くそ|クソ|ばか|バカ|馬鹿|あほ|アホ|かす|カス|ごみ|ゴミ|無能|役立たず|きもい|うざい|黙れ|消えろ|くたばれ)/,
-      /(?:ばー?か|ばぁ?か|ばかやろう|バカヤロー)/,
-      /(?:baka|aho|kuso|gomi|kasu)/,
+      // Only flag when directed at someone or used as strong insults — not mild exclamations
+      /(?:黙れ|消えろ|くたばれ|役立たず)/,
+      /(?:ばかやろう|バカヤロー|クソ野郎|くそ野郎)/,
+      // Directed insults: <person/thing> + insult
+      /(?:おまえ|お前|あんた|てめえ|あいつ|こいつ).{0,6}(?:くそ|クソ|ばか|バカ|馬鹿|あほ|アホ|かす|カス|ごみ|ゴミ|無能|きもい)/,
     ],
   },
   {
@@ -387,7 +391,8 @@ const RULES: RuleDef[] = [
     patterns: [
       /\b(i('| a)?m going to|i will|i'll)\s+(kill|hurt|beat|attack|destroy|ruin|slap|punch|stab)\s+(you|him|her|them|my (boss|manager|coworker|co-worker|hr|team))\b/i,
       /\b(do it or else|or i'll ruin you|or i will ruin you|i'll make you pay)\b/i,
-      /\b(threaten|blackmail|coerce|intimidate|bully)\b/i,
+      // Only match intent to threaten/coerce — not policy questions like "What is the anti-bullying policy?"
+      /\b(i will|i'm going to|i'll|going to)\s+(threaten|blackmail|coerce|intimidate|bully)\b/i,
     ],
   },
   {
@@ -468,8 +473,10 @@ const RULES: RuleDef[] = [
     severity: 4,
     target: 'lower',
     patterns: [
-      /\b(hr|human resources|company|organization|manager|boss|coworker|co-worker|team|system|app|assistant|qa bot)\b[\s\S]{0,24}\b(garbage|trash|useless|idiots?|morons?|bitches?|pathetic|worthless|awful|terrible|joke)\b/i,
-      /\b(garbage|trash|useless|idiots?|morons?|pathetic|worthless|awful|terrible|joke)\b[\s\S]{0,24}\b(hr|human resources|company|organization|manager|boss|coworker|co-worker|team|system|app|assistant|qa bot)\b/i,
+      // Require "is" or "are" between subject and insult to avoid flagging normal sentences
+      // like "The HR system had a terrible error" or "company trash collection"
+      /\b(hr|human resources|company|organization|manager|boss|coworker|co-worker|team|system|app|assistant|qa bot)\s+(is|are)\s+(a\s+)?(garbage|trash|useless|idiots?|morons?|bitches?|pathetic|worthless|awful|terrible|joke)\b/i,
+      /\b(garbage|trash|useless|idiots?|morons?|pathetic|worthless)\s+(hr|human resources|company|organization|manager|boss|coworker|co-worker|team)\b/i,
     ],
   },
   {
@@ -869,10 +876,52 @@ const buildAnalysis = (reasons: ModerationReason[]): ModerationAnalysis => {
   };
 };
 
-export function moderateUserQuery(queryText?: string): QueryModerationGateResult {
+/**
+ * Hybrid moderation gate: rules first (instant), then LLM if needed.
+ *
+ * 1. Rules run synchronously — if severity >= 5, block immediately (no LLM needed).
+ * 2. If rules find something (severity < 5) OR text looks suspicious, call LLM for a
+ *    second opinion. This reduces false positives on borderline cases.
+ * 3. If LLM is disabled or times out, fall back to rule-based result.
+ *
+ * The function is async to support the LLM call but the fast path (clear text or
+ * severity-5 block) returns instantly without waiting for the LLM.
+ */
+export async function moderateUserQuery(queryText?: string): Promise<QueryModerationGateResult> {
   const forms = buildTextForms(String(queryText || ''));
-  const reasons = findRuleReasons(forms.normalized, 'query', { applyReporterExemption: true });
-  const analysis = buildAnalysis(reasons);
+  const ruleReasons = findRuleReasons(forms.normalized, 'query', { applyReporterExemption: true });
+
+  // Fast path: severity >= 5 rules (violence, self-harm, sexual) — block immediately
+  const hasCritical = ruleReasons.some((r) => Number(r.severity || 0) >= 5);
+  if (hasCritical) {
+    const analysis = buildAnalysis(ruleReasons);
+    return buildGateResult(analysis, forms);
+  }
+
+  // Hybrid path: if LLM is enabled and text looks suspicious, get LLM opinion
+  let allReasons = [...ruleReasons];
+  if (shouldRunLlmModeration(forms.normalized, '', ruleReasons)) {
+    const llmReasons = await runLlmModeration(forms.normalized, '');
+    allReasons = dedupeReasons([...ruleReasons, ...llmReasons]);
+  }
+
+  // If only rules flagged but LLM didn't confirm — downgrade to not blocked
+  // This prevents false positives: rules catch a borderline word, LLM says it's fine
+  if (ruleReasons.length > 0 && allReasons.every((r) => r.detector === 'rules') && MODERATION_LLM_ENABLED) {
+    // Rules found something but LLM was called and found nothing — trust LLM
+    const llmCleared = allReasons.length === ruleReasons.length &&
+      !allReasons.some((r) => r.detector === 'vllm');
+    if (llmCleared && !hasCritical) {
+      // LLM didn't confirm — clear the flag
+      return buildGateResult(buildAnalysis([]), forms);
+    }
+  }
+
+  const analysis = buildAnalysis(allReasons);
+  return buildGateResult(analysis, forms);
+}
+
+function buildGateResult(analysis: ModerationAnalysis, forms: ModerationTextForms): QueryModerationGateResult {
   const categories = Array.from(new Set(analysis.reasons.map((reason) => reason.category)));
   const matchedRuleIds = Array.from(
     new Set(

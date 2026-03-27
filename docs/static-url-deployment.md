@@ -9,14 +9,14 @@ Set these values in the root `.env` file before starting Docker Compose:
 ```bash
 WEB_PORT=7001
 API_PORT=8080
-PUBLIC_BASE_URL=http://hrbot.corp.twave:7001
+PUBLIC_BASE_URL=https://policybot.twave.co.jp
 ```
 
 If you have a domain name, use it instead:
 
 ```bash
 WEB_PORT=80
-PUBLIC_BASE_URL=http://bot.your-company.com
+PUBLIC_BASE_URL=https://policybot.twave.co.jp
 ```
 
 If you already run a host Nginx (recommended) and want a clean domain URL while keeping the containers on high ports:
@@ -24,7 +24,7 @@ If you already run a host Nginx (recommended) and want a clean domain URL while 
 ```bash
 WEB_PORT=7001
 API_PORT=8080
-PUBLIC_BASE_URL=https://bot.your-company.com
+PUBLIC_BASE_URL=https://policybot.twave.co.jp
 ```
 
 Then configure host Nginx using one of:
@@ -35,7 +35,7 @@ Then configure host Nginx using one of:
 If the API must be exposed on a different public address, also set:
 
 ```bash
-PUBLIC_API_BASE_URL=https://api.your-company.com
+PUBLIC_API_BASE_URL=https://policybot.twave.co.jp/dev-api
 ```
 
 ## Start the website
@@ -54,5 +54,5 @@ docker compose up -d --build ui api worker redis postgres solr rag-python
 - For this deployment, create an internal DNS record `hrbot.corp.twave -> 10.17.0.221`.
 - If you use a domain, point the DNS record to the server IP first.
 - If you want a clean URL without a port, bind `WEB_PORT=80` or place the stack behind your existing reverse proxy.
-- If you use the bundled certs in `ssl/`, the current certificate subject is `hrbot.twave.internal`, so use that hostname or install the root CA before testing HTTPS.
+- If you use the bundled certs in `ssl/`, ensure the certificate and private key pair match before testing HTTPS.
 - Backend-generated links now use `PUBLIC_BASE_URL` and stop falling back to `localhost` when that variable is set.

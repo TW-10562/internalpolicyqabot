@@ -9,6 +9,9 @@ import { nanoid } from "nanoid";
 import path from 'path';
 import { solrService } from '@/service/solrService';
 import { computeTitleImportanceWeight } from '@/rag/retrieval/importanceWeight';
+import { getCompanyDisplayName } from '@/constants/branding';
+
+const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md', '.markdown']);
 
 
 interface IHybridRAGResultItemMetadata {
@@ -49,8 +52,11 @@ export default class splitByArticleWithHybridSearch implements RAGProcessor {
             const fileExtname = path.extname(file.originalFilename);
             const importanceWeight = computeTitleImportanceWeight(String(fileOriginalFilename || ''));
 
-            if (fileExtname !== ".pdf") {
-                throw new Error("Only PDF files are supported for upload in splitByArticleWithHybridSearch mode.");
+            if (!SUPPORTED_UPLOAD_EXTENSIONS.has(fileExtname.toLowerCase())) {
+                throw new Error(
+                    `Unsupported file type "${fileExtname}" for splitByArticleWithHybridSearch mode. ` +
+                    `Supported: ${[...SUPPORTED_UPLOAD_EXTENSIONS].join(', ')}`,
+                );
             }
 
             const uniqueFileName = nanoid() + fileExtname;
@@ -107,13 +113,14 @@ export default class splitByArticleWithHybridSearch implements RAGProcessor {
             form.append('extra_metadata', JSON.stringify({
                 file_path_s: uniqueFileName,
                 file_abs_path_s: newPath,
+                file_extension: fileExtname.toLowerCase(),
                 file_id: mysqlFileRecord.getDataValue('id').toString(),
                 uploaded_by_s: userName,
                 rag_tag_s: this.name,
                 department_code_s: departmentCode,
                 system_s: departmentCode.toLowerCase(),
                 importance_weight_f: importanceWeight,
-                chunking_strategy: 'smart_sectional',
+                chunking_strategy: fileExtname === '.pdf' ? 'smart_sectional' : 'text_boundary',
                 chunk_size_tokens: Number(process.env.RAG_SMART_CHUNK_SIZE_TOKENS || 500),
                 chunk_overlap_tokens: Number(process.env.RAG_SMART_CHUNK_OVERLAP_TOKENS || 80),
                 chunk_boundaries: ['section_header', 'paragraph', 'bullet_list'],
@@ -193,7 +200,8 @@ export default class splitByArticleWithHybridSearch implements RAGProcessor {
             const hybridSearchResultString = responseData.map(item => item.page_content).join('\n\n---\n\n');
             console.log(`[RAG] Combined search result length: ${hybridSearchResultString.length} characters`);
 
-            const RAGPrompt = `あなたは株式会社IJTT（英文名称 IJTT Co., Ltd.）の社内人事Q&Aボットです。
+            const companyName = getCompanyDisplayName('ja');
+            const RAGPrompt = `あなたは${companyName}の社内人事Q&Aボットです。
 
 ## あなたの役割
 社員からの人事・労務関連の質問に対して、正確で分かりやすい回答を提供することです。社内規定や人事制度に基づいた信頼性の高い情報を提供してください。

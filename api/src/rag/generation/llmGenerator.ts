@@ -834,13 +834,39 @@ const parseEvidenceLines = (raw: string): string[] => {
     .filter((line) => !/^document$/i.test(line))
     .filter((line) => !/^step\s*\d+[:.\-]?\s*$/i.test(line))
     .filter((line) => !/^\{.*\}$/.test(line))
-    .filter((line) => !new RegExp(`^\\s*${NO_EVIDENCE_FOUND_TOKEN}\\s*$`, 'i').test(line));
+    .filter((line) => !new RegExp(`^\\s*${NO_EVIDENCE_FOUND_TOKEN}\\s*$`, 'i').test(line))
+    .filter((line) => !isMetadataDerivedEvidence(line));
   const deduped = Array.from(new Set(lines.map((line) => line.trim())));
   return deduped.slice(0, 12);
 };
 
+const isMetadataDerivedEvidence = (line: string): boolean => {
+  const lower = String(line || '').toLowerCase().trim();
+  if (!lower) return false;
+  if (/\b(?:filename|file\s*name|document\s*title|version\s*date|document.s?\s*(?:version|date|status|timestamp))\b/.test(lower)) return true;
+  if (/\b(?:as\s+of\s+\d{4}|current\s+as\s+of|dated?\s+\d{4}|retrieved\s+on)\b/.test(lower)) return true;
+  if (/\bindicat(?:es?|ing)\s+(?:that\s+)?the\s+(?:fiscal|financial|accounting)\s+year\b/.test(lower) &&
+      /\b(?:filename|version|document|title|date\s+of|status|retrieved)\b/.test(lower)) return true;
+  if (/\b(?:fiscal|financial)\s+year\s+(?:is|in\s+use\s+is)\s+(?:the\s+year\s+)?(?:beginning\s+in\s+)?\d{4}\b/.test(lower) &&
+      !/\b(?:august|january|february|march|april|may|june|july|september|october|november|december|1月|2月|3月|4月|5月|6月|7月|8月|9月|10月|11月|12月)\b/.test(lower)) return true;
+  return false;
+};
+
+const isNegativeEvidenceLine = (line: string): boolean => {
+  const lower = String(line || '').toLowerCase().trim();
+  if (!lower) return false;
+  return (
+    /\bdoes\s+not\s+(?:specify|define|mention|include|contain|state|address|describe|provide)\b/.test(lower) ||
+    /\bis\s+not\s+(?:explicitly|specifically|directly)\s+(?:defined|stated|specified|mentioned)\b/.test(lower) ||
+    /\bno\s+(?:explicit|specific|direct)\s+(?:policy|provision|information|detail|mention)\b/.test(lower) ||
+    /\bcould\s+not\s+(?:find|confirm|locate)\b/.test(lower) ||
+    /\bnot\s+(?:found|available|included)\s+in\s+(?:the|this)\s+(?:document|excerpt|provided)\b/.test(lower) ||
+    /記載されていない|規定は.*ない|定められていない|確認できません|含まれていない/.test(lower)
+  );
+};
+
 const EVIDENCE_METADATA_PATTERN =
-  /(?:https?:\/\/|www\.|\.pdf\b|\.docx?\b|\.xlsx?\b|(?:^|\s)id\s*\d+\b|^\s*source\s*[:：]|^\s*document\s*[:：]|^\s*section\s*[:：]|^\s*article\s*[:：]|^\s*page\s*[:：]|作成ユーザー|更新ユーザー|作成者|更新者|システム管理者|バックオフィスポータル|^\s*exment\s*[|｜])/i;
+  /(?:https?:\/\/|www\.|\.pdf\b|\.docx?\b|\.xlsx?\b|(?:^|\s)id\s*\d+\b|^\s*source\s*[:：]|^\s*document\s*[:：]|^\s*section\s*[:：]|^\s*article\s*[:：]|^\s*page\s*[:：]|作成ユーザー|更新ユーザー|作成者|更新者|システム管理者|バックオフィスポータル|^\s*exment\s*[|｜]|\bver\.?\s*\d+[\d.]*\b|\d{4}\.\d{2}\s+ver\b|^\s*\d{6}\s*$|^\s*\d{4}[./]\d{2}\s+ver\b|版$|^\s*as\s+of\s+\w+\s+\d{4}\s*$|^\s*\d{4}年\d{1,2}月\d{1,2}日\s*(?:版|改定|更新|作成)\s*$)/i;
 const EVIDENCE_POLICY_OBLIGATION_PATTERN =
   /(?:\b(?:must|shall|required|prohibited|return|delete|submit|immediately|without delay)\b|しなければならない|すること|禁止|返還|削除|廃棄|提出|申請|承認|届出|報告|直ちに|速やかに|遅滞なく|義務)/i;
 const EVIDENCE_ARTICLE_PATTERN = /(?:第\s*[0-9０-９]+\s*(?:条|項)|article\s*[0-9０-９]+|clause\s*[0-9０-９]+)/i;
@@ -1381,8 +1407,9 @@ export const generateEvidenceFirstGroundedAnswer = async ({
 
   try {
     const selectedChunks = selectEvidenceChunks(evidenceQuery || userQuery, retrievedContext);
+    console.log(`[RAG PIPELINE] evidence_chunks_selected count=${selectedChunks.length} titles=${selectedChunks.map((c) => c.title).join(' | ')}`);
     const extractedEvidence: string[] = [];
-    const maxEvidenceItems = 16;
+    const maxEvidenceItems = Math.max(4, Math.min(16, Number(process.env.RAG_EVIDENCE_MAX_ITEMS || 8)));
     let translatedChunks = 0;
     let lastStreamedPreview = '';
     const streamEvidencePreview = async (lines: string[]): Promise<void> => {
@@ -1399,9 +1426,15 @@ export const generateEvidenceFirstGroundedAnswer = async ({
     if (selectedChunks.length > 0) {
       await publishProgressStatus('Building answer...');
     }
+    // Reserve evidence slots for each chunk so a single low-relevance chunk
+    // cannot fill all slots and starve higher-quality chunks from other documents.
+    const perChunkBudget = selectedChunks.length > 1
+      ? Math.max(2, Math.ceil(maxEvidenceItems / selectedChunks.length))
+      : maxEvidenceItems;
     for (let chunkIndex = 0; chunkIndex < selectedChunks.length; chunkIndex += 1) {
       const chunk = selectedChunks[chunkIndex];
-      if (extractedEvidence.length >= maxEvidenceItems) break;
+      if (extractedEvidence.length >= maxEvidenceItems && chunkIndex > 0) break;
+      const chunkEvidenceBefore = extractedEvidence.length;
       await publishProgressStatus(
         `Building answer... (${Math.min(chunkIndex + 1, selectedChunks.length)}/${selectedChunks.length})`,
       );
@@ -1511,7 +1544,9 @@ export const generateEvidenceFirstGroundedAnswer = async ({
       );
       for (const line of recoveredLines) {
         if (extractedEvidence.length >= maxEvidenceItems) break;
+        if (extractedEvidence.length - chunkEvidenceBefore >= perChunkBudget) break;
         if (extractedEvidence.includes(line)) continue;
+        if (isNegativeEvidenceLine(line)) continue;
         extractedEvidence.push(line);
       }
       if (recoveredLines.length > 0) {

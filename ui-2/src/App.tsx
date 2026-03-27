@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { ToastProvider } from './context/ToastContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { useLang } from './context/LanguageContext';
@@ -22,10 +22,16 @@ import {
   getNotifications as getSupportNotifications,
   markNotificationRead as markSupportNotificationRead,
 } from './api/support';
+import {
+  listNotifications as listAppNotifications,
+  markNotificationRead as markAppNotificationRead,
+} from './api/notifications';
 import { getToken, logout } from './api/auth';
 import { logoutFromMicrosoft } from './auth/microsoftAuth';
- 
- 
+
+
+const POLL_INTERVAL_MS = 30_000; // 30 seconds
+
 function AppContent() {
   const { t } = useLang();
   const [user, setUser] = useState<User | null>(null);
@@ -36,16 +42,18 @@ function AppContent() {
   const [showContactAdminModal, setShowContactAdminModal] = useState(false);
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [notificationBellClicked, setNotificationBellClicked] = useState(false);
 
-  // FRESH notification count logic - completely independent from old logic
-  const computeNotificationCount = (messagesList: any[], userRole: string): number => {
-    if (!Array.isArray(messagesList) || notificationBellClicked) return 0;
+  // Track whether we've done the initial bell-click mark-all-read
+  const bellMarkedReadRef = useRef(false);
+
+  // Compute unread count from notification list
+  const computeNotificationCount = useCallback((messagesList: any[], userRole: string): number => {
+    if (!Array.isArray(messagesList)) return 0;
     return messagesList.filter((msg: any) => {
       if (userRole === 'admin') return msg.senderRole === 'user' && !msg.read;
       return msg.senderRole === 'admin' && !msg.read;
     }).length;
-  };
+  }, []);
 
   // Local persistence for read states across refresh
   const getViewerKey = (u: User | null) => u?.employeeId || 'anonymous';
@@ -136,11 +144,13 @@ function AppContent() {
       return [{ ...it, read: isRead || !!it.read }];
     });
   };
+
   // Compose role-specific notification list consistently
   const composeNotifications = (
     role: 'admin' | 'user',
     inbox: any[] = [],
     supportItems: any[] = [],
+    appNotifs: any[] = [],
   ) => {
     const messageMap = new Map<string, any>();
 
@@ -148,6 +158,7 @@ function AppContent() {
       const allMessages = [
         ...inbox.filter((msg) => msg.senderRole === 'user' && msg.sourceType === 'message'),
         ...supportItems.filter((msg) => msg.senderRole === 'user' && msg.sourceType === 'support_ticket'),
+        ...appNotifs,
       ];
       for (const msg of allMessages) {
         if (msg && msg.id) {
@@ -158,6 +169,7 @@ function AppContent() {
       const allMessages = [
         ...inbox.filter((msg) => msg.senderRole === 'admin' && msg.sourceType === 'message'),
         ...supportItems.filter((msg) => msg.senderRole === 'admin' && msg.sourceType === 'support_reply'),
+        ...appNotifs,
       ];
       for (const msg of allMessages) {
         if (msg && msg.id) {
@@ -171,20 +183,47 @@ function AppContent() {
     return result;
   };
 
+  // FIX: Use sender_type from the actual message data instead of assuming by viewer role
   const mapInboxMessages = (rows: any[], role: 'admin' | 'user') =>
-    (rows || []).map((m: any) => ({
-      id: `msg-${m.id}`,
-      messageId: m.id,
-      sender: m.sender_id,
-      senderId: m.sender_id,
+    (rows || []).map((m: any) => {
+      const senderType = String(m.sender_type || '').toLowerCase();
+      const actualSenderRole = senderType === 'admin' ? 'admin' : 'user';
+      return {
+        id: `msg-${m.id}`,
+        messageId: m.id,
+        sender: m.sender_id,
+        senderId: m.sender_id,
+        senderRole: actualSenderRole,
+        role: actualSenderRole,
+        subject: m.subject || '',
+        text: m.content,
+        message: m.content,
+        timestamp: new Date(m.created_at || Date.now()).getTime(),
+        read: !!m.is_read,
+        sourceType: 'message',
+        // Mark if sent by the viewer (admin viewing their own sent messages)
+        isAdminSent: role === 'admin' && actualSenderRole === 'admin',
+        isUserSent: role === 'user' && actualSenderRole === 'user',
+      };
+    });
+
+  // Map app_notifications to the unified notification format
+  const mapAppNotifications = (rows: any[], role: 'admin' | 'user') =>
+    (rows || []).map((n: any) => ({
+      id: `appnotif-${n.id}`,
+      notificationId: n.id,
+      sender: 'system',
+      senderId: 'system',
+      // System notifications appear as from the opposite role so they show up
       senderRole: role === 'admin' ? 'user' : 'admin',
       role: role === 'admin' ? 'user' : 'admin',
-      subject: m.subject || '',
-      text: m.content,
-      message: m.content,
-      timestamp: new Date(m.created_at || Date.now()).getTime(),
-      read: !!m.is_read,
-      sourceType: 'message',
+      subject: n.title || '',
+      title: n.title || '',
+      text: n.body || '',
+      message: n.body || '',
+      timestamp: new Date(n.created_at || Date.now()).getTime(),
+      read: !!n.is_read,
+      sourceType: n.type === 'system_alert' ? 'support_ticket' : 'message',
     }));
 
   const mapSupportItems = async (currentUser: User) => {
@@ -271,14 +310,26 @@ function AppContent() {
       console.error('Failed to fetch support items:', err);
     }
 
+    // Fetch app_notifications (system alerts, file processed, escalation notifications)
+    let appNotifsMapped: any[] = [];
+    try {
+      const appRes = await listAppNotifications(1, 50);
+      const appData = appRes as any;
+      if (appData?.ok !== false && appData?.data?.rows) {
+        appNotifsMapped = mapAppNotifications(appData.data.rows, currentUser.role);
+      }
+    } catch (err) {
+      console.error('Failed to fetch app notifications:', err);
+    }
+
     const combined = applyViewerState(
-      composeNotifications(currentUser.role as 'admin' | 'user', inboxMapped, supportItems),
+      composeNotifications(currentUser.role as 'admin' | 'user', inboxMapped, supportItems, appNotifsMapped),
       viewerKey,
     );
     setNotifications(combined);
     setUnreadCount(computeNotificationCount(combined, currentUser.role));
   };
- 
+
   useEffect(() => {
     if (!user) return;
 
@@ -289,31 +340,56 @@ function AppContent() {
     };
 
     syncNotifications();
-    const interval = setInterval(syncNotifications, 2000);
+    const interval = setInterval(syncNotifications, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, [user]);
- 
+
   const handleLogin = (userData: User) => {
     setUser(userData);
+    bellMarkedReadRef.current = false;
   };
- 
+
   const handleLogout = async () => {
     await logout();
     setUser(null);
     setActiveFeature(null);
     setShowProfile(false);
+    bellMarkedReadRef.current = false;
     logoutFromMicrosoft();
   };
 
+  // Bell click: mark all currently visible unread notifications as read via API
   const handleNotificationBellClick = () => {
-    setNotificationBellClicked(true);
+    if (!user) return;
+    const viewerKey = getViewerKey(user);
+    const token = getToken();
+    const headers: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json' };
+
+    // Mark all unread messages as read via bulk API
+    fetch('/dev-api/api/messages/mark-all-read', { method: 'PUT', headers }).catch(() => {});
+
+    // Mark each unread notification locally + via individual API calls
+    const unread = notifications.filter((n) => !n.read);
+    for (const item of unread) {
+      addReadId(item.notificationId, item.messageId, String(item.id), viewerKey);
+      if (item.sourceType === 'support_reply' && typeof item.notificationId === 'number') {
+        markSupportNotificationRead(item.notificationId).catch(() => {});
+      }
+      if (item.id?.startsWith?.('appnotif-') && typeof item.notificationId === 'number') {
+        markAppNotificationRead(item.notificationId).catch(() => {});
+      }
+    }
+
+    // Optimistically update UI
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnreadCount(0);
-    setTimeout(() => setNotificationBellClicked(false), 50);
   };
- 
+
   const handleFeatureClick = (feature: FeatureType) => {
     if (feature === 'contact-admin') {
       setShowContactAdminModal(true);
@@ -326,7 +402,7 @@ function AppContent() {
     setActiveFeature(feature);
     setShowProfile(false);
   };
- 
+
   const handleProfileClick = () => {
     setShowProfile(true);
     setActiveFeature(null);
@@ -346,7 +422,8 @@ function AppContent() {
 
     addReadId(item.notificationId, item.messageId, localId, viewerKey);
 
-    if (item.messageId) {
+    // Mark as read on the backend via the appropriate API
+    if (item.messageId && item.sourceType === 'message') {
       const token = getToken();
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
       fetch(`/dev-api/api/messages/mark-read/${item.messageId}`, {
@@ -362,9 +439,17 @@ function AppContent() {
       markSupportNotificationRead(item.notificationId).catch((err) => {
         console.error('Failed to mark support notification as read:', err);
       });
+      return;
+    }
+
+    // App notifications (system alerts, etc.)
+    if (item.id?.startsWith?.('appnotif-') && typeof item.notificationId === 'number') {
+      markAppNotificationRead(item.notificationId).catch((err) => {
+        console.error('Failed to mark app notification as read:', err);
+      });
     }
   };
- 
+
   const handleContactAdminSubmit = async (data: { subject: string; message: string }) => {
     setIsSubmitting(true);
     try {
@@ -375,7 +460,7 @@ function AppContent() {
           console.error('API error:', apiError);
         }
       }
- 
+
       setShowContactAdminModal(false);
     } catch (error) {
       console.error('Error sending message:', error);
@@ -383,17 +468,17 @@ function AppContent() {
       setIsSubmitting(false);
     }
   };
- 
-  const handleSendToAll = async (message: string) => {
-    try {
-      console.log('Broadcasting to all users:', message);
-      alert(t('broadcast.success'));
-    } catch (error) {
-      console.error('Error broadcasting:', error);
-      alert(t('broadcast.deleteError'));
+
+  // handleSendToAll is now handled entirely by BroadcastModal which calls the API directly.
+  // This callback is kept for backward compatibility with HomePage props.
+  const handleSendToAll = async (_message: string) => {
+    // BroadcastModal handles the actual API call via /api/messages/broadcast.
+    // Trigger a refresh so the new broadcast appears in notifications.
+    if (user) {
+      await loadNotifications(user);
     }
   };
- 
+
   const handleClosePopup = () => {
     setActiveFeature(null);
     setShowProfile(false);
@@ -410,7 +495,7 @@ function AppContent() {
     setNotifications(filtered);
     setUnreadCount(computeNotificationCount(filtered, user.role));
   };
- 
+
   const getPopupTitle = (): string => {
     if (showProfile) return t('profile.title');
     switch (activeFeature) {
@@ -428,12 +513,12 @@ function AppContent() {
         return '';
     }
   };
- 
+
   const getPopupContent = () => {
     if (showProfile && user) {
       return <ProfilePopup user={user} onLogout={handleLogout} />;
     }
- 
+
     switch (activeFeature) {
       case 'chat':
         return <ChatInterface />;
@@ -447,16 +532,15 @@ function AppContent() {
         return null;
     }
   };
- 
+
   if (!user) {
     return (
       <ToastProvider>
         <LoginPage onLogin={handleLogin} />
       </ToastProvider>
-
     );
   }
- 
+
   return (
     <ToastProvider>
       <HomePage
@@ -470,7 +554,7 @@ function AppContent() {
         onNotificationBellClick={handleNotificationBellClick}
         onClearNotifications={handleClearNotifications}
       />
- 
+
       <ContactAdminPopup
         isOpen={showContactAdminModal}
         onClose={() => setShowContactAdminModal(false)}
@@ -482,7 +566,7 @@ function AppContent() {
         isOpen={showBroadcastModal}
         onClose={() => setShowBroadcastModal(false)}
       />
- 
+
       <Popup
         isOpen={activeFeature !== null || showProfile}
         onClose={handleClosePopup}
@@ -494,7 +578,7 @@ function AppContent() {
     </ToastProvider>
   );
 }
- 
+
 function App() {
   return (
     <ThemeProvider>
@@ -504,7 +588,5 @@ function App() {
     </ThemeProvider>
   );
 }
- 
+
 export default App;
- 
- 

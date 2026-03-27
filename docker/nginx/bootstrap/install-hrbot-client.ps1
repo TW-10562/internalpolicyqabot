@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$HostName = 'hrbot.twave.internal'
+$HostName = 'policybot.twave.co.jp'
 $ServerIp = '10.17.0.221'
 $BootstrapBase = "http://$ServerIp/bootstrap"
 $CaPath = Join-Path $env:TEMP 'hrbot-root-ca.crt'
@@ -15,7 +15,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 Invoke-WebRequest -Uri "$BootstrapBase/hrbot-root-ca.crt" -OutFile $CaPath
 
-if (-not (Select-String -Path $HostsPath -Pattern "^\s*10\.17\.0\.221\s+hrbot\.twave\.internal(\s|$)" -Quiet -ErrorAction SilentlyContinue)) {
+if (-not (Select-String -Path $HostsPath -Pattern "^\s*10\.17\.0\.221\s+policybot\.twave\.co\.jp(\s|$)" -Quiet -ErrorAction SilentlyContinue)) {
   Add-Content -Path $HostsPath -Value "`r`n$HostsLine"
 }
 

@@ -310,7 +310,23 @@ const issueSessionForMicrosoftEmail = async (
     });
   }
 
-  if (existing) {
+  if (existing && String(existing.status) === '0') {
+    // User account is disabled – do NOT auto-reactivate via SSO.
+    // Only an admin can re-enable access through the dashboard.
+    console.warn('[sso.login_blocked] disabled user attempted SSO login', {
+      email,
+      userId: Number(existing.user_id),
+      status: existing.status,
+    });
+    return ctx.app.emit(
+      'error',
+      {
+        code: '403',
+        message: 'account_deactivated',
+      },
+      ctx,
+    );
+  } else if (existing) {
     userId = Number(existing.user_id);
     userName = String(existing.user_name || email);
     empId = safeEmployeeId;
@@ -332,29 +348,21 @@ const issueSessionForMicrosoftEmail = async (
       { where: { user_id: userId } },
     );
   } else if (deletedMatch) {
-    userId = Number(deletedMatch.user_id);
-    userName = String(deletedMatch.user_name || email);
-    empId = safeEmployeeId;
-
-    await User.update(
+    // User was deleted by an admin – do NOT auto-restore.
+    // Treat this the same as a revoked account: reject the login.
+    console.warn('[sso.login_blocked] deleted user attempted SSO login', {
+      email,
+      userId: Number(deletedMatch.user_id),
+      deletedAt: deletedMatch.deleted_at,
+      deletedBy: deletedMatch.deleted_by,
+    });
+    return ctx.app.emit(
+      'error',
       {
-        user_name: userName || email,
-        emp_id: empId,
-        first_name: firstName || deletedMatch.first_name || '',
-        last_name: lastName || deletedMatch.last_name || '',
-        password: deletedMatch.password || (await hashPassword(createHash())),
-        email,
-        phonenumber: deletedMatch.phonenumber || null,
-        status: '1',
-        sso_bound: 1,
-        department,
-        department_code: departmentCode,
-        role_code: roleCode,
-        deleted_at: null,
-        deleted_by: null,
-        last_login_at: new Date(),
-      } as any,
-      { where: { user_id: userId } },
+        code: '403',
+        message: 'account_deactivated',
+      },
+      ctx,
     );
   } else {
     const created = (await User.create({

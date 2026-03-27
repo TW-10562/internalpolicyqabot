@@ -102,11 +102,19 @@ export async function listNotifications(userId: number, pageNum: number, pageSiz
 
 export async function markNotificationAsRead(userId: number, id: number) {
   return seq.transaction(async (transaction) => {
+    // Try direct user notification first
     const [updated] = await AppNotification.update(
       { is_read: true, read_at: new Date() } as any,
       { where: { id, user_id: userId }, transaction },
     );
-    return updated > 0;
+    if (updated > 0) return true;
+
+    // If not found, check if it's a broadcast notification (user_id IS NULL)
+    const [broadcastUpdated] = await AppNotification.update(
+      { is_read: true, read_at: new Date() } as any,
+      { where: { id, user_id: null as any }, transaction },
+    );
+    return broadcastUpdated > 0;
   });
 }
 

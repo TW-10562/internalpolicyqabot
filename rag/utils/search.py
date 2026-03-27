@@ -50,7 +50,7 @@ def search_query(collection: Collection, query_text: str, top_k: int = 3) -> Opt
 
 def extract_passages(results):
     try:
-        if results and "documents" not in results or not results["documents"]:
+        if not results or "documents" not in results or not results["documents"]:
             return []
         return results["documents"][0]
     except Exception as e:
