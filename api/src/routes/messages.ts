@@ -10,7 +10,7 @@ import Router from 'koa-router';
 import Message from '@/mysql/model/message.model';
 import { Op } from 'sequelize';
 import { requireScopedAccess } from '@/controller/auth';
-import { AccessScope, isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
+import { AccessScope, DEPARTMENTS, isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
 import { pgPool } from '@/clients/postgres';
 
 const router = new Router({ prefix: '/api/messages' });
@@ -21,7 +21,7 @@ const getCurrentUser = (ctx: any) => {
 };
 
 const getDepartmentFilter = (scope: AccessScope) =>
-  isSuperAdminRole(scope.roleCode) ? { [Op.in]: ['HR', 'GA', 'ACC', 'OTHER'] } : scope.departmentCode;
+  isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode;
 
 const getUserRecipientIds = (user: any, scope: AccessScope) =>
   Array.from(
@@ -280,7 +280,7 @@ router.get('/inbox', async (ctx: any) => {
     const enriched = await enrichSenderInfo(withReadState);
     const unreadCount = enriched.filter((m: any) => !m.is_read).length;
 
-    ctx.body = { code: 200, result: { messages: enriched, unreadCount } };
+    ctx.body = { code: 200, result: { messages: enriched, unreadCount, currentUserId: scope.userId } };
   } catch (err) {
     console.error('[Messages] Inbox error:', err);
     ctx.body = { code: 500, message: 'Failed to fetch messages' };
@@ -302,7 +302,7 @@ router.get('/broadcast/history', async (ctx: any) => {
 
     const where = {
       is_broadcast: true,
-      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: ['HR', 'GA', 'ACC', 'OTHER'] } : scope.departmentCode,
+      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode,
     } as any;
     const { rows, count } = await Message.findAndCountAll({
       where,
@@ -338,10 +338,17 @@ router.get('/unread-count', async (ctx: any) => {
     });
 
     // Broadcast messages: per-user read state from message_reads
+    // Scope to viewer's department and exclude self-sent broadcasts
+    const broadcastWhere: any = {
+      is_broadcast: true,
+      sender_type: 'admin',
+      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode,
+      sender_user_id: { [Op.ne]: scope.userId },
+    };
     const broadcasts = await Message.findAll({
       raw: true,
       attributes: ['id'],
-      where: { is_broadcast: true, sender_type: 'admin' },
+      where: broadcastWhere,
     });
     const broadcastIds = broadcasts.map((b: any) => Number(b.id)).filter(Number.isFinite);
     const readBroadcastSet = await getReadBroadcastIds(scope.userId, broadcastIds);
@@ -459,7 +466,7 @@ const purgeMessagesHandler = async (ctx: any) => {
     }
 
     const where = {
-      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: ['HR', 'GA', 'ACC', 'OTHER'] } : scope.departmentCode,
+      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode,
       ...(whereConditions.length > 1 ? { [Op.or]: whereConditions } : whereConditions[0]),
     } as any;
 
@@ -484,5 +491,36 @@ const purgeMessagesHandler = async (ctx: any) => {
 
 router.delete('/delete', purgeMessagesHandler);
 router.post('/delete', purgeMessagesHandler);
+
+// POST /delete-batch - Delete specific messages by IDs (used by Clear All in notifications)
+router.post('/delete-batch', async (ctx: any) => {
+  try {
+    const scope = (ctx.state?.accessScope || {}) as AccessScope;
+    const { ids } = ctx.request.body || {};
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      ctx.body = { code: 400, message: 'ids array required' };
+      return;
+    }
+
+    const numericIds = ids.map(Number).filter(Number.isFinite);
+    if (numericIds.length === 0) {
+      ctx.body = { code: 400, message: 'No valid ids' };
+      return;
+    }
+
+    // Scope deletion to user's department for safety
+    const where = {
+      id: { [Op.in]: numericIds },
+      department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode,
+    } as any;
+
+    const deletedCount = await Message.destroy({ where });
+    ctx.body = { code: 200, message: 'Messages deleted', result: { deletedCount } };
+  } catch (err) {
+    console.error('[Messages] Delete-batch error:', err);
+    ctx.body = { code: 500, message: 'Failed to delete messages' };
+  }
+});
 
 export default router;

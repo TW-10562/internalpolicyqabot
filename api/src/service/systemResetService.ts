@@ -98,7 +98,7 @@ async function wipeUploadedDocumentsFromDisk() {
   }
 
   // Re-create standard department folders in all roots
-  const standardDepartmentFolders = ['HR', 'GA', 'ACC', 'OTHER', 'SYSTEMS'] as const;
+  const standardDepartmentFolders = ['HR', 'GA', 'ACC', 'OTHER'] as const;
   for (const root of roots) {
     for (const folder of standardDepartmentFolders) {
       await fs.promises.mkdir(path.join(root, folder), { recursive: true });
@@ -208,7 +208,6 @@ async function ensureBaseRolesAndDepartments(client: { query: (...args: any[]) =
     { code: 'GA', name: 'General Affairs' },
     { code: 'ACC', name: 'Accounting' },
     { code: 'OTHER', name: 'Other' },
-    { code: 'SYSTEMS', name: 'Systems' },
   ] as const;
 
   for (const department of baseDepartments) {

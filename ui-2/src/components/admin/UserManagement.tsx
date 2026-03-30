@@ -23,7 +23,7 @@ interface User {
   employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   department: string;
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'OTHER';
   isActive: boolean;
   lifecycleStatus: 'ACTIVE' | 'RESTORED' | 'DELETED';
   deletedAt: string | null;
@@ -39,7 +39,7 @@ interface FormData {
   email: string;
   employeeCode: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'OTHER';
   isActive: boolean;
 }
 
@@ -846,7 +846,7 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                 <option value="HR">HR</option>
                 <option value="GA">GA</option>
                 <option value="ACC">ACC</option>
-                <option value="SYSTEMS">SYSTEMS</option>
+                <option value="OTHER">OTHER</option>
               </select>
             </div>
 

@@ -13,6 +13,7 @@ import {
 } from '@/service/notificationService';
 import {
   AccessScope,
+  DEPARTMENTS,
   isDepartmentAdminRole,
   isSuperAdminRole,
   normalizeDepartmentCode,
@@ -66,7 +67,7 @@ router.get('/', async (ctx: any) => {
 router.post('/', async (ctx: any) => {
   const schema = Joi.object({
     userId: Joi.number().integer().min(1).optional(),
-    departmentCode: Joi.string().valid('HR', 'GA', 'ACC', 'OTHER').optional(),
+    departmentCode: Joi.string().valid(...DEPARTMENTS).optional(),
     type: Joi.string()
       .valid(
         'system_alert',

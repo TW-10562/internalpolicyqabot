@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { pgPool } from '@/clients/postgres';
 import { config } from '@/config/index';
 import { FILE_UPLOAD_DIR } from '@/config/uploadPath';
+import { DEPARTMENTS } from '@/service/rbac';
 
 type CheckResult = {
   name: string;
@@ -54,7 +55,7 @@ const walkFiles = async (rootDir: string): Promise<string[]> => {
 
 const checkDocsRoot = async () => {
   const root = FILE_UPLOAD_DIR;
-  const departments = ['HR', 'GA', 'ACC', 'OTHER'];
+  const departments = [...DEPARTMENTS];
   try {
     const stat = await fs.stat(root);
     if (!stat.isDirectory()) {

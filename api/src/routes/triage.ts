@@ -2,7 +2,7 @@ import Router from 'koa-router';
 import Joi from 'joi';
 import { fail, ok } from '@/service/apiResponse';
 import { requireScopedAccess } from '@/controller/auth';
-import { AccessScope, isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
+import { AccessScope, DEPARTMENTS, isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
 import {
   createTriageTicket,
   getTriageSummary,
@@ -30,7 +30,7 @@ router.post('/tickets', async (ctx: any) => {
     retrievedSourceIds: Joi.array().items(Joi.string()).optional(),
     retrievalQueryUsed: Joi.string().allow('', null).optional(),
     modelName: Joi.string().allow('', null).optional(),
-    departmentCode: Joi.string().valid('HR', 'GA', 'ACC', 'OTHER').optional(),
+    departmentCode: Joi.string().valid(...DEPARTMENTS).optional(),
     routingMode: Joi.string().valid('AUTO', 'MANUAL').optional(),
     assignedToUserId: Joi.number().integer().min(1).allow(null).optional(),
     targetRoleCode: Joi.string().valid('SUPER_ADMIN', 'HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN').optional(),

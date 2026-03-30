@@ -1,6 +1,6 @@
 import { pgPool } from '@/clients/postgres';
 
-export const DEPARTMENTS = ['HR', 'GA', 'ACC', 'OTHER', 'SYSTEMS'] as const;
+export const DEPARTMENTS = ['HR', 'GA', 'ACC', 'OTHER'] as const;
 export type DepartmentCode = (typeof DEPARTMENTS)[number];
 
 export const ROLES = ['USER', 'HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN', 'SUPER_ADMIN'] as const;
@@ -43,10 +43,11 @@ export const tryNormalizeDepartmentCode = (value: unknown): DepartmentCode | nul
     normalized === 'IT' ||
     normalized === 'ITSUPPORT' ||
     normalized === 'SYSTEM' ||
+    normalized === 'SYSTEMS' ||
     normalized === 'INFORMATIONSYSTEMS' ||
     normalized === 'INFORMATIONTECHNOLOGY'
   ) {
-    return 'SYSTEMS';
+    return 'OTHER';
   }
   return null;
 };
@@ -62,7 +63,6 @@ export const departmentNameForCode = (value: unknown): string => {
   if (code === 'GA') return 'General Affairs';
   if (code === 'ACC') return 'Accounting';
   if (code === 'OTHER') return 'Other';
-  if (code === 'SYSTEMS') return 'Systems';
   return 'Human Resources';
 };
 

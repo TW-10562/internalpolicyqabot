@@ -12,7 +12,7 @@ export interface LoginResponse {
     displayName?: string;
     department?: string;
     roleCode?: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-    departmentCode?: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+    departmentCode?: 'HR' | 'GA' | 'ACC' | 'OTHER';
   };
 }
 

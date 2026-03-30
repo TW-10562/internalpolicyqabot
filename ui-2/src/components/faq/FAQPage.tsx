@@ -55,7 +55,6 @@ export default function FAQPage({ user }: { user?: UserType }) {
     if (v === 'HR') return t('common.departments.hr');
     if (v === 'GA') return t('common.departments.ga');
     if (v === 'ACC') return t('common.departments.acc');
-    if (v === 'SYSTEMS') return t('common.departments.systems');
     if (v === 'OTHER') return t('common.departments.other');
     if (!v) return t('common.departments.unknown');
     return v;

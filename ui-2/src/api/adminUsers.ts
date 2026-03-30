@@ -11,7 +11,7 @@ export type AdminUser = {
   area_of_work_key?: string;
   department?: string;
   role_code: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  department_code: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+  department_code: 'HR' | 'GA' | 'ACC' | 'OTHER';
   status: string;
   updated_at: string;
   lifecycle_status?: 'ACTIVE' | 'RESTORED' | 'DELETED';
@@ -32,7 +32,7 @@ export type AdminUserPayload = {
   userJobRole?: string;
   areaOfWork?: string;
   roleCode: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
-  departmentCode: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+  departmentCode: 'HR' | 'GA' | 'ACC' | 'OTHER';
   isActive?: boolean;
   password?: string;
 };

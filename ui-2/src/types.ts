@@ -2,7 +2,7 @@ export interface User {
   employeeId: string;
   name: string;
   department: string;
-  departmentCode?: 'HR' | 'GA' | 'ACC' | 'SYSTEMS' | 'OTHER';
+  departmentCode?: 'HR' | 'GA' | 'ACC' | 'OTHER';
   role: 'user' | 'admin';
   roleCode?: 'USER' | 'HR_ADMIN' | 'GA_ADMIN' | 'ACC_ADMIN' | 'SUPER_ADMIN';
   lastLogin: string;

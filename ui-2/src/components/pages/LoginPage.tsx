@@ -85,9 +85,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             ? 'General Affairs'
             : departmentCode === 'ACC'
               ? 'Accounting'
-              : departmentCode === 'SYSTEMS'
-                ? 'Systems'
-                : 'Other');
+              : 'Other');
 
       onLogin({
         employeeId: response.result.empId || response.result.email || userInfo.mail || userInfo.userPrincipalName,

@@ -804,11 +804,13 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
     let assignedTo: number | null = null;
 
     if (routingMode === 'MANUAL' && normalizedInput.targetRoleCode === 'SUPER_ADMIN') {
+      // Exclude the creator so tickets are never assigned back to the person who escalated
       const superAdminRes = await client.query(
         `
         SELECT u.user_id
         FROM "user" u
         WHERE u.deleted_at IS NULL
+          AND u.user_id <> $1
           AND (
             u.role_code = 'SUPER_ADMIN'
             OR EXISTS (
@@ -822,11 +824,12 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
         ORDER BY u.user_id ASC
         LIMIT 1
         `,
+        [scope.userId],
       );
       if (superAdminRes.rows[0]) {
         assignedTo = Number(superAdminRes.rows[0].user_id);
       } else {
-        throw new Error('No active SUPER_ADMIN found for routing.');
+        throw new Error('No other active SUPER_ADMIN found for routing. Cannot assign to self.');
       }
     } else if (
       routingMode === 'MANUAL' &&
@@ -885,17 +888,19 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
       const desiredDepartment = departmentForAdminRole(desiredRole);
 
       // Strict role-based assignment (one-to-one), no broad department fan-out.
+      // Exclude the creator so tickets are never assigned back to the person who escalated.
       const assigneeRes = await client.query(
         `
         SELECT u.user_id, COALESCE(NULLIF(u.department_code, ''), 'HR') AS department_code
         FROM "user" u
         WHERE u.deleted_at IS NULL
+          AND u.user_id <> $3
           AND u.role_code = $1
           AND COALESCE(NULLIF(u.department_code, ''), 'HR') = $2
         ORDER BY u.user_id ASC
         LIMIT 1
         `,
-        [desiredRole, desiredDepartment],
+        [desiredRole, desiredDepartment, scope.userId],
       );
       assignedTo = assigneeRes.rows[0] ? Number(assigneeRes.rows[0].user_id) : null;
       if (!assignedTo) {
@@ -1048,11 +1053,15 @@ export async function listTriageTickets(scope: AccessScope, pageNum: number, pag
   const params: any[] = [];
   let where = '';
   if (isSuperAdminRole(scope.roleCode)) {
-    where = '';
+    // SUPER_ADMIN sees all tickets EXCEPT ones they created themselves
+    // (unless the ticket is assigned back to them by another admin)
+    params.push(scope.userId, scope.userId);
+    where = `WHERE (t.created_by <> $${params.length - 1} OR t.assigned_to = $${params.length})`;
   } else if (isDepartmentAdminRole(scope.roleCode)) {
     // Strict role scope: department admins see only their department escalations.
-    params.push(strictDepartmentForScope(scope));
-    where = `WHERE t.department_code = $${params.length}`;
+    // Exclude tickets they created themselves (unless assigned back to them).
+    params.push(strictDepartmentForScope(scope), scope.userId, scope.userId);
+    where = `WHERE t.department_code = $${params.length - 2} AND (t.created_by <> $${params.length - 1} OR t.assigned_to = $${params.length})`;
   } else {
     params.push(scope.userId);
     where = `WHERE t.created_by = $${params.length}`;

@@ -30,7 +30,6 @@ interface HomePageProps {
   unreadCount?: number;
   onSendToAll?: (message: string) => void;
   onNotificationBellClick?: () => void;
-  onClearNotifications?: (items: any[]) => void;
 }
 
 type Section =
@@ -52,7 +51,6 @@ export default function HomePage({
   unreadCount = 0,
   onSendToAll,
   onNotificationBellClick,
-  onClearNotifications,
 }: HomePageProps) {
   const { t } = useLang();
 
@@ -189,7 +187,7 @@ export default function HomePage({
                   items={notifications as any}
                   searchTerm={notifSearch}
                   onMarkAsRead={onMarkAsRead}
-                  onClearAll={onClearNotifications}
+
                   onSearchChange={setNotifSearch}
                   dimmed={isTyping}
                   currentViewerId={user.employeeId}
@@ -203,7 +201,7 @@ export default function HomePage({
                   items={notifications as any}
                   searchTerm={notifSearch}
                   onMarkAsRead={onMarkAsRead}
-                  onClearAll={onClearNotifications}
+
                   onSearchChange={setNotifSearch}
                   dimmed={isTyping}
                   currentViewerId={user.employeeId}

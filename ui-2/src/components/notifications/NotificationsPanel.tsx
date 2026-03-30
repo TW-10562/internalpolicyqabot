@@ -30,7 +30,6 @@ interface NotificationsPanelProps {
   items: NotificationItem[];
   searchTerm?: string;
   onMarkAsRead?: (item: NotificationItem) => void;
-  onClearAll?: (items: NotificationItem[]) => void;
   dimmed?: boolean;
   onSearchChange?: (value: string) => void;
   currentViewerId?: string;
@@ -90,23 +89,12 @@ const addReadIdToStorage = (notificationId: number | undefined, messageId: numbe
   }
 };
 
-const isItemReadInStorage = (item: NotificationItem, viewerKey: string) => {
-  const { notificationIds, messageIds, localIds } = getReadIdsFromStorage(viewerKey);
-  return (
-    (item.notificationId != null &&
-      notificationIds.has(item.notificationId)) ||
-    (item.messageId != null && messageIds.has(item.messageId)) ||
-    localIds.has(String(item.id || ''))
-  );
-};
-
 /* ===================== COMPONENT ===================== */
 
 export default function NotificationsPanel({
   items,
   searchTerm = '',
   onMarkAsRead,
-  onClearAll,
   dimmed = false,
   onSearchChange,
   currentViewerId,
@@ -156,6 +144,9 @@ export default function NotificationsPanel({
   }, [localItems, searchTerm]);
   const visibleItems = useMemo(() => {
     return filtered.filter((item) => {
+      // Never show messages sent by the current viewer
+      if ((item as any).sentByViewer) return false;
+
       // App notifications are always visible (backend enforces audience)
       if (item.sourceType === 'app_notification') return true;
       // Broadcast messages are visible to everyone
@@ -168,7 +159,6 @@ export default function NotificationsPanel({
       return senderRole === 'admin' && (item.messageId != null || item.sourceType === 'support_reply');
     });
   }, [filtered, currentViewerRole]);
-  const canClearAll = visibleItems.length > 0 && typeof onClearAll === 'function';
 
   /* ===================== RENDER ===================== */
 
@@ -186,30 +176,14 @@ export default function NotificationsPanel({
         <h3 className="text-sm font-semibold text-[#232333] dark:text-dark-text flex-1 truncate transition-colors">
           {t('notificationsPanel.title')}
         </h3>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {canClearAll && (
-            <button
-              type="button"
-              onClick={() => {
-                const idsToClear = new Set(visibleItems.map((item) => item.id));
-                onClearAll?.(visibleItems);
-                setExpandedId(null);
-                setLocalItems((prev) => prev.filter((item) => !idsToClear.has(item.id)));
-              }}
-              className="text-xs px-3 py-1.5 rounded-lg border border-[#D4DAFF] text-[#1d2089] bg-[#F8FAFF] hover:bg-[#EEF3FF] transition-colors"
-            >
-              {t('notificationsPanel.clearAll')}
-            </button>
-          )}
-          {onSearchChange && (
-            <input
-              value={searchTerm}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder={t('notificationsPanel.searchPlaceholder')}
-              className="bg-[#F6F6F6] dark:bg-dark-border text-xs text-[#232333] dark:text-dark-text px-3 py-1.5 rounded-lg border border-[#E8E8E8] dark:border-dark-border flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-[#1d2089] dark:focus:ring-[#60a5fa] transition-colors"
-            />
-          )}
-        </div>
+        {onSearchChange && (
+          <input
+            value={searchTerm}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder={t('notificationsPanel.searchPlaceholder')}
+            className="bg-[#F6F6F6] dark:bg-dark-border text-xs text-[#232333] dark:text-dark-text px-3 py-1.5 rounded-lg border border-[#E8E8E8] dark:border-dark-border flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-[#1d2089] dark:focus:ring-[#60a5fa] transition-colors"
+          />
+        )}
       </div>
 
       {/* MESSAGE LIST - Only vertical scrolling */}

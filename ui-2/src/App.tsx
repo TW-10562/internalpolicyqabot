@@ -25,7 +25,7 @@ import {
 import {
   listNotifications as listAppNotifications,
   markNotificationRead as markAppNotificationRead,
-  deleteNotificationsBatch,
+
 } from './api/notifications';
 import { getToken, logout } from './api/auth';
 import { logoutFromMicrosoft } from './auth/microsoftAuth';
@@ -52,6 +52,8 @@ function AppContent() {
     if (!Array.isArray(messagesList)) return 0;
     return messagesList.filter((msg: any) => {
       if (msg.read) return false;
+      // Never count self-sent messages as unread
+      if (msg.sentByViewer) return false;
       // App notifications and broadcasts are always counted when unread
       if (msg.sourceType === 'app_notification' || msg.is_broadcast) return true;
       if (userRole === 'admin') return msg.senderRole === 'user';
@@ -105,31 +107,6 @@ function AppContent() {
     if (changedM) localStorage.setItem(keys.message, JSON.stringify(Array.from(m)));
     if (changedL) localStorage.setItem(keys.local, JSON.stringify(Array.from(l)));
   };
-  const hideNotificationItems = (items: any[], viewerKey: string) => {
-    const { n, m, l } = getHiddenSets(viewerKey);
-    const keys = getHiddenStorageKeys(viewerKey);
-    let changedN = false;
-    let changedM = false;
-    let changedL = false;
-
-    for (const item of items || []) {
-      if (!item) continue;
-      if (typeof item.notificationId === 'number') {
-        n.add(item.notificationId);
-        changedN = true;
-      } else if (typeof item.messageId === 'number') {
-        m.add(item.messageId);
-        changedM = true;
-      } else if (item.id) {
-        l.add(String(item.id));
-        changedL = true;
-      }
-    }
-
-    if (changedN) localStorage.setItem(keys.notification, JSON.stringify(Array.from(n)));
-    if (changedM) localStorage.setItem(keys.message, JSON.stringify(Array.from(m)));
-    if (changedL) localStorage.setItem(keys.local, JSON.stringify(Array.from(l)));
-  };
   const applyViewerState = (arr: any[], viewerKey: string) => {
     if (!Array.isArray(arr)) return [];
     const hidden = getHiddenSets(viewerKey);
@@ -156,9 +133,12 @@ function AppContent() {
   ) => {
     const messageMap = new Map<string, any>();
 
+    // Exclude messages sent by the current viewer — they should never appear as notifications
+    const notSentByViewer = (msg: any) => !msg.sentByViewer;
+
     if (role === 'admin') {
       const allMessages = [
-        ...inbox.filter((msg) => (msg.senderRole === 'user' && msg.sourceType === 'message') || msg.is_broadcast),
+        ...inbox.filter((msg) => notSentByViewer(msg) && ((msg.senderRole === 'user' && msg.sourceType === 'message') || msg.is_broadcast)),
         ...supportItems.filter((msg) => msg.senderRole === 'user' && msg.sourceType === 'support_ticket'),
         ...appNotifs,
       ];
@@ -169,7 +149,7 @@ function AppContent() {
       }
     } else {
       const allMessages = [
-        ...inbox.filter((msg) => msg.senderRole === 'admin' && msg.sourceType === 'message'),
+        ...inbox.filter((msg) => notSentByViewer(msg) && (msg.senderRole === 'admin' && msg.sourceType === 'message')),
         ...supportItems.filter((msg) => msg.senderRole === 'admin' && msg.sourceType === 'support_reply'),
         ...appNotifs,
       ];
@@ -211,10 +191,12 @@ function AppContent() {
   };
 
   // FIX: Use sender_type from the actual message data instead of assuming by viewer role
-  const mapInboxMessages = (rows: any[], role: 'admin' | 'user') =>
+  const mapInboxMessages = (rows: any[], role: 'admin' | 'user', currentUserId?: number) =>
     (rows || []).map((m: any) => {
       const senderType = String(m.sender_type || '').toLowerCase();
       const actualSenderRole = senderType === 'admin' ? 'admin' : 'user';
+      // Detect if this message was sent by the current viewer using the numeric user ID
+      const sentByViewer = currentUserId != null && Number(m.sender_user_id) === currentUserId;
       return {
         id: `msg-${m.id}`,
         messageId: m.id,
@@ -229,6 +211,7 @@ function AppContent() {
         read: !!m.is_read,
         sourceType: 'message',
         is_broadcast: !!m.is_broadcast,
+        sentByViewer,
         // Mark if sent by the viewer (admin viewing their own sent messages)
         isAdminSent: role === 'admin' && actualSenderRole === 'admin',
         isUserSent: role === 'user' && actualSenderRole === 'user',
@@ -325,7 +308,8 @@ function AppContent() {
       const inboxRes = await fetch('/dev-api/api/messages/inbox', { headers });
       const inboxData = await inboxRes.json();
       if (inboxData?.code === 200 && Array.isArray(inboxData?.result?.messages)) {
-        inboxMapped = mapInboxMessages(inboxData.result.messages, currentUser.role);
+        const currentUserId = inboxData.result.currentUserId != null ? Number(inboxData.result.currentUserId) : undefined;
+        inboxMapped = mapInboxMessages(inboxData.result.messages, currentUser.role, currentUserId);
       }
     } catch (err) {
       console.error('Failed to fetch inbox messages:', err);
@@ -501,41 +485,6 @@ function AppContent() {
     setShowProfile(false);
   };
 
-  const handleClearNotifications = (itemsToClear: any[]) => {
-    if (!user || !Array.isArray(itemsToClear) || itemsToClear.length === 0) return;
-
-    const idsToClear = new Set(itemsToClear.map((item) => String(item?.id || '')));
-
-    // Optimistic UI: remove items immediately
-    const remaining = notifications.filter((item) => !idsToClear.has(String(item?.id || '')));
-    setNotifications(remaining);
-    setUnreadCount(computeNotificationCount(remaining, user.role));
-
-    // Backend delete: app notifications
-    const appNotifIds = itemsToClear
-      .filter((item) => typeof item.notificationId === 'number')
-      .map((item) => item.notificationId as number);
-    if (appNotifIds.length > 0) {
-      deleteNotificationsBatch(appNotifIds).catch(() => {});
-    }
-
-    // Backend delete: inbox messages
-    const messageIds = itemsToClear
-      .filter((item) => typeof item.messageId === 'number')
-      .map((item) => item.messageId as number);
-    if (messageIds.length > 0) {
-      const token = getToken();
-      const headers: Record<string, string> = token
-        ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-        : { 'Content-Type': 'application/json' };
-      fetch('/dev-api/api/messages/delete', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ deleteUserMessages: true, deleteAdminMessages: true }),
-      }).catch(() => {});
-    }
-  };
-
   const getPopupTitle = (): string => {
     if (showProfile) return t('profile.title');
     switch (activeFeature) {
@@ -592,7 +541,6 @@ function AppContent() {
         unreadCount={unreadCount}
         onSendToAll={handleSendToAll}
         onNotificationBellClick={handleNotificationBellClick}
-        onClearNotifications={handleClearNotifications}
       />
 
       <ContactAdminPopup

@@ -11,7 +11,7 @@ import { FILE_UPLOAD_DIR } from '@/config/uploadPath';
 import { config } from '@/config/index';
 import { solrService } from '@/service/solrService';
 import { upsertDocumentMeta } from '@/db/postgresDocumentMeta';
-import { normalizeDepartmentCode } from '@/service/rbac';
+import { normalizeDepartmentCode, DEPARTMENTS, DepartmentCode } from '@/service/rbac';
 
 export interface UploadedFile {
   originalFilename: string;
@@ -36,10 +36,10 @@ class FileUploadService {
     this.uploadDir = FILE_UPLOAD_DIR;
   }
 
-  private normalizeStorageFolder(categoryOrTag?: string): 'HR' | 'GA' | 'ACC' | 'OTHER' {
+  private normalizeStorageFolder(categoryOrTag?: string): DepartmentCode {
     const normalized = normalizeDepartmentCode(categoryOrTag);
-    if (normalized === 'HR' || normalized === 'GA' || normalized === 'ACC' || normalized === 'OTHER') {
-      return normalized;
+    if (DEPARTMENTS.includes(normalized as DepartmentCode)) {
+      return normalized as DepartmentCode;
     }
     return 'OTHER';
   }
