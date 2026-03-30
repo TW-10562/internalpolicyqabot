@@ -24,12 +24,13 @@ def search_process(collection_name, query):
             logger.info(f"[RAG] Raw search results: {raw_result}")
 
         return raw_result
-    except Exception as _:
+    except Exception as e:
+        logger.error(
+            f"[RAG] Error in search_process('{collection_name}'): {e}"
+        )
         if config.APP_MODE == "rag-evaluation":
-            logger.error(
-                f"[RAG] Error in search_process('{collection_name}'), skipping..."
-            )
-            return []
+            logger.error(f"[RAG] Skipping collection '{collection_name}' due to error.")
+        return []
 
 
 def search_rag(req: SearchRequest):

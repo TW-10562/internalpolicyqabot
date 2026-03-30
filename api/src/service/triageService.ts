@@ -7,7 +7,6 @@ import {
   DepartmentCode,
 } from '@/service/rbac';
 import { createNotification } from '@/service/notificationService';
-import { verifyPassword } from '@/service/user';
 import Message from '@/mysql/model/message.model';
 
 export type CreateTriageInput = {
@@ -971,7 +970,9 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
           routingSentiment: routingAnalysis.sentiment,
           routingUrgency: routingAnalysis.urgency,
         },
-      }).catch(() => undefined);
+      }).catch((err) => {
+        console.warn(`[Triage] Failed to notify assignee for ticket #${ticket.id}:`, err?.message || err);
+      });
     }
 
     // Notify requester that escalation was submitted successfully.
@@ -988,7 +989,9 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
         routingSource: routingAnalysis.source,
         routingDepartment: departmentCode,
       },
-    }).catch(() => undefined);
+    }).catch((err) => {
+      console.warn(`[Triage] Failed to notify requester for ticket #${ticket.id}:`, err?.message || err);
+    });
 
     return {
       ...ticket,
@@ -1124,99 +1127,106 @@ export async function updateTriageStatus(
     return null;
   }
 
-  const ticketRes = await pgPool.query(
-    `
-    SELECT id, created_by, department_code, assigned_to
-    FROM triage_tickets
-    WHERE id = $1
-    LIMIT 1
-    `,
-    [ticketId],
-  );
-  const existing = ticketRes.rows[0];
-  if (!existing) return null;
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const ticketDepartment = normalizeDepartmentCode(existing.department_code);
-  if (isDepartmentAdminRole(scope.roleCode) && ticketDepartment !== strictDepartmentForScope(scope)) {
-    return null;
-  }
-
-  let nextAssigned: number | null = existing.assigned_to == null ? null : Number(existing.assigned_to);
-
-  if (assignedTo === null) {
-    // Department admins cannot unassign out of their scope; they claim the ticket.
-    nextAssigned = isSuperAdminRole(scope.roleCode) ? null : scope.userId;
-  } else if (assignedTo != null) {
-    const assigneeId = Number(assignedTo);
-    if (!Number.isFinite(assigneeId) || assigneeId <= 0) {
-      throw new Error('Invalid assignee');
-    }
-    const assigneeRes = await pgPool.query(
+    const ticketRes = await client.query(
       `
-      SELECT user_id, COALESCE(NULLIF(role_code, ''), 'USER') AS role_code, COALESCE(NULLIF(department_code, ''), 'HR') AS department_code
-      FROM "user"
-      WHERE user_id = $1
-        AND deleted_at IS NULL
-      LIMIT 1
-      `,
-      [assigneeId],
-    );
-    const assignee = assigneeRes.rows[0];
-    if (!assignee) throw new Error('Selected admin not found. Please refresh and try again.');
-    const assigneeRole = String(assignee.role_code || '').toUpperCase();
-    const assigneeDept = normalizeDepartmentCode(assignee.department_code);
-    if (!['HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN', 'SUPER_ADMIN'].includes(assigneeRole)) {
-      throw new Error('Selected assignee is not an admin');
-    }
-    if (isDepartmentAdminRole(scope.roleCode)) {
-      if (assigneeRole !== scope.roleCode || assigneeDept !== strictDepartmentForScope(scope)) {
-        throw new Error('Can only assign within your admin role scope');
-      }
-    } else if (!isSuperAdminRole(scope.roleCode)) {
-      throw new Error('Access denied');
-    }
-    nextAssigned = assigneeId;
-  } else if (nextAssigned == null && isDepartmentAdminRole(scope.roleCode)) {
-    nextAssigned = scope.userId;
-  }
-
-  const res = await pgPool.query(
-    `
-    UPDATE triage_tickets
-    SET status = $1, assigned_to = $2, updated_at = NOW()
-    WHERE id = $3
-    RETURNING *
-    `,
-    [status, nextAssigned, ticketId],
-  );
-  const updated = res.rows[0] || null;
-  if (!updated) return null;
-
-  const replyText = String(adminReply || '').trim();
-  if (replyText) {
-    const ownerRes = await pgPool.query(
-      `
-      SELECT created_by, department_code
+      SELECT id, created_by, department_code, assigned_to
       FROM triage_tickets
       WHERE id = $1
-      LIMIT 1
+      FOR UPDATE
       `,
       [ticketId],
     );
-    const owner = ownerRes.rows[0];
-    if (owner?.created_by) {
+    const existing = ticketRes.rows[0];
+    if (!existing) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    const ticketDepartment = normalizeDepartmentCode(existing.department_code);
+    if (isDepartmentAdminRole(scope.roleCode) && ticketDepartment !== strictDepartmentForScope(scope)) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    let nextAssigned: number | null = existing.assigned_to == null ? null : Number(existing.assigned_to);
+
+    if (assignedTo === null) {
+      // Department admins cannot unassign out of their scope; they claim the ticket.
+      nextAssigned = isSuperAdminRole(scope.roleCode) ? null : scope.userId;
+    } else if (assignedTo != null) {
+      const assigneeId = Number(assignedTo);
+      if (!Number.isFinite(assigneeId) || assigneeId <= 0) {
+        throw new Error('Invalid assignee');
+      }
+      const assigneeRes = await client.query(
+        `
+        SELECT user_id, COALESCE(NULLIF(role_code, ''), 'USER') AS role_code, COALESCE(NULLIF(department_code, ''), 'HR') AS department_code
+        FROM "user"
+        WHERE user_id = $1
+          AND deleted_at IS NULL
+        LIMIT 1
+        `,
+        [assigneeId],
+      );
+      const assignee = assigneeRes.rows[0];
+      if (!assignee) throw new Error('Selected admin not found. Please refresh and try again.');
+      const assigneeRole = String(assignee.role_code || '').toUpperCase();
+      const assigneeDept = normalizeDepartmentCode(assignee.department_code);
+      if (!['HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN', 'SUPER_ADMIN'].includes(assigneeRole)) {
+        throw new Error('Selected assignee is not an admin');
+      }
+      if (isDepartmentAdminRole(scope.roleCode)) {
+        if (assigneeRole !== scope.roleCode || assigneeDept !== strictDepartmentForScope(scope)) {
+          throw new Error('Can only assign within your admin role scope');
+        }
+      } else if (!isSuperAdminRole(scope.roleCode)) {
+        throw new Error('Access denied');
+      }
+      nextAssigned = assigneeId;
+    } else if (nextAssigned == null && isDepartmentAdminRole(scope.roleCode)) {
+      nextAssigned = scope.userId;
+    }
+
+    const res = await client.query(
+      `
+      UPDATE triage_tickets
+      SET status = $1, assigned_to = $2, updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+      `,
+      [status, nextAssigned, ticketId],
+    );
+    const updated = res.rows[0] || null;
+
+    await client.query('COMMIT');
+
+    if (!updated) return null;
+
+    const replyText = String(adminReply || '').trim();
+    if (replyText && existing.created_by) {
       await notifyTriageReplyToRequester({
         scope,
         ticketId,
-        targetUserId: Number(owner.created_by),
-        fallbackDepartmentCode: normalizeDepartmentCode(owner.department_code),
+        targetUserId: Number(existing.created_by),
+        fallbackDepartmentCode: ticketDepartment,
         reply: replyText,
         status,
-      }).catch(() => undefined);
+      }).catch((err) => {
+        console.warn(`[Triage] Failed to notify reply for ticket #${ticketId}:`, err?.message || err);
+      });
     }
-  }
 
-  return updated;
+    return updated;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function sendTriageReply(scope: AccessScope, ticketId: number, replyText: string) {
@@ -1250,6 +1260,8 @@ export async function sendTriageReply(scope: AccessScope, ticketId: number, repl
     targetUserId: Number(ticket.created_by),
     fallbackDepartmentCode: normalizeDepartmentCode(ticket.department_code),
     reply,
+  }).catch((err) => {
+    console.warn(`[Triage] Failed to notify reply for ticket #${ticket.id}:`, err?.message || err);
   });
 
   return { ticketId: Number(ticket.id), repliedTo: Number(ticket.created_by) };
@@ -1282,32 +1294,6 @@ export async function getTriageSummary(scope: AccessScope) {
     totalCount: Number(row.total_count || 0),
     openCount: Number(row.open_count || 0),
   };
-}
-
-async function validateScopePassword(scope: AccessScope, adminPassword: string, client: { query: (...args: any[]) => Promise<any> }) {
-  const password = String(adminPassword || '');
-  if (!password.trim()) {
-    throw new Error('Account password is required');
-  }
-
-  const userRes = await client.query(
-    `
-    SELECT password
-    FROM "user"
-    WHERE user_id = $1
-      AND deleted_at IS NULL
-    LIMIT 1
-    `,
-    [scope.userId],
-  );
-  const user = userRes.rows[0];
-  if (!user) {
-    throw new Error('Account not found');
-  }
-  const ok = await verifyPassword(password, String(user.password || ''));
-  if (!ok) {
-    throw new Error('Invalid account password');
-  }
 }
 
 export async function purgeTriageTickets(scope: AccessScope) {

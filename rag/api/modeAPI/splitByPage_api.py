@@ -56,7 +56,7 @@ async def upload_pdf_pages_stored_in_solr(
             documents = [
                 chunk for chunk in chunks if chunk is not None and chunk.strip()
             ]
-            embeddings = [embed_text(chunk) for chunk in chunks]
+            embeddings = [embed_text(chunk) for chunk in documents]
             relative_path = page.file_path_s if page.file_path_s else ""
             relative_path = relative_path[relative_path.find("uploads") :]
             metadatas: list[Metadata] = [

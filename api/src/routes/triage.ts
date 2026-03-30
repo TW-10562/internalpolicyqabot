@@ -22,11 +22,11 @@ router.post('/tickets', async (ctx: any) => {
   const schema = Joi.object({
     conversationId: Joi.string().allow('', null).optional(),
     messageId: Joi.string().allow('', null).optional(),
-    userQueryOriginal: Joi.string().required(),
-    assistantAnswer: Joi.string().required(),
-    issueType: Joi.string().required(),
-    userComment: Joi.string().required(),
-    expectedAnswer: Joi.string().allow('', null).optional(),
+    userQueryOriginal: Joi.string().max(50000).required(),
+    assistantAnswer: Joi.string().max(50000).required(),
+    issueType: Joi.string().max(200).required(),
+    userComment: Joi.string().max(50000).required(),
+    expectedAnswer: Joi.string().max(50000).allow('', null).optional(),
     retrievedSourceIds: Joi.array().items(Joi.string()).optional(),
     retrievalQueryUsed: Joi.string().allow('', null).optional(),
     modelName: Joi.string().allow('', null).optional(),
@@ -67,6 +67,10 @@ router.post('/tickets', async (ctx: any) => {
 
 router.get('/assignees', async (ctx: any) => {
   const scope = (ctx.state?.accessScope || {}) as AccessScope;
+  if (!(isSuperAdminRole(scope.roleCode) || isDepartmentAdminRole(scope.roleCode))) {
+    ctx.body = fail('FORBIDDEN', 'Only admins can list assignees');
+    return;
+  }
   const departmentCode = String(ctx.query?.departmentCode || '').trim();
   try {
     const rows = await listTriageAssignees(scope, departmentCode || undefined);

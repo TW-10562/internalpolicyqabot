@@ -47,7 +47,7 @@ export default function FAQPage({ user }: { user?: UserType }) {
   const [minCountUsed, setMinCountUsed] = useState<number>(1);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const allowedDepts = getAllowedFaqDepartments(user?.roleCode);
+  const allowedDepts = useMemo(() => getAllowedFaqDepartments(user?.roleCode), [user?.roleCode]);
   const [deptFilter, setDeptFilter] = useState<string>('ALL');
   const [sortMode, setSortMode] = useState<'freq' | 'recent'>('freq');
   const toDepartmentLabel = (code?: string) => {

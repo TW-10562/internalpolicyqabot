@@ -583,6 +583,7 @@ export async function resetSystemPermanently(
       `[SystemReset] tables_truncated count=${truncated.tables.length}`,
     );
     await ensureBaseRolesAndDepartments(client);
+    await seedDefaultAdmin(client);
 
     await client.query('COMMIT');
 

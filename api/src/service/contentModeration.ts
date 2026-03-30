@@ -9,7 +9,6 @@ export type ModerationCategory =
   | 'self_harm'
   | 'violence'
   | 'company_directed_abuse'
-  | 'company_or_project_abuse'
   | 'hate_or_discrimination'
   | 'sexual_harassment_or_abuse';
 
@@ -107,7 +106,6 @@ const CATEGORY_SET = new Set<ModerationCategory>([
   'self_harm',
   'violence',
   'company_directed_abuse',
-  'company_or_project_abuse',
   'hate_or_discrimination',
   'sexual_harassment_or_abuse',
 ]);
@@ -461,9 +459,9 @@ const RULES: RuleDef[] = [
     severity: 5,
     target: 'compact',
     patterns: [
-      /(?:殴る|刺す|殺す|攻撃する|爆破する|毒を盛る).{0,8}(方法|やり方)?/,
+      /(?:殴る|刺す|殺す|攻撃する|爆破する|毒を盛る).{0,8}(方法|やり方)/,
       /(?:人を|あいつを|上司を|同僚を).{0,8}(殴る|刺す|殺す|攻撃する)/,
-      /(?:ころす|なぐる|さす)/,
+      /(?:ころす|なぐる)/,
     ],
   },
   {

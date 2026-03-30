@@ -237,6 +237,9 @@ def get_ranked_results(
         texts: List[str] = [p.page_content for p in passages]  # type: ignore
     elif isinstance(passages[0], ChromaDBSearchResultItem):
         texts: List[str] = [p.content for p in passages]  # type: ignore
+    else:
+        logger.warning(f"Unknown passage type: {type(passages[0])}. Returning original order.")
+        return passages[: top_n or len(passages)]
 
     bsz = _guess_batch_size(len(texts))
     scores: Tensor = _predict_scores(query, texts, MAX_LENGTH, bsz)  # shape=[N]

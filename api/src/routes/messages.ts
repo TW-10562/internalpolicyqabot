@@ -94,9 +94,14 @@ async function markBroadcastReadForUser(userId: number, messageId: number): Prom
 async function markBroadcastsReadBulk(userId: number, messageIds: number[]): Promise<void> {
   if (messageIds.length === 0) return;
   try {
-    const values = messageIds.map((mid) => `(${Number(userId)}, ${Number(mid)}, NOW())`).join(',');
+    const params: (number)[] = [];
+    const valuePlaceholders = messageIds.map((mid) => {
+      params.push(Number(userId), Number(mid));
+      return `($${params.length - 1}, $${params.length}, NOW())`;
+    }).join(',');
     await pgPool.query(
-      `INSERT INTO message_reads (user_id, message_id, read_at) VALUES ${values} ON CONFLICT (user_id, message_id) DO NOTHING`,
+      `INSERT INTO message_reads (user_id, message_id, read_at) VALUES ${valuePlaceholders} ON CONFLICT (user_id, message_id) DO NOTHING`,
+      params,
     );
   } catch (err) {
     console.warn('[Messages] Bulk message_reads insert failed:', err);
@@ -471,7 +476,11 @@ const purgeMessagesHandler = async (ctx: any) => {
     } as any;
 
     const deletedCount = await Message.destroy({ where });
-    const remainingCount = await Message.count({ where });
+    const remainingCount = await Message.count({
+      where: {
+        department_code: isSuperAdminRole(scope.roleCode) ? { [Op.in]: [...DEPARTMENTS] } : scope.departmentCode,
+      },
+    });
 
     console.log(`[Messages] Permanently deleted ${deletedCount} messages from database. Remaining matching: ${remainingCount}`);
 

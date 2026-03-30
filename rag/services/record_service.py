@@ -10,19 +10,21 @@ def delete_document(req: DeleteRequest):
 
 def update_document(req: UpdateRequest):
     collection = chroma_db.get_collection(name=req.collection_name)
-    clean_text = process_text(req.new_text)
-    embedding = embed_text(clean_text)
 
-    collection.delete(ids=[req.id])
+    clean_documents = [process_text(doc) for doc in req.documents]
+    embeddings = [embed_text(doc) for doc in clean_documents]
+
+    collection.delete(ids=req.ids)
 
     collection.add(
-        ids=[req.id],
-        documents=[clean_text],
-        embeddings=[embedding]
+        ids=req.ids,
+        documents=clean_documents,
+        embeddings=embeddings,
+        metadatas=req.metadatas,
     )
 
     return {
         "status": "updated",
         "collection": req.collection_name,
-        "id": req.id
+        "ids": req.ids
     }

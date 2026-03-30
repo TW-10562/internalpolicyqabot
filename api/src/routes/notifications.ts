@@ -65,6 +65,12 @@ router.get('/', async (ctx: any) => {
 });
 
 router.post('/', async (ctx: any) => {
+  const scope = (ctx.state?.accessScope || {}) as AccessScope;
+  if (!isSuperAdminRole(scope.roleCode) && !isDepartmentAdminRole(scope.roleCode)) {
+    ctx.body = fail('FORBIDDEN', 'Only admins can create notifications');
+    return;
+  }
+
   const schema = Joi.object({
     userId: Joi.number().integer().min(1).optional(),
     departmentCode: Joi.string().valid(...DEPARTMENTS).optional(),
@@ -89,7 +95,6 @@ router.post('/', async (ctx: any) => {
   }
 
   const actorUserId = Number(ctx.state?.user?.userId);
-  const scope = (ctx.state?.accessScope || {}) as AccessScope;
   const targetUserId = value.userId == null ? null : Number(value.userId);
   const targetDepartment = isSuperAdminRole(scope.roleCode)
     ? normalizeDepartmentCode(value.departmentCode || scope.departmentCode)

@@ -1,7 +1,7 @@
 from typing import Dict, List, Literal, Optional
 from typing_extensions import Self
 from core.logging import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SearchRequest(BaseModel):
@@ -56,11 +56,11 @@ class HybridSearchRequest(BaseModel):
     @model_validator(mode="after")
     def validate_search_params(self) -> Self:
         if self.vector_only and self.bm25_only:
-            raise ValidationError("vector_only and bm25_only cannot both be true.")
+            raise ValueError("vector_only and bm25_only cannot both be true.")
 
         if not self.vector_only and not self.bm25_only:
-            if (total_weight := (self.vector_weight + self.bm25_weight)) != 1.0:
-                raise ValidationError(
+            if abs((total_weight := (self.vector_weight + self.bm25_weight)) - 1.0) > 1e-9:
+                raise ValueError(
                     f"The sum of vector_weight and bm25_weight must be 1.0, got {total_weight}."
                 )
 
@@ -139,6 +139,7 @@ class ArticleBasedSplitRecordMetadataModel(BaseModel):
     def build_hierarchy_label(self) -> str:
         md = self.to_dict()
         doc_name = md.get("DocumentName")
+        title = ""
 
         if doc_name and doc_name != "<|None|>":
             title = doc_name

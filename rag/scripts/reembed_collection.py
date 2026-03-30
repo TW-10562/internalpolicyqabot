@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     project_root = Path(__file__).resolve().parents[2]
     rag_root = project_root / "rag"
     default_db_path = rag_root / "app" / "rag_db"
-    default_model = "Qwen/Qwen3-VL-Embedding-8B"
+    default_model = "Qwen/Qwen3-Embedding-8B"
     default_model_dir = rag_root / "data" / "model" / default_model.replace("/", "_")
 
     parser = argparse.ArgumentParser(
