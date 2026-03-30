@@ -1,11 +1,17 @@
 /**
  * Messages API Routes - User-Admin Communication
+ *
+ * Read-state strategy:
+ *   - Direct (single-recipient) messages: shared `is_read` flag on the message row.
+ *   - Broadcast messages: per-user tracking via `message_reads` table in PostgreSQL.
+ *     The shared `is_read` on the broadcast row is never mutated by readers.
  */
 import Router from 'koa-router';
 import Message from '@/mysql/model/message.model';
 import { Op } from 'sequelize';
 import { requireScopedAccess } from '@/controller/auth';
 import { AccessScope, isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
+import { pgPool } from '@/clients/postgres';
 
 const router = new Router({ prefix: '/api/messages' });
 router.use(requireScopedAccess);
@@ -28,6 +34,173 @@ const getUserRecipientIds = (user: any, scope: AccessScope) =>
       ].filter((value) => value.length > 0),
     ),
   );
+
+/* ------------------------------------------------------------------ */
+/*  Per-user broadcast read-state helpers (PostgreSQL message_reads)   */
+/* ------------------------------------------------------------------ */
+
+/** Return the set of broadcast message IDs that `userId` has already read. */
+async function getReadBroadcastIds(userId: number, messageIds: number[]): Promise<Set<number>> {
+  const readSet = new Set<number>();
+  if (messageIds.length === 0) return readSet;
+  try {
+    const res = await pgPool.query(
+      `SELECT message_id FROM message_reads WHERE user_id = $1 AND message_id = ANY($2::int[])`,
+      [userId, messageIds],
+    );
+    for (const r of res.rows) readSet.add(Number(r.message_id));
+  } catch {
+    // Table may not exist yet – fall back to shared is_read (no-op: readSet stays empty)
+  }
+  return readSet;
+}
+
+/**
+ * Overlay per-user read state onto fetched messages.
+ * - Direct messages: `is_read` from the DB row is authoritative.
+ * - Broadcast messages: `message_reads` table is authoritative.
+ */
+async function overlayBroadcastReadState(userId: number, messages: any[]): Promise<any[]> {
+  const broadcastIds = messages
+    .filter((m) => m.is_broadcast)
+    .map((m) => Number(m.id))
+    .filter(Number.isFinite);
+
+  if (broadcastIds.length === 0) return messages;
+
+  const readSet = await getReadBroadcastIds(userId, broadcastIds);
+
+  return messages.map((m) => {
+    if (m.is_broadcast) {
+      return { ...m, is_read: readSet.has(Number(m.id)) };
+    }
+    return m;
+  });
+}
+
+/** Insert a per-user read entry for a broadcast message. */
+async function markBroadcastReadForUser(userId: number, messageId: number): Promise<void> {
+  try {
+    await pgPool.query(
+      `INSERT INTO message_reads (user_id, message_id, read_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id, message_id) DO NOTHING`,
+      [userId, messageId],
+    );
+  } catch (err) {
+    console.warn('[Messages] Failed to insert message_reads:', err);
+  }
+}
+
+/** Bulk-insert per-user read entries for multiple broadcast messages. */
+async function markBroadcastsReadBulk(userId: number, messageIds: number[]): Promise<void> {
+  if (messageIds.length === 0) return;
+  try {
+    const values = messageIds.map((mid) => `(${Number(userId)}, ${Number(mid)}, NOW())`).join(',');
+    await pgPool.query(
+      `INSERT INTO message_reads (user_id, message_id, read_at) VALUES ${values} ON CONFLICT (user_id, message_id) DO NOTHING`,
+    );
+  } catch (err) {
+    console.warn('[Messages] Bulk message_reads insert failed:', err);
+  }
+}
+
+/**
+ * Enrich messages with sender email/name from the user table.
+ * The messages table stores sender_id which may be a numeric userId.
+ * This looks up the actual email and user_name so the frontend can display them.
+ */
+async function enrichSenderInfo(messages: any[]): Promise<any[]> {
+  const senderUserIds = [...new Set(
+    messages.map((m) => Number(m.sender_user_id)).filter(Number.isFinite),
+  )];
+  if (senderUserIds.length === 0) return messages;
+
+  const senderMap = new Map<number, { user_name: string; email: string }>();
+  try {
+    const res = await pgPool.query(
+      `SELECT user_id, user_name, COALESCE(email, '') AS email
+       FROM "user" WHERE user_id = ANY($1::bigint[])`,
+      [senderUserIds],
+    );
+    for (const r of res.rows) {
+      senderMap.set(Number(r.user_id), { user_name: r.user_name, email: r.email });
+    }
+    // Fall back to sys_user for any IDs not found in "user" table
+    const missing = senderUserIds.filter((id) => !senderMap.has(id));
+    if (missing.length > 0) {
+      const res2 = await pgPool.query(
+        `SELECT user_id, user_name, COALESCE(email, '') AS email
+         FROM sys_user WHERE user_id = ANY($1::bigint[])`,
+        [missing],
+      );
+      for (const r of res2.rows) {
+        senderMap.set(Number(r.user_id), { user_name: r.user_name, email: r.email });
+      }
+    }
+  } catch {
+    // If lookup fails, fall back to existing sender_id values
+  }
+
+  return messages.map((m) => {
+    const info = senderMap.get(Number(m.sender_user_id));
+    return {
+      ...m,
+      sender_email: info?.email || '',
+      sender_name: info?.user_name || m.sender_id,
+    };
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Where-clause builders (audience logic – unchanged from prior fix)  */
+/* ------------------------------------------------------------------ */
+
+function buildInboxWhere(scope: AccessScope, user: any) {
+  const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
+  if (isAdmin) {
+    return {
+      department_code: getDepartmentFilter(scope),
+      [Op.or]: [
+        { recipient_type: 'admin', sender_type: 'user' },
+        { sender_user_id: scope.userId, sender_type: 'admin' },
+        { is_broadcast: true, sender_type: 'admin' },
+      ],
+    };
+  }
+  const recipientIds = getUserRecipientIds(user, scope);
+  return {
+    [Op.or]: [
+      {
+        department_code: scope.departmentCode,
+        recipient_id: { [Op.in]: recipientIds },
+        recipient_type: 'user',
+        sender_type: 'admin',
+      },
+      { is_broadcast: true, sender_type: 'admin' },
+    ],
+  };
+}
+
+function buildDirectWhere(scope: AccessScope, user: any) {
+  const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
+  if (isAdmin) {
+    return {
+      recipient_type: 'admin',
+      sender_type: 'user',
+      department_code: getDepartmentFilter(scope),
+    };
+  }
+  const recipientIds = getUserRecipientIds(user, scope);
+  return {
+    department_code: scope.departmentCode,
+    recipient_id: { [Op.in]: recipientIds },
+    recipient_type: 'user',
+    sender_type: 'admin',
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Routes                                                             */
+/* ------------------------------------------------------------------ */
 
 // POST /send - Send message
 router.post('/send', async (ctx: any) => {
@@ -90,40 +263,24 @@ router.post('/broadcast', async (ctx: any) => {
   }
 });
 
-// GET /inbox - Get messages for user
+// GET /inbox - Get messages for user, with per-user broadcast read state
 router.get('/inbox', async (ctx: any) => {
   try {
     const user = getCurrentUser(ctx);
     const scope = (ctx.state?.accessScope || {}) as AccessScope;
-    const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
-
-    let where;
-    if (isAdmin) {
-      // Admin sees:
-      // 1. All user queries sent to admin
-      // 2. All messages sent by admin (their own sent messages)
-      where = {
-        department_code: getDepartmentFilter(scope),
-        [Op.or]: [
-          { recipient_type: 'admin', sender_type: 'user' },
-          { sender_user_id: scope.userId, sender_type: 'admin' },
-        ],
-      };
-    } else {
-      const recipientIds = getUserRecipientIds(user, scope);
-      // Users must only see direct admin-to-user messages addressed to them.
-      where = {
-        department_code: scope.departmentCode,
-        recipient_id: { [Op.in]: recipientIds },
-        recipient_type: 'user',
-        sender_type: 'admin',
-      };
-    }
+    const where = buildInboxWhere(scope, user);
 
     const messages = await Message.findAll({ where, order: [['created_at', 'DESC']], limit: 50 });
-    const unreadCount = await Message.count({ where: { ...where, is_read: false } });
+    const plain = messages.map((m: any) => (m.get ? m.get({ plain: true }) : m));
 
-    ctx.body = { code: 200, result: { messages, unreadCount } };
+    // Overlay per-user read state for broadcast messages
+    const withReadState = await overlayBroadcastReadState(scope.userId, plain);
+
+    // Enrich with sender email/name from the user table
+    const enriched = await enrichSenderInfo(withReadState);
+    const unreadCount = enriched.filter((m: any) => !m.is_read).length;
+
+    ctx.body = { code: 200, result: { messages: enriched, unreadCount } };
   } catch (err) {
     console.error('[Messages] Inbox error:', err);
     ctx.body = { code: 500, message: 'Failed to fetch messages' };
@@ -169,59 +326,73 @@ router.get('/broadcast/history', async (ctx: any) => {
   }
 });
 
-// GET /unread-count
+// GET /unread-count  (per-user aware)
 router.get('/unread-count', async (ctx: any) => {
   try {
     const user = getCurrentUser(ctx);
     const scope = (ctx.state?.accessScope || {}) as AccessScope;
-    const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
 
-    let where;
-    if (isAdmin) {
-      where = {
-        recipient_type: 'admin',
-        sender_type: 'user',
-        is_read: false,
-        department_code: getDepartmentFilter(scope),
-      };
-    } else {
-      const recipientIds = getUserRecipientIds(user, scope);
-      where = {
-        is_read: false,
-        department_code: scope.departmentCode,
-        recipient_id: { [Op.in]: recipientIds },
-        recipient_type: 'user',
-        sender_type: 'admin',
-      };
-    }
+    // Direct messages: shared is_read is correct for single-recipient
+    const directUnread = await Message.count({
+      where: { ...buildDirectWhere(scope, user), is_read: false, is_broadcast: false },
+    });
 
-    const count = await Message.count({ where });
-    ctx.body = { code: 200, result: { count } };
+    // Broadcast messages: per-user read state from message_reads
+    const broadcasts = await Message.findAll({
+      raw: true,
+      attributes: ['id'],
+      where: { is_broadcast: true, sender_type: 'admin' },
+    });
+    const broadcastIds = broadcasts.map((b: any) => Number(b.id)).filter(Number.isFinite);
+    const readBroadcastSet = await getReadBroadcastIds(scope.userId, broadcastIds);
+    const broadcastUnread = broadcastIds.filter((id) => !readBroadcastSet.has(id)).length;
+
+    ctx.body = { code: 200, result: { count: directUnread + broadcastUnread } };
   } catch (err) {
     ctx.body = { code: 500, result: { count: 0 } };
   }
 });
 
-// PUT /mark-read/:id
+// PUT /mark-read/:id  (per-user for broadcasts, shared for direct)
 router.put('/mark-read/:id', async (ctx: any) => {
   try {
     const user = getCurrentUser(ctx);
     const scope = (ctx.state?.accessScope || {}) as AccessScope;
-    const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
-    const { id } = ctx.params;
+    const messageId = Number(ctx.params?.id);
 
-    let where: any;
+    if (!Number.isFinite(messageId)) {
+      ctx.body = { code: 400, message: 'Invalid id' };
+      return;
+    }
+
+    // Peek at the message to decide which read-state path to use
+    const msg = await Message.findByPk(messageId, { raw: true, attributes: ['id', 'is_broadcast'] });
+    if (!msg) {
+      ctx.body = { code: 404, message: 'Not found' };
+      return;
+    }
+
+    if ((msg as any).is_broadcast) {
+      // Broadcast: per-user read tracking – never mutate the shared row
+      await markBroadcastReadForUser(scope.userId, messageId);
+      ctx.body = { code: 200, message: 'Marked as read' };
+      return;
+    }
+
+    // Direct message: update shared is_read (existing authorization logic)
+    const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
+    let authWhere: any;
     if (isAdmin) {
-      where = {
-        id,
+      authWhere = {
+        id: messageId,
         recipient_type: 'admin',
         sender_type: 'user',
         department_code: getDepartmentFilter(scope),
       };
     } else {
       const recipientIds = getUserRecipientIds(user, scope);
-      where = {
-        id,
+      authWhere = {
+        id: messageId,
         department_code: scope.departmentCode,
         recipient_id: { [Op.in]: recipientIds },
         recipient_type: 'user',
@@ -229,41 +400,31 @@ router.put('/mark-read/:id', async (ctx: any) => {
       };
     }
 
-    await Message.update(
-      { is_read: true },
-      { where },
-    );
+    await Message.update({ is_read: true }, { where: authWhere });
     ctx.body = { code: 200, message: 'Marked as read' };
   } catch (err) {
     ctx.body = { code: 500, message: 'Failed' };
   }
 });
 
-// PUT /mark-all-read
+// PUT /mark-all-read  (per-user for broadcasts, shared for direct)
 router.put('/mark-all-read', async (ctx: any) => {
   try {
     const user = getCurrentUser(ctx);
     const scope = (ctx.state?.accessScope || {}) as AccessScope;
-    const isAdmin = isDepartmentAdminRole(scope.roleCode) || isSuperAdminRole(scope.roleCode);
 
-    let where;
-    if (isAdmin) {
-      where = {
-        recipient_type: 'admin',
-        sender_type: 'user',
-        department_code: getDepartmentFilter(scope),
-      };
-    } else {
-      const recipientIds = getUserRecipientIds(user, scope);
-      where = {
-        department_code: scope.departmentCode,
-        recipient_id: { [Op.in]: recipientIds },
-        recipient_type: 'user',
-        sender_type: 'admin',
-      };
-    }
+    // 1. Direct messages: update shared is_read flag
+    await Message.update({ is_read: true }, { where: buildDirectWhere(scope, user) });
 
-    await Message.update({ is_read: true }, { where });
+    // 2. Broadcast messages: bulk-insert per-user read entries
+    const broadcasts = await Message.findAll({
+      raw: true,
+      attributes: ['id'],
+      where: { is_broadcast: true, sender_type: 'admin' },
+    });
+    const broadcastIds = broadcasts.map((b: any) => Number(b.id)).filter(Number.isFinite);
+    await markBroadcastsReadBulk(scope.userId, broadcastIds);
+
     ctx.body = { code: 200, message: 'All marked as read' };
   } catch (err) {
     ctx.body = { code: 500, message: 'Failed' };
@@ -302,23 +463,17 @@ const purgeMessagesHandler = async (ctx: any) => {
       ...(whereConditions.length > 1 ? { [Op.or]: whereConditions } : whereConditions[0]),
     } as any;
 
-    // Permanently delete messages (hard delete - Sequelize destroy is hard delete by default)
-    // This completely removes all matching messages from the database
-    const deletedCount = await Message.destroy({ 
-      where
-    });
-    
-    // Verify deletion by counting remaining messages of the same type
+    const deletedCount = await Message.destroy({ where });
     const remainingCount = await Message.count({ where });
-    
+
     console.log(`[Messages] Permanently deleted ${deletedCount} messages from database. Remaining matching: ${remainingCount}`);
 
-    ctx.body = { 
-      code: 200, 
+    ctx.body = {
+      code: 200,
       message: 'Messages deleted permanently',
-      result: { 
+      result: {
         deletedCount,
-        remainingCount: remainingCount // For verification
+        remainingCount,
       }
     };
   } catch (err) {

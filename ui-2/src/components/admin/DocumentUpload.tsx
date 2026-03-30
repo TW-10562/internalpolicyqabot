@@ -81,7 +81,7 @@ export default function DocumentUpload({
   }, [uploadProgress, uploadingFiles.length]);
 
   const pipelineSteps = useMemo((): { labelKey: string; status: PipelineStatus }[] => {
-    const { total, uploading, indexing, success, error, done } = fileCounts;
+    const { total, uploading, indexing, error, done } = fileCounts;
     if (total === 0 || !isUploading && done === 0) {
       return [
         { labelKey: 'documentTable.pipeline.upload', status: 'pending' },
@@ -407,24 +407,6 @@ export default function DocumentUpload({
             {t('documentTable.pipelineStatusPending')}
           </span>
         );
-    }
-  };
-
-  const getProgressBarWidth = (status: PipelineStatus) => {
-    switch (status) {
-      case 'completed': return 'w-full';
-      case 'in-progress': return 'w-2/3';
-      case 'failed': return 'w-full';
-      default: return 'w-0';
-    }
-  };
-
-  const getProgressBarColor = (status: PipelineStatus) => {
-    switch (status) {
-      case 'completed': return 'bg-green-500';
-      case 'in-progress': return 'bg-blue-500';
-      case 'failed': return 'bg-red-400';
-      default: return 'bg-surface-alt';
     }
   };
 

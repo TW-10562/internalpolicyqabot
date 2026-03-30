@@ -871,18 +871,47 @@ const enforcePromptTokenLimit = (prompt: string, maxTokens: number): string => {
   return `${prefix}${trimmedContext}`.trim();
 };
 
-export const buildPrompt = (args: {
+export const buildPrompt = async (args: {
   query: string;
   chunks: any[];
   maxContextTokens?: number;
-}): { prompt: string; promptTokens: number; contextTokens: number; sources: ContextSource[] } => {
+}): Promise<{ prompt: string; promptTokens: number; contextTokens: number; sources: ContextSource[] }> => {
   const maxContextTokens = Math.max(256, Number(args.maxContextTokens || RAG_CONTEXT_MAX_TOKENS));
   const queryText = String(args.query || '').trim();
   const rows = (Array.isArray(args.chunks) ? args.chunks : []).slice(0, RAG_MAX_EVIDENCE_CHUNKS);
   const contextBlocks: string[] = [];
   const sources: ContextSource[] = [];
+  // Resolve storage-key-style document names (e.g. "wLT0NiMVrzhLVyUr2SPbp")
+  // to actual filenames using the database. This is needed because vector-only
+  // retrieval from Chroma stores storage keys as DocumentName, not filenames.
+  let resolvedFileNames: Map<string, string> | null = null;
+  const storageKeyPattern = /^[A-Za-z0-9_-]{15,}$/;
+  const needsResolution = rows.some((row) => {
+    const name = String((Array.isArray(row?.title) ? row.title[0] : row?.title) || row?.file_name_s || '');
+    return storageKeyPattern.test(name);
+  });
+  if (needsResolution) {
+    try {
+      const File = (await import('@/mysql/model/file.model')).default;
+      const files = await File.findAll({ attributes: ['storage_key', 'filename'], raw: true }) as any[];
+      resolvedFileNames = new Map<string, string>();
+      for (const f of files) {
+        const key = String(f.storage_key || '').trim();
+        const parts = key.split('/');
+        const shortKey = parts[parts.length - 1].replace(/\.[^.]+$/, '');
+        resolvedFileNames.set(shortKey, String(f.filename || ''));
+        resolvedFileNames.set(key, String(f.filename || ''));
+      }
+    } catch {
+      resolvedFileNames = null;
+    }
+  }
+
   for (const row of rows) {
-    const title = String((Array.isArray(row?.title) ? row.title[0] : row?.title) || row?.file_name_s || 'Document');
+    let title = String((Array.isArray(row?.title) ? row.title[0] : row?.title) || row?.file_name_s || 'Document');
+    if (resolvedFileNames && storageKeyPattern.test(title)) {
+      title = resolvedFileNames.get(title) || title;
+    }
     const sectionTitle = getSectionTitle(row);
     const articleNumber = String(row?.article_number_s || row?.article_number || '').trim();
     const pageNumber = Number(row?.page_number_i ?? row?.page_i ?? row?.page);
@@ -1602,16 +1631,22 @@ export const runRagPipeline = async (
   );
 
   if (docs.length > 0) {
-    const filtered = filterChunks({
-      docs,
-      query: retrievalSignalQuery,
-      topScore,
-      queryLanguage: userLanguage,
-      minTermOverlap: RAG_MIN_TERM_OVERLAP_STRICT,
-      minSemanticSimilarity: RAG_MIN_SEMANTIC_SIMILARITY,
-      logger: log,
-    });
-    docs = filtered.chunks.map((chunk) => chunk.row);
+    // When all docs come from vector retrieval (no Solr), skip the chunk
+    // relevance filter — vector similarity already ensures relevance, and the
+    // keyword-based filter rejects valid cross-language matches.
+    const allFromVector = docs.every((doc) => Number(doc?.vector_similarity || doc?.semantic_score || 0) > 0);
+    const filtered = allFromVector
+      ? { chunks: docs.map((row) => ({ row, docId: String(row?.file_name_s || row?.id || ''), chunkId: String(row?.chunk_id_s || row?.id || ''), docRelevanceScore: 0, chunkRelevanceScore: Number(row?.semantic_score || row?.score || 0), termOverlap: 0, semanticScore: Number(row?.semantic_score || row?.score || 0), sectionMismatch: false, crossLanguageMatch: true, docLanguage: 'ja' as const })), filteredCount: 0, mode: 'vector_passthrough' as const, keptCount: docs.length }
+      : filterChunks({
+          docs,
+          query: retrievalSignalQuery,
+          topScore,
+          queryLanguage: userLanguage,
+          minTermOverlap: RAG_MIN_TERM_OVERLAP_STRICT,
+          minSemanticSimilarity: RAG_MIN_SEMANTIC_SIMILARITY,
+          logger: log,
+        });
+    docs = filtered.chunks.map((chunk: any) => chunk.row);
     if (filtered.filteredCount > 0) {
       log(
         `[RAG] filtered_chunks ${JSON.stringify({
@@ -1957,7 +1992,7 @@ export const runRagPipeline = async (
     const promptContextTokenLimit = proceduralQuery
       ? Math.min(RAG_CONTEXT_MAX_TOKENS, 900)
       : RAG_CONTEXT_MAX_TOKENS;
-    const builtPrompt = buildPrompt({
+    const builtPrompt = await buildPrompt({
       query: String(input.query || input.prompt || '').trim(),
       chunks: docs,
       maxContextTokens: promptContextTokenLimit,
@@ -2001,8 +2036,13 @@ export const runRagPipeline = async (
 
   const hasRetrievedContext = /(?:RETRIEVED\s+)?DOCUMENT CONTEXT:/i.test(String(prompt || ''));
   const systemPrompt = buildEnterpriseRagSystemPrompt(userLanguage, hasRetrievedContext);
+  // Skip the low-confidence block when docs come from vector retrieval.
+  // Vector similarity scores (0-1) produce low confidence values that would
+  // always trigger this gate, even though the docs are semantically relevant.
+  const allDocsFromVector = docs.length > 0 && docs.every((doc) => Number(doc?.vector_similarity || doc?.semantic_score || 0) > 0);
   const generationBlockedLowConfidence =
     !fastAnswerApplied &&
+    !allDocsFromVector &&
     docs.length > 0 &&
     hasRetrievedContext &&
     (

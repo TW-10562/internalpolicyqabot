@@ -11,6 +11,7 @@ import { queryConditionsData } from '@/service';
 import { handleAddGenTask } from '@/service/genTaskService';
 import { createChatStreamSubscriber } from '@/service/chatStreamService';
 import { recordFeedbackEvent } from '@/service/analyticsService';
+import { config } from '@/config/index';
 import { detectLanguage } from '@/utils/languageDetector';
 import { classifyQueryIntent, QueryIntent } from '@/utils/queryIntentClassifier';
 import { isDepartmentAdminRole, isSuperAdminRole } from '@/service/rbac';
@@ -645,7 +646,9 @@ export const sendFeedbackToCache = async (ctx: any, next: () => Promise<void>) =
     let faqCacheResult: any = null;
     let faqCacheMessage = '';
 
-    if (query && answer) {
+    const faqCacheEnabled = process.env.USE_FAQ_CACHE === 'true' || config.RAG.useFaqCache === true;
+
+    if (faqCacheEnabled && query && answer) {
       const feedbackData = {
         cache_signal,
         query,

@@ -271,9 +271,11 @@
       "firstName": "First Name",
       "lastName": "Last Name",
       "employeeId": "Employee ID",
+      "employeeCode": "Employee ID",
       "userJobRole": "User Job Role",
       "areaOfWork": "Area of Work",
       "role": "Role",
+      "email": "Email",
       "username": "Username",
       "password": "Password",
       "lastUpdated": "Last Updated",
@@ -387,7 +389,18 @@
     "documentUploaded": "Document uploaded",
     "chatQuery": "Chat query",
     "chatDetail": "Asked about documents",
-    "title": "Activity Log"
+    "title": "Activity Log",
+    "userCreated": "User created",
+    "userUpdated": "User updated",
+    "userDeleted": "User deleted",
+    "userRestored": "User restored",
+    "userPermanentlyDeleted": "User permanently deleted",
+    "userBulkDeleted": "Bulk delete users",
+    "triageCreated": "Escalation created",
+    "triageReused": "Escalation reused",
+    "triageStatusChanged": "Escalation status changed",
+    "triageReplySent": "Escalation reply sent",
+    "triagePurged": "Escalations purged"
   },
   "home": {
     "askHRBot": "Ask QA Bot",
@@ -651,7 +664,8 @@
     "sent": "Sent",
     "received": "Received",
     "noContent": "No content",
-    "toggle": "Toggle notifications"
+    "toggle": "Toggle notifications",
+    "from": "From"
   },
   "faqPage": {
     "eyebrow": "Knowledge Center",

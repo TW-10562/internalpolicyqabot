@@ -16,7 +16,8 @@ interface NotificationItem {
   messageId?: number;
   senderRole?: 'admin' | 'user';
   role?: 'admin' | 'user';
-  sourceType?: 'message' | 'support_reply' | 'support_ticket';
+  sourceType?: 'message' | 'support_reply' | 'support_ticket' | 'app_notification';
+  sender?: string;
   senderId?: string;
   currentViewerId?: string;
 
@@ -127,8 +128,9 @@ export default function NotificationsPanel({
     const map = new Map<string, NotificationItem>();
     for (const it of items || []) {
       if (!it?.id) continue;
-      const read = isItemReadInStorage(it, viewerKey) || it.read;
-      map.set(it.id, { ...it, read });
+      // Trust the read state from the backend (passed via props).
+      // Optimistic mark-as-read is handled via setLocalItems in handleMarkAsRead below.
+      map.set(it.id, { ...it });
     }
     setLocalItems([...map.values()]);
     setIsInitialized(true);
@@ -154,6 +156,11 @@ export default function NotificationsPanel({
   }, [localItems, searchTerm]);
   const visibleItems = useMemo(() => {
     return filtered.filter((item) => {
+      // App notifications are always visible (backend enforces audience)
+      if (item.sourceType === 'app_notification') return true;
+      // Broadcast messages are visible to everyone
+      if (item.is_broadcast) return true;
+
       const senderRole = String(item.senderRole || item.role || '').toLowerCase();
       if (currentViewerRole === 'admin') {
         return senderRole === 'user' && (item.messageId != null || item.sourceType === 'support_ticket');
@@ -161,7 +168,7 @@ export default function NotificationsPanel({
       return senderRole === 'admin' && (item.messageId != null || item.sourceType === 'support_reply');
     });
   }, [filtered, currentViewerRole]);
-  const canClearAll = currentViewerRole === 'user' && visibleItems.length > 0 && typeof onClearAll === 'function';
+  const canClearAll = visibleItems.length > 0 && typeof onClearAll === 'function';
 
   /* ===================== RENDER ===================== */
 
@@ -284,6 +291,10 @@ export default function NotificationsPanel({
             const directionText = isSentByViewer
               ? (t('notificationsPanel.sent') || 'Sent')
               : (t('notificationsPanel.received') || 'Received');
+            // Show sender identity for received messages (not sent by viewer, not system)
+            const senderName = (!isSentByViewer && message.sender && message.sender !== 'system')
+              ? message.sender
+              : null;
 
             const handleMarkAsRead = () => {
               addReadIdToStorage(message.notificationId, message.messageId, String(message.id), viewerKey);
@@ -370,6 +381,11 @@ export default function NotificationsPanel({
                 )}
 
                 {/* CONTENT AREA - Collapsible */}
+                {senderName && (
+                  <p className="ml-6 mb-1 text-[10px] text-[#1d2089] dark:text-[#60a5fa] font-medium truncate">
+                    {t('notificationsPanel.from') || 'From'}: {senderName}
+                  </p>
+                )}
                 {timeText && (
                   <p className="ml-6 mb-2 text-[10px] text-[#9CA3AF]">
                     {directionText}: {timeText}

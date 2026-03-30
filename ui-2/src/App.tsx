@@ -25,6 +25,7 @@ import {
 import {
   listNotifications as listAppNotifications,
   markNotificationRead as markAppNotificationRead,
+  deleteNotificationsBatch,
 } from './api/notifications';
 import { getToken, logout } from './api/auth';
 import { logoutFromMicrosoft } from './auth/microsoftAuth';
@@ -50,8 +51,11 @@ function AppContent() {
   const computeNotificationCount = useCallback((messagesList: any[], userRole: string): number => {
     if (!Array.isArray(messagesList)) return 0;
     return messagesList.filter((msg: any) => {
-      if (userRole === 'admin') return msg.senderRole === 'user' && !msg.read;
-      return msg.senderRole === 'admin' && !msg.read;
+      if (msg.read) return false;
+      // App notifications and broadcasts are always counted when unread
+      if (msg.sourceType === 'app_notification' || msg.is_broadcast) return true;
+      if (userRole === 'admin') return msg.senderRole === 'user';
+      return msg.senderRole === 'admin';
     }).length;
   }, []);
 
@@ -128,7 +132,6 @@ function AppContent() {
   };
   const applyViewerState = (arr: any[], viewerKey: string) => {
     if (!Array.isArray(arr)) return [];
-    const { n, m, l } = getReadSets(viewerKey);
     const hidden = getHiddenSets(viewerKey);
     return arr.flatMap((it) => {
       if (!it) return [];
@@ -138,10 +141,9 @@ function AppContent() {
         || (localId && hidden.l.has(localId));
       if (isHidden) return [];
 
-      const isRead = (it?.notificationId != null && n.has(it.notificationId))
-        || (it?.messageId != null && m.has(it.messageId))
-        || (localId && l.has(localId));
-      return [{ ...it, read: isRead || !!it.read }];
+      // Trust backend read state. Per-user tracking (message_reads / notification_reads)
+      // is the source of truth. Optimistic updates are handled via React state in handleMarkAsRead.
+      return [{ ...it }];
     });
   };
 
@@ -156,7 +158,7 @@ function AppContent() {
 
     if (role === 'admin') {
       const allMessages = [
-        ...inbox.filter((msg) => msg.senderRole === 'user' && msg.sourceType === 'message'),
+        ...inbox.filter((msg) => (msg.senderRole === 'user' && msg.sourceType === 'message') || msg.is_broadcast),
         ...supportItems.filter((msg) => msg.senderRole === 'user' && msg.sourceType === 'support_ticket'),
         ...appNotifs,
       ];
@@ -180,7 +182,32 @@ function AppContent() {
 
     const result = Array.from(messageMap.values());
     result.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    return result;
+
+    // Deduplicate: triage reply creates both an app_notification and a message for
+    // the same event. When both exist with similar title/body within 2 minutes,
+    // keep the message (richer data) and drop the app_notification duplicate.
+    const seen = new Map<string, any>();
+    const deduped: any[] = [];
+    for (const item of result) {
+      const title = String(item.subject || item.title || '').trim().toLowerCase().replace(/\s*from\s+\S+$/i, '');
+      const body = String(item.message || item.text || '').trim().substring(0, 80).toLowerCase();
+      const minute = Math.floor((item.timestamp || 0) / 120000); // 2-min bucket
+      const key = `${title}|${body}|${minute}`;
+      const existing = seen.get(key);
+      if (existing) {
+        // Prefer non-app_notification (messages have richer sender data)
+        if (existing.sourceType === 'app_notification' && item.sourceType !== 'app_notification') {
+          seen.set(key, item);
+          const idx = deduped.indexOf(existing);
+          if (idx >= 0) deduped[idx] = item;
+        }
+        // else keep existing, skip this duplicate
+      } else {
+        seen.set(key, item);
+        deduped.push(item);
+      }
+    }
+    return deduped;
   };
 
   // FIX: Use sender_type from the actual message data instead of assuming by viewer role
@@ -191,7 +218,7 @@ function AppContent() {
       return {
         id: `msg-${m.id}`,
         messageId: m.id,
-        sender: m.sender_id,
+        sender: m.sender_email || m.sender_name || m.sender_id,
         senderId: m.sender_id,
         senderRole: actualSenderRole,
         role: actualSenderRole,
@@ -201,6 +228,7 @@ function AppContent() {
         timestamp: new Date(m.created_at || Date.now()).getTime(),
         read: !!m.is_read,
         sourceType: 'message',
+        is_broadcast: !!m.is_broadcast,
         // Mark if sent by the viewer (admin viewing their own sent messages)
         isAdminSent: role === 'admin' && actualSenderRole === 'admin',
         isUserSent: role === 'user' && actualSenderRole === 'user',
@@ -214,7 +242,7 @@ function AppContent() {
       notificationId: n.id,
       sender: 'system',
       senderId: 'system',
-      // System notifications appear as from the opposite role so they show up
+      // System notifications appear as from the opposite role for unread counting
       senderRole: role === 'admin' ? 'user' : 'admin',
       role: role === 'admin' ? 'user' : 'admin',
       subject: n.title || '',
@@ -223,7 +251,7 @@ function AppContent() {
       message: n.body || '',
       timestamp: new Date(n.created_at || Date.now()).getTime(),
       read: !!n.is_read,
-      sourceType: n.type === 'system_alert' ? 'support_ticket' : 'message',
+      sourceType: 'app_notification',
     }));
 
   const mapSupportItems = async (currentUser: User) => {
@@ -318,6 +346,18 @@ function AppContent() {
       if (appData?.ok !== false && appData?.data?.rows) {
         appNotifsMapped = mapAppNotifications(appData.data.rows, currentUser.role);
       }
+      // Detect role changes: the backend returns the current role on every poll.
+      // If it differs from the cached frontend state, update immediately.
+      const serverScope = appData?.data?._scope;
+      if (serverScope?.roleCode && serverScope.roleCode !== currentUser.roleCode) {
+        const isAdmin = ['SUPER_ADMIN', 'HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN'].includes(serverScope.roleCode);
+        setUser((prev) => prev ? {
+          ...prev,
+          role: isAdmin ? 'admin' : 'user',
+          roleCode: serverScope.roleCode,
+          departmentCode: serverScope.departmentCode || prev.departmentCode,
+        } : prev);
+      }
     } catch (err) {
       console.error('Failed to fetch app notifications:', err);
     }
@@ -361,33 +401,10 @@ function AppContent() {
     logoutFromMicrosoft();
   };
 
-  // Bell click: mark all currently visible unread notifications as read via API
+  // Bell click: only toggles the panel (handled by HomePage).
+  // Notifications are marked as read ONLY via the explicit per-item "Mark as Read" button.
   const handleNotificationBellClick = () => {
-    if (!user) return;
-    const viewerKey = getViewerKey(user);
-    const token = getToken();
-    const headers: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-      : { 'Content-Type': 'application/json' };
-
-    // Mark all unread messages as read via bulk API
-    fetch('/dev-api/api/messages/mark-all-read', { method: 'PUT', headers }).catch(() => {});
-
-    // Mark each unread notification locally + via individual API calls
-    const unread = notifications.filter((n) => !n.read);
-    for (const item of unread) {
-      addReadId(item.notificationId, item.messageId, String(item.id), viewerKey);
-      if (item.sourceType === 'support_reply' && typeof item.notificationId === 'number') {
-        markSupportNotificationRead(item.notificationId).catch(() => {});
-      }
-      if (item.id?.startsWith?.('appnotif-') && typeof item.notificationId === 'number') {
-        markAppNotificationRead(item.notificationId).catch(() => {});
-      }
-    }
-
-    // Optimistically update UI
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    setUnreadCount(0);
+    // no-op — panel toggle is in HomePage
   };
 
   const handleFeatureClick = (feature: FeatureType) => {
@@ -485,15 +502,38 @@ function AppContent() {
   };
 
   const handleClearNotifications = (itemsToClear: any[]) => {
-    if (!user || user.role !== 'user' || !Array.isArray(itemsToClear) || itemsToClear.length === 0) return;
+    if (!user || !Array.isArray(itemsToClear) || itemsToClear.length === 0) return;
 
-    const viewerKey = getViewerKey(user);
     const idsToClear = new Set(itemsToClear.map((item) => String(item?.id || '')));
-    hideNotificationItems(itemsToClear, viewerKey);
 
-    const filtered = notifications.filter((item) => !idsToClear.has(String(item?.id || '')));
-    setNotifications(filtered);
-    setUnreadCount(computeNotificationCount(filtered, user.role));
+    // Optimistic UI: remove items immediately
+    const remaining = notifications.filter((item) => !idsToClear.has(String(item?.id || '')));
+    setNotifications(remaining);
+    setUnreadCount(computeNotificationCount(remaining, user.role));
+
+    // Backend delete: app notifications
+    const appNotifIds = itemsToClear
+      .filter((item) => typeof item.notificationId === 'number')
+      .map((item) => item.notificationId as number);
+    if (appNotifIds.length > 0) {
+      deleteNotificationsBatch(appNotifIds).catch(() => {});
+    }
+
+    // Backend delete: inbox messages
+    const messageIds = itemsToClear
+      .filter((item) => typeof item.messageId === 'number')
+      .map((item) => item.messageId as number);
+    if (messageIds.length > 0) {
+      const token = getToken();
+      const headers: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+        : { 'Content-Type': 'application/json' };
+      fetch('/dev-api/api/messages/delete', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ deleteUserMessages: true, deleteAdminMessages: true }),
+      }).catch(() => {});
+    }
   };
 
   const getPopupTitle = (): string => {

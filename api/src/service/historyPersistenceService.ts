@@ -91,6 +91,54 @@ export function buildHistoryRowsForTurn(input: PersistChatTurnInput) {
   };
 }
 
+/**
+ * Insert a history message, handling message_id collisions across conversations.
+ *
+ * Output IDs can be reused after DB resets, so `${outputId}:user` may already exist
+ * for a *different* conversation.  When that happens, findOrCreate silently returns
+ * the old row and the current conversation ends up with zero messages.
+ *
+ * Strategy:
+ *   1. If no row with this message_id exists → create.
+ *   2. If a row exists for the SAME conversation → skip (idempotent).
+ *   3. If a row exists for a DIFFERENT conversation → create with a
+ *      conversation-scoped message_id to avoid the unique-constraint collision.
+ */
+async function upsertHistoryMessage(
+  message: Record<string, any>,
+  transaction: any,
+) {
+  const existing = await ChatHistoryMessage.findOne({
+    raw: true,
+    where: { message_id: message.message_id },
+    transaction,
+  }) as any;
+
+  if (!existing) {
+    await ChatHistoryMessage.create(message as any, { transaction });
+    return;
+  }
+
+  // Same conversation → already persisted (idempotent)
+  if (String(existing.conversation_id).trim() === String(message.conversation_id).trim()) {
+    return;
+  }
+
+  // Different conversation → collision.  Create with a scoped message_id.
+  const scopedId = `${message.conversation_id}:${message.message_id}`;
+  const alreadyScoped = await ChatHistoryMessage.findOne({
+    raw: true,
+    where: { message_id: scopedId },
+    transaction,
+  }) as any;
+  if (!alreadyScoped) {
+    await ChatHistoryMessage.create(
+      { ...message, message_id: scopedId } as any,
+      { transaction },
+    );
+  }
+}
+
 export async function persistChatTurn(input: PersistChatTurnInput): Promise<void> {
   const rows = buildHistoryRowsForTurn(input);
   await seq.transaction(async (transaction) => {
@@ -112,17 +160,8 @@ export async function persistChatTurn(input: PersistChatTurnInput): Promise<void
       } as any, { transaction });
     }
 
-    await ChatHistoryMessage.findOrCreate({
-      where: { message_id: rows.userMessage.message_id },
-      defaults: rows.userMessage as any,
-      transaction,
-    });
-
-    await ChatHistoryMessage.findOrCreate({
-      where: { message_id: rows.assistantMessage.message_id },
-      defaults: rows.assistantMessage as any,
-      transaction,
-    });
+    await upsertHistoryMessage(rows.userMessage, transaction);
+    await upsertHistoryMessage(rows.assistantMessage, transaction);
   });
 }
 
@@ -139,13 +178,35 @@ export async function listHistoryConversations(params: {
     ...(params.departmentCode ? { department_code: params.departmentCode } : {}),
   };
 
-  const { rows, count } = await ChatHistoryConversation.findAndCountAll({
+  const { rows: rawRows, count: rawCount } = await ChatHistoryConversation.findAndCountAll({
     raw: true,
     where,
     order: [['updated_at', 'DESC']],
     limit,
     offset,
   });
+
+  // Filter out conversations that have no messages (orphaned conversation records).
+  // These occur when persistChatTurn fails after creating the conversation but before
+  // committing messages. Rather than showing blank conversations, exclude them.
+  const conversationIds = rawRows.map((r: any) => String(r.conversation_id));
+  const messageCounts = new Map<string, number>();
+  if (conversationIds.length > 0) {
+    const msgCountRows = await ChatHistoryMessage.findAll({
+      raw: true,
+      attributes: [
+        'conversation_id',
+        [seq.fn('COUNT', seq.col('id')), 'cnt'],
+      ],
+      where: { conversation_id: { [Op.in]: conversationIds } },
+      group: ['conversation_id'],
+    }) as any[];
+    for (const r of msgCountRows) {
+      messageCounts.set(String(r.conversation_id), Number(r.cnt));
+    }
+  }
+  const rows = rawRows.filter((r: any) => (messageCounts.get(String(r.conversation_id)) || 0) > 0);
+  const count = rawCount - (rawRows.length - rows.length);
 
   const userIds = Array.from(
     new Set(

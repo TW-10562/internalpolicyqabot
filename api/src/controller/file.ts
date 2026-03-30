@@ -182,9 +182,21 @@ export const uploadFile = async (ctx: Context, next: () => Promise<void>) => {
     }
   }
 
+  // Emit audit log for each successfully uploaded file
+  const { emitAuditLog } = await import('@/service/rbac');
+  for (const r of success) {
+    emitAuditLog({
+      actor: scope,
+      action: 'DOCUMENT_UPLOADED',
+      targetType: 'file',
+      targetId: r.id,
+      details: { filename: r.filename, mimeType: r.mimeType, size: r.size, departmentCode: uploadDepartmentCode },
+    }).catch((err) => console.warn('[uploadFile] audit log failed:', err));
+  }
+
   ctx.state.formatData = {
-    message: failed.length === 0 
-      ? 'ファイルのアップロードに成功しました' 
+    message: failed.length === 0
+      ? 'ファイルのアップロードに成功しました'
       : `${success.length}件成功、${failed.length}件失敗`,
     data: success.map(r => ({
       id: r.id,

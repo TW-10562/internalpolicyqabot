@@ -153,7 +153,6 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
             <button
               onClick={() => {
                 setShowPurgeDialog(true);
-                setPurgePassword('');
               }}
               disabled={purging || loading}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

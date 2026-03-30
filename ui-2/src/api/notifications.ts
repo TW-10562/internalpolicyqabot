@@ -27,6 +27,20 @@ export function markNotificationRead(id: number) {
   );
 }
 
+export function markAllNotificationsRead() {
+  return request<{ ok: boolean; data: { markedRead: number }; error: any }>(
+    '/api/notifications/mark-all-read',
+    { method: 'PATCH' as any },
+  );
+}
+
+export function deleteNotificationsBatch(ids: number[]) {
+  return request<{ ok: boolean; data: { deleted: number }; error: any }>(
+    '/api/notifications/delete-batch',
+    { method: 'POST', data: { ids } },
+  );
+}
+
 export function purgeAllUserNotifications() {
   return request<{ ok: boolean; data: { appDeleted: number; legacyDeleted: number; totalDeleted: number; scope: string }; error: any }>(
     '/api/notifications/purge-users',

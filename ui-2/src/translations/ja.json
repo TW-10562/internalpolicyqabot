@@ -271,9 +271,11 @@
       "firstName": "名前",
       "lastName": "姓",
       "employeeId": "社員ID",
+      "employeeCode": "社員ID",
       "userJobRole": "職務",
       "areaOfWork": "業務範囲",
       "role": "ロール",
+      "email": "メール",
       "username": "ユーザー名",
       "password": "パスワード",
       "lastUpdated": "最終更新",
@@ -387,7 +389,18 @@
     "documentUploaded": "ドキュメントがアップロードされました",
     "chatQuery": "チャットの質問",
     "chatDetail": "ドキュメントについて質問しました",
-    "title": "アクティビティログ"
+    "title": "アクティビティログ",
+    "userCreated": "ユーザー作成",
+    "userUpdated": "ユーザー更新",
+    "userDeleted": "ユーザー削除",
+    "userRestored": "ユーザー復元",
+    "userPermanentlyDeleted": "ユーザー完全削除",
+    "userBulkDeleted": "ユーザー一括削除",
+    "triageCreated": "エスカレーション作成",
+    "triageReused": "エスカレーション再利用",
+    "triageStatusChanged": "エスカレーションステータス変更",
+    "triageReplySent": "エスカレーション返信送信",
+    "triagePurged": "エスカレーション一括削除"
   },
   "home": {
     "askHRBot": "QAボットに質問",
@@ -651,7 +664,8 @@
     "sent": "送信",
     "received": "受信",
     "noMessages": "メッセージはまだありません",
-    "admin": "管理者"
+    "admin": "管理者",
+    "from": "送信者"
   },
   "faqPage": {
     "eyebrow": "ナレッジセンター",

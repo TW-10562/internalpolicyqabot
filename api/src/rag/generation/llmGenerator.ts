@@ -1169,7 +1169,11 @@ const canUseDirectEvidenceAnswer = (
     if (dominantCjkLines > 0) return false;
   }
   const actionable = countActionableEvidenceLines(list);
-  if (actionable < Math.max(2, Math.min(3, list.length))) return false;
+  // For Japanese evidence with enough lines, be lenient — policy statements
+  // about 年次有給休暇, 支給, 付与 are informative even without action verbs.
+  const cjkLines = list.filter((line) => isCjkDominantLine(line)).length;
+  const minActionable = cjkLines >= 3 ? 0 : Math.max(2, Math.min(3, list.length));
+  if (actionable < minActionable) return false;
   return true;
 };
 

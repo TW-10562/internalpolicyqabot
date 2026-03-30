@@ -102,7 +102,7 @@ async function notifyTriageReplyToRequester(input: {
     userId: input.targetUserId,
     departmentCode: targetDepartmentCode,
     type: 'system_alert',
-    title: `Escalation ticket #${input.ticketId} reply`,
+    title: `Escalation ticket #${input.ticketId} reply from ${input.scope.userName}`,
     body: input.reply,
     payload: {
       ticketId: input.ticketId,
@@ -954,7 +954,7 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
         departmentCode,
         type: 'system_alert',
         title: `Triage ticket #${ticket.id} assigned`,
-        body: `A new ${departmentCode} escalation has been assigned to you.`,
+        body: `A new ${departmentCode} escalation from ${scope.userName} has been assigned to you.`,
         payload: {
           ticketId: ticket.id,
           issueType: normalizedInput.issueType,

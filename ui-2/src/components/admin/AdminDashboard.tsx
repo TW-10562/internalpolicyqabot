@@ -50,8 +50,13 @@ interface DocumentHistory {
 interface ActivityLog {
   id: string;
   user: string;
+  email?: string;
+  role?: string;
+  department?: string;
   action: string;
+  actionRaw?: string;
   detail: string;
+  details?: Record<string, any>;
   timestamp: Date;
 }
 
@@ -131,25 +136,82 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
     loadDocumentHistory();
   }, []);
 
-  // Load users and activity
+  // Load real activity from audit logs API + document history fallback
   useEffect(() => {
-    const activities: ActivityLog[] = documentHistory.slice(0, 10).map((doc, index) => ({
-      id: String(index + 1),
-      user: doc.create_by || t('activity.admin'),
-      action: t('activity.documentUploaded'),
-      detail: doc.filename,
-      timestamp: new Date(doc.created_at),
-    }));
+    const ACTION_LABELS: Record<string, string> = {
+      DOCUMENT_UPLOADED: t('activity.documentUploaded'),
+      USER_CREATED: t('activity.userCreated', undefined, 'User created'),
+      USER_UPDATED: t('activity.userUpdated', undefined, 'User updated'),
+      USER_DELETED: t('activity.userDeleted', undefined, 'User deleted'),
+      USER_RESTORED: t('activity.userRestored', undefined, 'User restored'),
+      USER_PERMANENTLY_DELETED: t('activity.userPermanentlyDeleted', undefined, 'User permanently deleted'),
+      USER_BULK_DELETED: t('activity.userBulkDeleted', undefined, 'Bulk delete users'),
+      TRIAGE_TICKET_CREATED: t('activity.triageCreated', undefined, 'Escalation created'),
+      TRIAGE_TICKET_REUSED: t('activity.triageReused', undefined, 'Escalation reused'),
+      TRIAGE_STATUS_CHANGED: t('activity.triageStatusChanged', undefined, 'Escalation status changed'),
+      TRIAGE_REPLY_SENT: t('activity.triageReplySent', undefined, 'Escalation reply sent'),
+      TRIAGE_TICKETS_PURGED: t('activity.triagePurged', undefined, 'Escalations purged'),
+    };
 
-    activities.unshift({
-      id: 'chat-1',
-      user: t('activity.admin'),
-      action: t('activity.chatQuery'),
-      detail: t('activity.chatDetail'),
-      timestamp: new Date(),
-    });
+    const loadActivity = async () => {
+      const token = getToken();
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      let auditItems: ActivityLog[] = [];
 
-    setMockActivity(activities);
+      try {
+        const res = await fetch('/dev-api/api/aviary/v1/audit/events?pageNum=1&pageSize=50', { headers });
+        const data = await res.json();
+        if (data?.ok && Array.isArray(data?.data?.rows)) {
+          auditItems = data.data.rows.map((row: any) => {
+            const details = row.details || {};
+            const actionLabel = ACTION_LABELS[row.action] || row.action;
+
+            // Build a human-readable detail string
+            let detail = '';
+            if (details.filename) {
+              detail = details.filename;
+            } else if (row.action.startsWith('TRIAGE_') && row.targetId) {
+              detail = `Ticket #${row.targetId}`;
+            } else if (details.employeeId) {
+              detail = details.employeeId;
+            } else if (row.targetId) {
+              detail = `#${row.targetId}`;
+            }
+
+            return {
+              id: `audit-${row.id}`,
+              user: row.actorUserName || row.actorRoleCode || t('activity.admin'),
+              email: row.actorEmail || undefined,
+              role: row.actorRoleCode || undefined,
+              department: row.actorDepartmentCode || details.departmentCode || undefined,
+              action: actionLabel,
+              actionRaw: row.action,
+              detail,
+              details,
+              timestamp: new Date(row.createdAt),
+            };
+          });
+        }
+      } catch (err) {
+        console.error('[AdminDashboard] Failed to load audit events:', err);
+      }
+
+      // If no audit events, fall back to document history
+      if (auditItems.length === 0 && documentHistory.length > 0) {
+        auditItems = documentHistory.slice(0, 20).map((doc, index) => ({
+          id: `doc-${index}`,
+          user: doc.create_by || t('activity.admin'),
+          action: t('activity.documentUploaded'),
+          actionRaw: 'DOCUMENT_UPLOADED',
+          detail: doc.filename,
+          timestamp: new Date(doc.created_at),
+        }));
+      }
+
+      setMockActivity(auditItems);
+    };
+
+    loadActivity();
   }, [documentHistory, t]);
 
   const handleDocumentRefresh = async () => {

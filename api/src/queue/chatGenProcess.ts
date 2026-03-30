@@ -3801,7 +3801,7 @@ export const chatGenProcess = async (job) => {
       await publishLive('done', { status: finalStatus, content });
 
       const rawSourceIds: string[] = [];
-      void persistChatTurn({
+      await persistChatTurn({
         userId: Number(data.userId || 0) || 0,
         userName: String(data.userName || 'anonymous'),
         departmentCode,
@@ -3824,7 +3824,7 @@ export const chatGenProcess = async (job) => {
           moderation_rule_ids: moderation.matchedRuleIds,
           moderation_reasons: moderation.reasons,
         },
-      }).catch(() => undefined);
+      }).catch((e) => console.warn('[HistoryPersistence] persistChatTurn (moderation) failed:', e?.message || e));
 
       void recordQueryEvent({
         taskId: String(taskId),
@@ -4937,6 +4937,25 @@ export const chatGenProcess = async (job) => {
           },
         );
         await publishLive('done', { status: 'FAILED', content: failureContent });
+
+        // Persist to chat history even on failure so conversation history shows the exchange
+        await persistChatTurn({
+          userId: Number(data.userId || 0) || 0,
+          userName: String(data.userName || 'anonymous'),
+          departmentCode,
+          conversationId: String(taskId),
+          outputId: Number(outputId),
+          userText: originalQueryText || prompt,
+          userLanguage: (failureLanguage === 'ja' || failureLanguage === 'en' ? failureLanguage : 'en') as 'ja' | 'en',
+          workingQuery: undefined,
+          assistantText: generationFailureReply(failureLanguage),
+          ragUsed: false,
+          sourceIds: [],
+          tokenInput: 0,
+          tokenOutput: 0,
+          metadata: { generation_status: 'empty_llm_response' },
+        }).catch((e) => console.warn('[HistoryPersistence] persistChatTurn (failure path) failed:', e?.message || e));
+
         return { outputId, isOk: false, content: failureContent };
       }
     }

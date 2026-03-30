@@ -211,17 +211,42 @@ router.get('/audit/events', requireScopedAccess, async (ctx: any) => {
       pgPool.query(listSql, listParams),
     ]);
 
-    const rows = rowsRes.rows.map((row: any) => ({
-      id: Number(row.id),
-      actorUserId: Number(row.actor_user_id),
-      actorRoleCode: row.actor_role_code,
-      actorDepartmentCode: row.actor_department_code,
-      action: row.action,
-      targetType: row.target_type,
-      targetId: row.target_id,
-      details: row.details_json || {},
-      createdAt: row.created_at,
-    }));
+    // Resolve actor user IDs to emails/names
+    const actorIds = Array.from(new Set(
+      rowsRes.rows.map((r: any) => Number(r.actor_user_id)).filter((id: number) => Number.isFinite(id) && id > 0)
+    ));
+    const actorMap = new Map<number, { email: string; userName: string; roleCode: string; departmentCode: string }>();
+    if (actorIds.length > 0) {
+      const userRes = await pgPool.query(
+        `SELECT user_id, user_name, email, role_code, department_code FROM "user" WHERE user_id = ANY($1::int[])`,
+        [actorIds],
+      );
+      for (const u of userRes.rows) {
+        actorMap.set(Number(u.user_id), {
+          email: String(u.email || u.user_name || '').trim(),
+          userName: String(u.user_name || '').trim(),
+          roleCode: String(u.role_code || '').trim(),
+          departmentCode: String(u.department_code || '').trim(),
+        });
+      }
+    }
+
+    const rows = rowsRes.rows.map((row: any) => {
+      const actor = actorMap.get(Number(row.actor_user_id));
+      return {
+        id: Number(row.id),
+        actorUserId: Number(row.actor_user_id),
+        actorEmail: actor?.email || null,
+        actorUserName: actor?.userName || null,
+        actorRoleCode: row.actor_role_code,
+        actorDepartmentCode: row.actor_department_code,
+        action: row.action,
+        targetType: row.target_type,
+        targetId: row.target_id,
+        details: row.details_json || {},
+        createdAt: row.created_at,
+      };
+    });
 
     ctx.body = ok({
       pageNum,

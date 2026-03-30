@@ -6,6 +6,8 @@ import {
   createNotification,
   listNotifications,
   markNotificationAsRead,
+  markAllNotificationsAsRead,
+  deleteNotificationsByIds,
   NotificationType,
   purgeUserNotifications,
 } from '@/service/notificationService';
@@ -41,7 +43,9 @@ router.get('/', async (ctx: any) => {
   }
 
   try {
-    const includeDepartmentBroadcast = isSuperAdminRole(scope.roleCode) || isDepartmentAdminRole(scope.roleCode);
+    // All roles see broadcast notifications (user_id=null) in their department.
+    // Backend enforces department scoping; admin-created broadcasts are visible to everyone.
+    const includeDepartmentBroadcast = true;
     const data = await listNotifications(
       userId,
       value.pageNum,
@@ -49,7 +53,11 @@ router.get('/', async (ctx: any) => {
       isSuperAdminRole(scope.roleCode) ? undefined : scope.departmentCode,
       includeDepartmentBroadcast,
     );
-    ctx.body = ok(data);
+    ctx.body = ok({
+      ...data,
+      // Include current role so the frontend can detect role changes without a separate endpoint.
+      _scope: { roleCode: scope.roleCode, departmentCode: scope.departmentCode },
+    });
   } catch (e: any) {
     ctx.body = fail('INTERNAL_ERROR', e?.message || 'Failed to list notifications');
   }
@@ -129,6 +137,49 @@ router.patch('/:id/read', async (ctx: any) => {
     ctx.body = ok({ id, is_read: true });
   } catch (e: any) {
     ctx.body = fail('INTERNAL_ERROR', e?.message || 'Failed to mark notification as read');
+  }
+});
+
+router.patch('/mark-all-read', async (ctx: any) => {
+  const userId = Number(ctx.state?.user?.userId);
+  if (!Number.isFinite(userId)) {
+    ctx.body = fail('UNAUTHORIZED', 'Invalid token');
+    return;
+  }
+  const scope = (ctx.state?.accessScope || {}) as AccessScope;
+  const departmentCode = isSuperAdminRole(scope.roleCode) ? undefined : scope.departmentCode;
+
+  try {
+    const count = await markAllNotificationsAsRead(userId, departmentCode);
+    ctx.body = ok({ markedRead: count });
+  } catch (e: any) {
+    ctx.body = fail('INTERNAL_ERROR', e?.message || 'Failed to mark all as read');
+  }
+});
+
+router.post('/delete-batch', async (ctx: any) => {
+  const userId = Number(ctx.state?.user?.userId);
+  if (!Number.isFinite(userId)) {
+    ctx.body = fail('UNAUTHORIZED', 'Invalid token');
+    return;
+  }
+  const scope = (ctx.state?.accessScope || {}) as AccessScope;
+  const { ids } = ctx.request.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    ctx.body = fail('BAD_REQUEST', 'ids array required');
+    return;
+  }
+  const numericIds = ids.map(Number).filter(Number.isFinite);
+  if (numericIds.length === 0) {
+    ctx.body = fail('BAD_REQUEST', 'No valid ids');
+    return;
+  }
+  try {
+    const departmentCode = isSuperAdminRole(scope.roleCode) ? undefined : scope.departmentCode;
+    const deleted = await deleteNotificationsByIds(userId, numericIds, departmentCode);
+    ctx.body = ok({ deleted });
+  } catch (e: any) {
+    ctx.body = fail('INTERNAL_ERROR', e?.message || 'Failed to delete notifications');
   }
 });
 

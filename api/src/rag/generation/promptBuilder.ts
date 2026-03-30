@@ -40,8 +40,8 @@ export const buildEnterpriseRagSystemPrompt = (
     `4. If the answer is not clearly supported by the retrieved context, reply exactly: "${strictNoAnswer}"`,
     `5. If only PARTIAL evidence exists, state what IS supported and explicitly note what could not be confirmed.`,
     language === 'ja'
-      ? '6. ユーザーへの回答は必ず日本語のみで行ってください。'
-      : '6. If the user asked in English, answer only in English.',
+      ? '6. ユーザーへの回答は必ず日本語のみで行ってください。他の言語（英語、ベトナム語など）は使用禁止です。'
+      : '6. CRITICAL: You MUST answer ONLY in English. Do NOT output Vietnamese, Chinese, or any other language. Even if the source documents are in Japanese, translate the content and answer in English only.',
     language === 'ja'
       ? '7. 簡潔で明確な社内ポリシー回答にしてください。'
       : '7. Be concise, clear, and policy-focused.',
