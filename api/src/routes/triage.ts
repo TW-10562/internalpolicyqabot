@@ -86,8 +86,8 @@ router.get('/tickets', async (ctx: any) => {
     ctx.body = fail('FORBIDDEN', 'アクセス権限がありません');
     return;
   }
-  const pageNum = Number(ctx.query?.pageNum || 1);
-  const pageSize = Number(ctx.query?.pageSize || 20);
+  const pageNum = Math.max(1, Number(ctx.query?.pageNum || 1));
+  const pageSize = Math.max(1, Math.min(100, Number(ctx.query?.pageSize || 20)));
   try {
     const rows = await listTriageTickets(scope, pageNum, pageSize);
     // Defensive strictness: never leak cross-department tickets to department admins.

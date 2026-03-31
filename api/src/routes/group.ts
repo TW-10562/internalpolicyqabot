@@ -1,8 +1,10 @@
 import IndexCon from '@/controller';
 import { getAllGroups, populateTestData, createGroup, updateGroup, deleteGroup } from '@/controller/group';
+import { requireScopedAccess } from '@/controller/auth';
 import Router from 'koa-router';
 
 const router = new Router({ prefix: '/group' });
+router.use(requireScopedAccess);
 
 router.get('/list', getAllGroups, IndexCon('グループ一覧を取得成功しました'));
 router.post('/create', createGroup, IndexCon('グループを作成成功しました'));

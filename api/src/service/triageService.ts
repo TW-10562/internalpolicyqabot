@@ -808,6 +808,12 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
         `
         SELECT u.user_id
         FROM "user" u
+        LEFT JOIN (
+          SELECT assigned_to, COUNT(*) AS open_count
+          FROM triage_tickets
+          WHERE status IN ('OPEN', 'IN_PROGRESS')
+          GROUP BY assigned_to
+        ) tt ON tt.assigned_to = u.user_id
         WHERE u.deleted_at IS NULL
           AND u.user_id <> $1
           AND (
@@ -820,7 +826,7 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
                 AND r.role_key = 'admin'
             )
           )
-        ORDER BY u.user_id ASC
+        ORDER BY COALESCE(tt.open_count, 0) ASC, u.user_id ASC
         LIMIT 1
         `,
         [scope.userId],
@@ -892,11 +898,17 @@ export async function createTriageTicket(scope: AccessScope, input: CreateTriage
         `
         SELECT u.user_id, COALESCE(NULLIF(u.department_code, ''), 'HR') AS department_code
         FROM "user" u
+        LEFT JOIN (
+          SELECT assigned_to, COUNT(*) AS open_count
+          FROM triage_tickets
+          WHERE status IN ('OPEN', 'IN_PROGRESS')
+          GROUP BY assigned_to
+        ) tt ON tt.assigned_to = u.user_id
         WHERE u.deleted_at IS NULL
           AND u.user_id <> $3
           AND u.role_code = $1
           AND COALESCE(NULLIF(u.department_code, ''), 'HR') = $2
-        ORDER BY u.user_id ASC
+        ORDER BY COALESCE(tt.open_count, 0) ASC, u.user_id ASC
         LIMIT 1
         `,
         [desiredRole, desiredDepartment, scope.userId],

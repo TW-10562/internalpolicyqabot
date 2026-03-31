@@ -1,9 +1,11 @@
 import IndexCon from '@/controller';
 import { formatHandle } from '@/controller/common';
 import { deleteMid, executeMid, getListMid, getMid, upsertMid } from '@/controller/flow';
+import { requireScopedAccess } from '@/controller/auth';
 import Router from 'koa-router';
 
 const router = new Router({ prefix: '/api/flows' });
+router.use(requireScopedAccess);
 
 router.get('/', getListMid, formatHandle, IndexCon());
 

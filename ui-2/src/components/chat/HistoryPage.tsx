@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Clock, Trash2, ChevronRight, User } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Clock, Trash2, ChevronRight, User, CalendarDays, X } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
-import { formatDateTimeJP } from '../../lib/dateTime';
+import { formatDateTimeJP, formatDateJP } from '../../lib/dateTime';
 import {
   deleteHistoryConversation,
   getHistoryConversation,
@@ -97,6 +97,9 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   const [userOptionsTotal, setUserOptionsTotal] = useState(0);
   const [userOptionsPage, setUserOptionsPage] = useState(1);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [selectedDate, setSelectedDate] = useState('');
+  const [showCalendar, setShowCalendar] = useState(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
 
   const isSuperAdmin = user?.roleCode === 'SUPER_ADMIN';
   const pageSize = isSuperAdmin ? 100 : 20;
@@ -139,7 +142,10 @@ export default function HistoryPage({ user }: HistoryPageProps) {
 
     const byTurn = new Map<string, ChatTurn>();
     for (const m of ordered) {
-      const [rawId] = String(m.message_id || '').split(':');
+      // message_id formats: "outputId:user", "outputId:assistant",
+      // or scoped: "convId:outputId:user", "convId:outputId:assistant"
+      const parts = String(m.message_id || '').split(':');
+      const rawId = parts.length >= 3 ? parts[parts.length - 2] : parts[0];
       const turnId = rawId || String(new Date(m.created_at).getTime());
       if (!byTurn.has(turnId)) byTurn.set(turnId, { id: turnId });
       const turn = byTurn.get(turnId)!;
@@ -157,17 +163,23 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   const loadList = async (
     targetPage = pageNum,
     targetUserId: number | null = selectedUserId,
-    options?: { silent?: boolean },
+    options?: { silent?: boolean; date?: string },
   ) => {
     const silent = options?.silent === true;
+    const effectiveDate = options?.date ?? selectedDate;
     if (!silent) setLoadingList(true);
     try {
+      const opts: any = isSuperAdmin
+        ? (targetUserId != null ? { userId: targetUserId } : { allUsers: true })
+        : {};
+      if (effectiveDate) {
+        opts.dateFrom = effectiveDate;
+        opts.dateTo = effectiveDate;
+      }
       const res: any = await listHistory(
         targetPage,
         pageSize,
-        isSuperAdmin
-          ? (targetUserId != null ? { userId: targetUserId } : { allUsers: true })
-          : undefined,
+        Object.keys(opts).length > 0 ? opts : undefined,
       );
       if (res?.ok && res?.data) {
         const incomingRows = Array.isArray(res.data.rows) ? res.data.rows : [];
@@ -248,9 +260,9 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   };
 
   useEffect(() => {
-    loadList(1, selectedUserId);
+    loadList(1, selectedUserId, { date: selectedDate });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSuperAdmin, selectedUserId]);
+  }, [isSuperAdmin, selectedUserId, selectedDate]);
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -264,12 +276,24 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   // Keep history live while user is on this page (DB is source of truth).
   useEffect(() => {
     const timer = window.setInterval(() => {
-      loadList(pageNum, selectedUserId, { silent: true });
+      loadList(pageNum, selectedUserId, { silent: true, date: selectedDate });
       if (selectedConversationId) loadMessages(selectedConversationId, { silent: true });
     }, 5000);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageNum, selectedConversationId, isSuperAdmin, selectedUserId]);
+  }, [pageNum, selectedConversationId, isSuperAdmin, selectedUserId, selectedDate]);
+
+  // Close calendar when clicking outside
+  useEffect(() => {
+    if (!showCalendar) return;
+    const handleClick = (e: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) {
+        setShowCalendar(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showCalendar]);
 
   useEffect(() => {
     if (selectedConversationId) {
@@ -334,13 +358,99 @@ export default function HistoryPage({ user }: HistoryPageProps) {
           {t('history.title')}
         </div>
 
+        {/* Date picker bar */}
+        <div className="px-3 py-2 border-b border-default flex items-center justify-between gap-2 relative">
+          <span className="text-[11px] text-muted dark:text-dark-text-muted">
+            {t('history.totalConversations', { count: total })}
+          </span>
+          <div className="flex items-center gap-1.5" ref={calendarRef}>
+            {selectedDate && (
+              <span className="text-[11px] font-medium text-primary dark:text-blue-400">
+                {selectedDate}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowCalendar((v) => !v)}
+              className={`p-1.5 rounded-lg border transition-colors ${
+                selectedDate
+                  ? 'border-primary/40 bg-primary/10 text-primary dark:border-blue-600/40 dark:bg-blue-900/20 dark:text-blue-400'
+                  : 'border-default text-muted dark:text-dark-text-muted hover:text-foreground dark:hover:text-dark-text hover:bg-surface-alt dark:hover:bg-dark-border'
+              }`}
+              title={t('history.dateFilter')}
+            >
+              <CalendarDays className="w-4 h-4" />
+            </button>
+            {selectedDate && (
+              <button
+                type="button"
+                onClick={() => { setSelectedDate(''); setPageNum(1); setShowCalendar(false); }}
+                className="p-1 rounded-lg text-muted dark:text-dark-text-muted hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                title={t('history.clearFilter')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {showCalendar && (
+              <div className="absolute right-3 top-full mt-1 z-20 bg-surface dark:bg-dark-surface border border-default rounded-xl shadow-lg p-3 min-w-[240px]">
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => {
+                    setSelectedDate(e.target.value);
+                    setPageNum(1);
+                    setShowCalendar(false);
+                  }}
+                  className="w-full px-3 py-2 rounded-lg border border-default bg-surface dark:bg-dark-surface text-sm text-foreground dark:text-dark-text"
+                  autoFocus
+                />
+                <div className="flex gap-1.5 mt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDate(formatDateJP(new Date()).replace(/\//g, '-'));
+                      setPageNum(1);
+                      setShowCalendar(false);
+                    }}
+                    className="flex-1 px-2 py-1.5 text-[11px] rounded-lg border border-default hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text transition-colors"
+                  >
+                    {t('history.today')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(); d.setDate(d.getDate() - 1);
+                      setSelectedDate(formatDateJP(d).replace(/\//g, '-'));
+                      setPageNum(1);
+                      setShowCalendar(false);
+                    }}
+                    className="flex-1 px-2 py-1.5 text-[11px] rounded-lg border border-default hover:bg-surface-alt dark:hover:bg-dark-border text-foreground dark:text-dark-text transition-colors"
+                  >
+                    {t('history.yesterday')}
+                  </button>
+                </div>
+                {selectedDate && (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedDate(''); setPageNum(1); setShowCalendar(false); }}
+                    className="w-full mt-1.5 px-2 py-1.5 text-[11px] rounded-lg border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  >
+                    {t('history.clearFilter')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
         {isSuperAdmin && (
           <div className="p-3 border-b border-default space-y-2">
             <input
               value={searchEmpId}
               onChange={(e) => setSearchEmpId(e.target.value)}
               placeholder={t('history.findUserPlaceholder')}
-              className="w-full px-3 py-2 rounded-lg border border-default bg-surface dark:bg-dark-surface text-sm"
+              className="w-full px-3 py-2 rounded-lg border border-default bg-surface dark:bg-dark-surface text-sm text-foreground dark:text-dark-text"
             />
             <select
               value={selectedUserId == null ? '' : String(selectedUserId)}
@@ -459,7 +569,7 @@ export default function HistoryPage({ user }: HistoryPageProps) {
               </h3>
               <button
                 onClick={() => handleDeleteConversation(selectedConversationId)}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-300 text-red-600 hover:bg-red-50"
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
               >
                 <Trash2 className="w-4 h-4" />
                 {t('history.deleteConversation')}

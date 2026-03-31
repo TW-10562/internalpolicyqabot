@@ -129,15 +129,17 @@ router.patch('/:id/read', async (ctx: any) => {
   }
 
   const id = Number(ctx.params?.id);
-  if (!Number.isFinite(id)) {
+  if (!Number.isFinite(id) || id <= 0) {
     ctx.body = fail('BAD_REQUEST', 'Invalid notification id');
     return;
   }
 
   try {
-    const updated = await markNotificationAsRead(userId, id);
+    const scope = (ctx.state?.accessScope || {}) as AccessScope;
+    const departmentCode = isSuperAdminRole(scope.roleCode) ? undefined : scope.departmentCode;
+    const updated = await markNotificationAsRead(userId, id, departmentCode);
     if (!updated) {
-      ctx.body = fail('NOT_FOUND', 'Notification not found');
+      ctx.body = fail('NOT_FOUND', 'Notification not found or not accessible');
       return;
     }
     ctx.body = ok({ id, is_read: true });

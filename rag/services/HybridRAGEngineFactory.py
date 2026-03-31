@@ -268,9 +268,9 @@ class HybridRAGSearchEngine:
                 )
                 if where_filter and not retrieved_docs:
                     logger.warning(
-                        "[RAG] Vector-only metadata filter returned 0 docs; retrying without metadata filter"
+                        "[RAG] Vector-only metadata filter returned 0 docs; returning empty (strict scope enforcement)"
                     )
-                    retrieved_docs = self._query_vector_documents(req.query, k_candidates)
+                    return []
                 logger.info("[RAG] Vector-only search completed")
                 return self._maybe_rerank(req.query, retrieved_docs, req.top_k)
 
@@ -292,8 +292,9 @@ class HybridRAGSearchEngine:
                     )
                 else:
                     logger.warning(
-                        "[RAG] Metadata pre-filter returned 0 docs; falling back to unfiltered corpus"
+                        "[RAG] Metadata pre-filter returned 0 docs; returning empty (strict scope enforcement)"
                     )
+                    return []
 
             bm25_params = req.bm25_params.model_dump() if req.bm25_params else {}
 

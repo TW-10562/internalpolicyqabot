@@ -210,6 +210,7 @@ export const countDocTermHits = (doc: any, terms: string[]): number => {
 export type RerankedDoc = {
   doc: any;
   score: number;
+  vectorSimilarity: number;
   termHits: number;
   lexicalScore: number;
   importanceWeight: number;
@@ -240,7 +241,7 @@ export const rerankDocuments = (
   const uniqueQueryTerms = Array.from(new Set(terms.map((term) => String(term || '').toLowerCase()).filter(Boolean)));
   const queryTermCount = Math.max(1, uniqueQueryTerms.length);
 
-  const computeLexicalScore = (termHits: number, baseScore: number, importanceWeight: number): number => {
+  const computeLexicalScore = (termHits: number, baseScore: number, importanceWeight: number, vectorSimilarity: number): number => {
     const coverage = termHits / queryTermCount;
     const multiTokenBoost = termHits >= 2 ? (termHits >= 3 ? 3.5 : 2.0) : 0;
     const partialPenalty = queryTermCount >= 3 && termHits <= 1 ? 2.5 : 0;
@@ -250,6 +251,7 @@ export const rerankDocuments = (
       multiTokenBoost -
       partialPenalty +
       (Math.log10(Math.max(1, baseScore + 1)) * 1.2) +
+      (vectorSimilarity * 5) +
       importanceWeight
     );
   };
@@ -258,13 +260,14 @@ export const rerankDocuments = (
     .map((doc) => ({
       doc,
       score: Number(doc?.score || 0),
+      vectorSimilarity: Number(doc?.vector_similarity || doc?.semantic_score || 0),
       termHits: countDocTermHits(doc, terms),
       lexicalScore: 0,
       importanceWeight: resolveDocumentImportanceWeight(doc),
     }))
     .map((row) => ({
       ...row,
-      lexicalScore: computeLexicalScore(row.termHits, row.score, row.importanceWeight),
+      lexicalScore: computeLexicalScore(row.termHits, row.score, row.importanceWeight, row.vectorSimilarity),
     }))
     .sort((a, b) => (b.lexicalScore - a.lexicalScore) || (b.termHits - a.termHits) || (b.score - a.score));
 

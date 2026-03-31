@@ -193,11 +193,11 @@ export default function NotificationsPanel({
         style={{ overscrollBehavior: 'contain' }}
       >
         {!isInitialized ? (
-          <p className="text-[#6E7680] text-center text-xs">
+          <p className="text-[#6E7680] dark:text-gray-400 text-center text-xs transition-colors">
             {t('notificationsPanel.loading')}
           </p>
         ) : visibleItems.length === 0 ? (
-          <p className="text-[#6E7680] text-center text-xs">
+          <p className="text-[#6E7680] dark:text-gray-400 text-center text-xs transition-colors">
             {searchTerm ? t('notificationsPanel.noResults') : t('notificationsPanel.noNotifications')}
           </p>
         ) : (
@@ -225,9 +225,9 @@ export default function NotificationsPanel({
             const isNew = isReceivedByViewer && !messageRead;
 
             /* ===================== DETERMINE UI STATE ===================== */
-            let borderColor = 'border-[#E8E8E8]';
-            let bgColor = 'bg-[#F6F6F6]';
-            let textColor = 'text-[#6E7680]';
+            let borderColor = 'border-[#E8E8E8] dark:border-dark-border';
+            let bgColor = 'bg-[#F6F6F6] dark:bg-dark-surface';
+            let textColor = 'text-[#6E7680] dark:text-gray-400';
             let badgeColor = '';
             let badgeText = '';
             let icon = null;
@@ -235,27 +235,27 @@ export default function NotificationsPanel({
 
             if (isSentByViewer) {
               // SENT MESSAGE: Green accent
-              borderColor = 'border-green-200';
-              bgColor = 'bg-green-50';
-              textColor = 'text-green-700';
-              icon = <Send className="w-4 h-4 text-green-600 flex-shrink-0" />;
+              borderColor = 'border-green-200 dark:border-green-800';
+              bgColor = 'bg-green-50 dark:bg-green-900/20';
+              textColor = 'text-green-700 dark:text-green-300';
+              icon = <Send className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />;
               badgeColor = '';
               badgeText = '';
             } else if (isNew) {
               // NEW MESSAGE: Blue accent
-              borderColor = 'border-[#1d2089]/30';
-              bgColor = 'bg-[#F0F4FF]';
-              textColor = 'text-[#1d2089]';
-              icon = <Mail className="w-4 h-4 text-[#1d2089] flex-shrink-0" />;
-              badgeColor = 'bg-[#1d2089] text-white';
+              borderColor = 'border-[#1d2089]/30 dark:border-blue-700/50';
+              bgColor = 'bg-[#F0F4FF] dark:bg-blue-900/20';
+              textColor = 'text-[#1d2089] dark:text-blue-300';
+              icon = <Mail className="w-4 h-4 text-[#1d2089] dark:text-blue-400 flex-shrink-0" />;
+              badgeColor = 'bg-[#1d2089] text-white dark:bg-blue-600';
               badgeText = t('notificationsPanel.new');
               showMarkAsReadBtn = true;
             } else if (isReceivedByViewer && messageRead) {
               // READ MESSAGE: Gray
-              borderColor = 'border-[#E8E8E8]';
-              bgColor = 'bg-[#F6F6F6]';
-              textColor = 'text-[#6E7680]';
-              icon = <MailOpen className="w-4 h-4 text-[#9CA3AF] flex-shrink-0" />;
+              borderColor = 'border-[#E8E8E8] dark:border-dark-border';
+              bgColor = 'bg-[#F6F6F6] dark:bg-dark-surface';
+              textColor = 'text-[#6E7680] dark:text-gray-400';
+              icon = <MailOpen className="w-4 h-4 text-[#9CA3AF] dark:text-gray-500 flex-shrink-0" />;
             }
 
             const isExpanded = expandedId === message.id;
@@ -356,44 +356,44 @@ export default function NotificationsPanel({
 
                 {/* CONTENT AREA - Collapsible */}
                 {senderName && (
-                  <p className="ml-6 mb-1 text-[10px] text-[#1d2089] dark:text-[#60a5fa] font-medium truncate">
+                  <p className="ml-6 mb-1 text-[10px] text-[#1d2089] dark:text-[#60a5fa] font-medium truncate transition-colors">
                     {t('notificationsPanel.from') || 'From'}: {senderName}
                   </p>
                 )}
                 {timeText && (
-                  <p className="ml-6 mb-2 text-[10px] text-[#9CA3AF]">
+                  <p className="ml-6 mb-2 text-[10px] text-[#9CA3AF] dark:text-gray-500 transition-colors">
                     {directionText}: {timeText}
                   </p>
                 )}
 
                 {!isExpanded ? (
                   // COLLAPSED VIEW: Show preview
-                  <div 
-                    className="cursor-pointer text-xs text-[#6E7680] space-y-1 ml-6"
+                  <div
+                    className="cursor-pointer text-xs text-[#6E7680] dark:text-gray-400 space-y-1 ml-6 transition-colors"
                     onClick={handleToggleExpand}
                   >
                     <p className="line-clamp-2 break-words">
                       {messageText || t('notificationsPanel.noContent') || 'No content'}
                     </p>
-                    <p className="text-[10px] text-[#9CA3AF] italic">
+                    <p className="text-[10px] text-[#9CA3AF] dark:text-gray-500 italic">
                       {t('notificationsPanel.clickToExpand') || 'Click to expand'}
                     </p>
                   </div>
                 ) : (
                   // EXPANDED VIEW: Show full content
-                  <div 
-                    className="mt-2 pt-2 border-t border-[#E8E8E8] ml-6 space-y-2"
+                  <div
+                    className="mt-2 pt-2 border-t border-[#E8E8E8] dark:border-dark-border ml-6 space-y-2 transition-colors"
                     onClick={handleToggleExpand}
                   >
-                    <p 
-                      className="text-xs whitespace-pre-wrap break-words overflow-hidden w-full text-[#232333]"
+                    <p
+                      className="text-xs whitespace-pre-wrap break-words overflow-hidden w-full text-[#232333] dark:text-dark-text"
                       style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}
                     >
                       <span>{messageText}</span>
                     </p>
-                    
+
                     {/* Click to collapse hint - bottom right */}
-                    <p className="text-[10px] text-[#9CA3AF] text-right italic cursor-pointer hover:text-[#6E7680]">
+                    <p className="text-[10px] text-[#9CA3AF] dark:text-gray-500 text-right italic cursor-pointer hover:text-[#6E7680] dark:hover:text-gray-400">
                       {t('notificationsPanel.clickToCollapse') || 'Click to collapse'}
                     </p>
                   </div>

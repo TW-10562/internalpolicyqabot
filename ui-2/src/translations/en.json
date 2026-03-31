@@ -546,7 +546,10 @@
     "prev": "Prev",
     "next": "Next",
     "deleteConversation": "Delete Conversation",
-    "hrBotResponse": "QA Bot Response"
+    "hrBotResponse": "QA Bot Response",
+    "dateFilter": "Filter by date",
+    "clearFilter": "Clear filter",
+    "totalConversations": "{{count}} conversations"
   },
   "settings": {
     "title": "Settings",
@@ -600,7 +603,11 @@
     "purgePasswordPlaceholder": "Enter your account password",
     "purgePasswordRequired": "Account password is required",
     "purgeSuccess": "Deleted {{count}} escalation tickets permanently",
-    "purgeFailed": "Failed to delete escalation tickets"
+    "purgeFailed": "Failed to delete escalation tickets",
+    "statusOpen": "OPEN",
+    "statusInProgress": "IN_PROGRESS",
+    "statusResolved": "RESOLVED",
+    "statusRejected": "REJECTED"
   },
   "profile": {
     "title": "Profile Information",

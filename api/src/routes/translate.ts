@@ -1,5 +1,6 @@
 import IndexCon from '@/controller';
 import { getUserBase } from '@/controller/user';
+import { requireScopedAccess } from '@/controller/auth';
 import {
   clearTranslationHistory,
   getSupportedLanguages,
@@ -9,6 +10,7 @@ import {
 import Router from 'koa-router';
 
 const router = new Router({ prefix: '/api' });
+router.use(requireScopedAccess);
 
 // Translation-related routing
 router.post('/translate', translateText, IndexCon('翻訳が成功しました'));
@@ -19,7 +21,7 @@ router.get('/translate/languages', getSupportedLanguages, IndexCon('言語リス
 // Retrieve translation history (requires user authentication)
 router.get('/translate/history', getUserBase, getTranslationHistory, IndexCon('翻訳履歴が取得されました'));
 
-// Clear translation gistory (requires user authentication)
+// Clear translation history (requires user authentication)
 router.delete('/translate/history', getUserBase, clearTranslationHistory, IndexCon('翻訳履歴がクリアされました'));
 
 export default router;

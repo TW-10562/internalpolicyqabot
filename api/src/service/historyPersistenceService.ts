@@ -98,44 +98,54 @@ export function buildHistoryRowsForTurn(input: PersistChatTurnInput) {
  * for a *different* conversation.  When that happens, findOrCreate silently returns
  * the old row and the current conversation ends up with zero messages.
  *
- * Strategy:
- *   1. If no row with this message_id exists → create.
- *   2. If a row exists for the SAME conversation → skip (idempotent).
- *   3. If a row exists for a DIFFERENT conversation → create with a
- *      conversation-scoped message_id to avoid the unique-constraint collision.
+ * Strategy (optimistic insert — race-condition-free):
+ *   1. Try to insert directly — succeeds if no row with this message_id exists.
+ *   2. On unique constraint violation, check if the existing row belongs to the
+ *      same conversation (idempotent → skip) or a different one (collision →
+ *      retry with a conversation-scoped message_id).
  */
 async function upsertHistoryMessage(
   message: Record<string, any>,
   transaction: any,
 ) {
+  try {
+    await ChatHistoryMessage.create(message as any, { transaction });
+    return;
+  } catch (err: any) {
+    // Not a unique constraint violation → rethrow
+    const isUniqueViolation =
+      err?.name === 'SequelizeUniqueConstraintError' ||
+      err?.original?.code === 'ER_DUP_ENTRY' ||      // MySQL
+      err?.original?.code === '23505';                 // PostgreSQL
+    if (!isUniqueViolation) throw err;
+  }
+
+  // Unique constraint hit — check if same or different conversation
   const existing = await ChatHistoryMessage.findOne({
     raw: true,
     where: { message_id: message.message_id },
     transaction,
   }) as any;
 
-  if (!existing) {
-    await ChatHistoryMessage.create(message as any, { transaction });
-    return;
-  }
-
   // Same conversation → already persisted (idempotent)
-  if (String(existing.conversation_id).trim() === String(message.conversation_id).trim()) {
+  if (existing && String(existing.conversation_id).trim() === String(message.conversation_id).trim()) {
     return;
   }
 
-  // Different conversation → collision.  Create with a scoped message_id.
+  // Different conversation → collision.  Create with a conversation-scoped message_id.
   const scopedId = `${message.conversation_id}:${message.message_id}`;
-  const alreadyScoped = await ChatHistoryMessage.findOne({
-    raw: true,
-    where: { message_id: scopedId },
-    transaction,
-  }) as any;
-  if (!alreadyScoped) {
+  try {
     await ChatHistoryMessage.create(
       { ...message, message_id: scopedId } as any,
       { transaction },
     );
+  } catch (scopedErr: any) {
+    const isScopedDup =
+      scopedErr?.name === 'SequelizeUniqueConstraintError' ||
+      scopedErr?.original?.code === 'ER_DUP_ENTRY' ||
+      scopedErr?.original?.code === '23505';
+    if (!isScopedDup) throw scopedErr;
+    // Scoped ID already exists → idempotent, skip
   }
 }
 
@@ -170,6 +180,8 @@ export async function listHistoryConversations(params: {
   pageNum: number;
   pageSize: number;
   departmentCode?: string;
+  dateFrom?: string;
+  dateTo?: string;
 }) {
   const limit = Math.max(1, Math.min(100, Number(params.pageSize) || 20));
   const offset = (Math.max(1, Number(params.pageNum) || 1) - 1) * limit;
@@ -177,6 +189,14 @@ export async function listHistoryConversations(params: {
     ...(params.userId != null ? { user_id: params.userId } : {}),
     ...(params.departmentCode ? { department_code: params.departmentCode } : {}),
   };
+
+  // Date range filtering on updated_at
+  if (params.dateFrom || params.dateTo) {
+    const dateRange: any = {};
+    if (params.dateFrom) dateRange[Op.gte] = new Date(`${params.dateFrom}T00:00:00+09:00`);
+    if (params.dateTo) dateRange[Op.lte] = new Date(`${params.dateTo}T23:59:59+09:00`);
+    where.updated_at = dateRange;
+  }
 
   const { rows: rawRows, count: rawCount } = await ChatHistoryConversation.findAndCountAll({
     raw: true,

@@ -163,7 +163,7 @@ const RAG_STAGE1_MIN_SCOPE_CONFIDENCE = Math.min(
 );
 const RAG_INTENT_CONFIDENCE_THRESHOLD = Math.min(0.95, Math.max(0.4, Number(process.env.RAG_INTENT_CONFIDENCE_THRESHOLD || 0.62)));
 const RAG_DEBUG_FILTER_TRACE = String(process.env.RAG_DEBUG_FILTER_TRACE || '0') === '1';
-const RAG_ANSWER_CACHE = String(process.env.RAG_ANSWER_CACHE || '0') === '1';
+const RAG_ANSWER_CACHE = false; // Disabled — cached answers cause stale/confusing results
 const RAG_ANSWER_CACHE_TTL_SEC = Math.max(60, Number(process.env.RAG_ANSWER_CACHE_TTL_SEC || 3600));
 const RAG_ANSWER_CACHE_MAX_BYTES = Math.max(512, Number(process.env.RAG_ANSWER_CACHE_MAX_BYTES || 40000));
 const RAG_CACHE_MIN_ANSWER_CHARS = Math.max(32, Number(process.env.RAG_CACHE_MIN_ANSWER_CHARS || 96));
@@ -2391,15 +2391,22 @@ const buildExtractiveEmailSignatureAnswer = (
 const isCannotConfirmStyleAnswer = (value: string): boolean => {
   const text = String(value || '').toLowerCase();
   if (!text) return false;
+
+  // If the answer has substantial content (>200 chars with meaningful lines beyond
+  // the rejection phrase), treat it as a PARTIAL answer, not a pure rejection.
+  // This prevents throwing away valid answers that happen to include a caveat line.
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 10);
+  const isSubstantialAnswer = lines.length >= 3 || text.length > 200;
+
   const compactLatin = text.replace(/[^a-z]/g, '');
   const compactJa = text.replace(/[\s。、，,.:;!?！？「」『』【】（）()]/g, '');
   const strictNoEvidenceEn = noEvidenceReply('en').toLowerCase();
   const strictNoEvidenceJa = noEvidenceReply('ja');
   const compactStrictNoEvidenceEn = strictNoEvidenceEn.replace(/[^a-z]/g, '');
   const compactStrictNoEvidenceJa = strictNoEvidenceJa.replace(/[\s。、，,.:;!?！？「」『』【】（）()]/g, '');
-  return (
+  const matchesRejectionPhrase = (
     text.includes(strictNoEvidenceEn) ||
-    text.includes('i can’t confirm from the provided documents') ||
+    text.includes("i can\u2019t confirm from the provided documents") ||
     text.includes("i can't confirm from the provided documents") ||
     text.includes('i could not find a matching section in internal policy documents') ||
     text.includes('i could not find relevant information in the available company documents') ||
@@ -2418,8 +2425,11 @@ const isCannotConfirmStyleAnswer = (value: string): boolean => {
     /therequestedinformationwasnotfoundintheavailable[a-z]+internaldocuments/.test(compactLatin) ||
     compactJa.includes(compactStrictNoEvidenceJa) ||
     /利用可能な.+社内文書内で要求された情報は見つかりませんでした/.test(compactJa) ||
-    compactJa.includes('利用可能な社内文書内で要求された情報は見つかりませんでした')
+    compactJa.includes("\u5229\u7528\u53ef\u80fd\u306a\u793e\u5185\u6587\u66f8\u5185\u3067\u8981\u6c42\u3055\u308c\u305f\u60c5\u5831\u306f\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3067\u3057\u305f")
   );
+
+  // Only reject if it matches a rejection phrase AND the answer is short/insubstantial
+  return matchesRejectionPhrase && !isSubstantialAnswer;
 };
 
 const isGenerationFailureStyleAnswer = (value: string): boolean => {
@@ -2926,8 +2936,8 @@ const sanitizeEnglishBodyText = (text: string): string => {
 
     out = out
       .replace(/""+/g, '')
-      .replace(/[“"]\s*[”"]/g, '')
-      .replace(/\bthe\s+[“"]\s*[”"]\s+page\b/gi, 'the attendance page')
+      .replace(/[""]\s*[""]/g, '')
+      .replace(/\bthe\s+[""]\s*[""]\s+page\b/gi, 'the attendance page')
       .replace(/\bto the\s+page\b/gi, 'to the attendance page')
       .replace(/([,;:!?])([A-Za-z])/g, '$1 $2')
       .replace(/([A-Za-z])([,;:!?])/g, '$1$2 ')
@@ -3316,26 +3326,10 @@ const appendSourceFooter = (
     bodyWithCitation = rendered.join('\n').trim();
   }
 
-  const queryTerms = uniqueStringList(buildFallbackQueryTerms(String(queryHint || ''), language, 10), 10)
-    .map((term) => String(term || '').trim().toLowerCase())
-    .filter((term) => term.length >= 2)
-    .slice(0, 6);
-
-  const scoredSources = sourceNames.map((name, idx) => {
-    const lowered = name.toLowerCase();
-    const hits = queryTerms.reduce((sum, term) => sum + (lowered.includes(term) ? 1 : 0), 0);
-    return { name, idx, hits };
-  });
-
-  const positive = scoredSources.filter((row) => row.hits > 0);
-  const fallbackLimit = positive.length > 0 ? 3 : 1;
-  const selected = (positive.length > 0 ? positive : scoredSources)
-    .sort((a, b) => (b.hits - a.hits) || (a.idx - b.idx))
-    .slice(0, fallbackLimit)
-    .map((row) => row.name);
+  // Show ALL unique source documents — do not filter by query term relevance
+  const selected = sourceNames;
 
   const queryHintCompact = String(queryHint || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-  const hintTerms = queryTerms.slice(0, 4);
   const hintLabel = language === 'ja' ? '照会語' : 'matched query';
   const decorated = selected.map((name) => {
     if (!queryHintCompact) return name;
@@ -4506,6 +4500,7 @@ export const chatGenProcess = async (job) => {
           tierLatencyMs = 0;
         }
 
+        console.log(`[DEBUG] finalAnswer after pipeline: empty=${!finalAnswer} length=${String(finalAnswer||'').length} isCannotConfirm=${isCannotConfirmStyleAnswer(finalAnswer)} isGenFailure=${isGenerationFailureStyleAnswer(finalAnswer)} preview="${String(finalAnswer||'').slice(0, 150)}"`);
         if (!finalAnswer) {
           if (kpiMetrics.ragUsed) {
             markEmptyLlmResponseFallback('modular_final_answer_empty');

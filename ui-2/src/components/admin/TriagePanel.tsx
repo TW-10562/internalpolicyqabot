@@ -15,6 +15,13 @@ import { User as UserType } from '../../types';
 
 const STATUS_ORDER: TriageStatus[] = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'REJECTED'];
 
+const STATUS_KEYS: Record<TriageStatus, string> = {
+  OPEN: 'triage.statusOpen',
+  IN_PROGRESS: 'triage.statusInProgress',
+  RESOLVED: 'triage.statusResolved',
+  REJECTED: 'triage.statusRejected',
+};
+
 const statusClass = (status: TriageStatus) => {
   if (status === 'OPEN') return 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300';
   if (status === 'IN_PROGRESS') return 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
@@ -191,7 +198,7 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-foreground dark:text-dark-text">#{ticket.id}</span>
                   <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusClass(ticket.status)}`}>
-                    {ticket.status}
+                    {t(STATUS_KEYS[ticket.status])}
                   </span>
                   <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
                     {ticket.department_code}
@@ -255,7 +262,7 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
                     disabled={updatingId === ticket.id || ticket.status === status}
                     className="px-3 py-1.5 rounded-lg text-xs border border-default hover:bg-surface-alt dark:hover:bg-dark-border disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {status}
+                    {t(STATUS_KEYS[status])}
                   </button>
                 ))}
               </div>

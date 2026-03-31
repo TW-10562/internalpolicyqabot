@@ -26,6 +26,8 @@ router.get('/', async (ctx: any) => {
     pageSize: Joi.number().integer().min(1).max(100).default(20),
     userId: Joi.number().integer().min(1).optional(),
     allUsers: Joi.boolean().truthy('1').truthy('true').falsy('0').falsy('false').default(false),
+    dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   });
 
   const { error, value } = schema.validate(ctx.query || {});
@@ -47,6 +49,8 @@ router.get('/', async (ctx: any) => {
         pageSize: value.pageSize,
         // user_id scoping is the source of truth; avoid false negatives from stale department snapshots.
         departmentCode: undefined,
+        dateFrom: value.dateFrom || undefined,
+        dateTo: value.dateTo || undefined,
       },
     );
     ctx.body = ok(data);

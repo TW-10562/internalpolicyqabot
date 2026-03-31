@@ -57,13 +57,36 @@ const dedupeLines = (lines: string[]): string[] => {
   return out;
 };
 
-const toMeaningfulLines = (body: string): string[] =>
-  dedupeLines(
-    String(body || '')
-      .split('\n')
-      .map((line) => String(line || '').trim())
-      .filter(Boolean),
-  );
+const splitParagraphToSentences = (text: string): string[] => {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  // Split on sentence-ending punctuation followed by space or newline
+  const sentences = raw
+    .split(/(?<=[.!?。！？])\s+(?=[A-Z\u3040-\u30ff\u4e00-\u9fff])/g)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 10);
+  return sentences.length >= 2 ? sentences : [raw];
+};
+
+const toMeaningfulLines = (body: string): string[] => {
+  const raw = String(body || '').trim();
+  if (!raw) return [];
+  const linesSplit = raw.split('\n').map((line) => String(line || '').trim()).filter(Boolean);
+  // If the LLM output is mostly a single paragraph (1-2 lines), split by sentences
+  if (linesSplit.length <= 2 && raw.length > 120) {
+    const expanded: string[] = [];
+    for (const line of linesSplit) {
+      // Skip lines already formatted as bullets or numbered items
+      if (/^[-*•]\s/.test(line) || /^\d+[.)]\s/.test(line)) {
+        expanded.push(line);
+      } else {
+        expanded.push(...splitParagraphToSentences(line));
+      }
+    }
+    return dedupeLines(expanded);
+  }
+  return dedupeLines(linesSplit);
+};
 
 const isProceduralLine = (line: string): boolean =>
   /(?:\bsubmit\b|\brequest\b|\bapply\b|\bopen\b|\bclick\b|\bselect\b|\benter\b|\blog\s*in\b|\bconfirm\b|\bapprove\b|申請|提出|入力|選択|確認|承認|ログイン|実施)/i

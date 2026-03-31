@@ -546,7 +546,10 @@
     "prev": "前へ",
     "next": "次へ",
     "deleteConversation": "会話を削除",
-    "hrBotResponse": "QAボット応答"
+    "hrBotResponse": "QAボット応答",
+    "dateFilter": "日付でフィルター",
+    "clearFilter": "フィルター解除",
+    "totalConversations": "{{count}} 件の会話"
   },
   "settings": {
     "title": "設定",
@@ -600,7 +603,11 @@
     "purgePasswordPlaceholder": "アカウントのパスワードを入力",
     "purgePasswordRequired": "アカウントのパスワードは必須です",
     "purgeSuccess": "エスカレーションチケットを {{count}} 件永久削除しました",
-    "purgeFailed": "エスカレーションチケットの削除に失敗しました"
+    "purgeFailed": "エスカレーションチケットの削除に失敗しました",
+    "statusOpen": "未対応",
+    "statusInProgress": "対応中",
+    "statusResolved": "解決済み",
+    "statusRejected": "却下"
   },
   "profile": {
     "title": "プロフィール",

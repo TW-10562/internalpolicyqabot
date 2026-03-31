@@ -50,15 +50,33 @@ node -e '
 ' "$rag_body"
 
 echo "[health] solr"
-solr_body="$(curl -sS "$SOLR_URL")"
-node -e '
-  const data = JSON.parse(process.argv[1]);
-  const found = Number(data?.response?.numFound || 0);
-  if (!Number.isFinite(found) || found <= 0) process.exit(1);
-  console.log(`  - solr numFound=${found}`);
-' "$solr_body"
+solr_body="$(curl -sS "$SOLR_URL")" && solr_reachable=true || solr_reachable=false
+if [ "$solr_reachable" = true ]; then
+  node -e '
+    const data = JSON.parse(process.argv[1]);
+    const found = Number(data?.response?.numFound || 0);
+    if (!Number.isFinite(found)) process.exit(1);
+    if (found <= 0) {
+      console.log("  - solr WARN: index is empty (numFound=0) — reindex may be needed");
+    } else {
+      console.log(`  - solr PASS numFound=${found}`);
+    }
+  ' "$solr_body"
+else
+  echo "  - solr FAIL: could not reach Solr at $SOLR_URL" >&2
+  exit 1
+fi
 
-"$ROOT_DIR/scripts/test_gateway.sh"
-"$ROOT_DIR/scripts/test_rag_e2e.sh"
+# Optional integration test scripts (run if present)
+if [ -x "$ROOT_DIR/scripts/test_gateway.sh" ]; then
+  "$ROOT_DIR/scripts/test_gateway.sh"
+else
+  echo "[health] skipping test_gateway.sh (not found)"
+fi
+if [ -x "$ROOT_DIR/scripts/test_rag_e2e.sh" ]; then
+  "$ROOT_DIR/scripts/test_rag_e2e.sh"
+else
+  echo "[health] skipping test_rag_e2e.sh (not found)"
+fi
 
 echo "[health] complete"

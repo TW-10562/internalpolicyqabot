@@ -35,6 +35,36 @@ export const normalizeEvidenceLine = (value: string): string =>
     .trim()
     .toLowerCase();
 
+export const normalizeTableContent = (text: string): string => {
+  let result = String(text || '');
+  // Strip document header lines like "就業規則_20260201 / 第2章 採用 / 第6条 第６条"
+  // These are chunk prefixes from ChromaDB that leak into LLM answers
+  const lines = result.split('\n');
+  const cleaned: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip lines that are document name + chapter/article path headers
+    if (/^[\w\u3000-\u9fff\uff00-\uffef_.【】\-]+\s+\/\s+第?\d*[章条節]/.test(trimmed)) continue;
+    // Skip lines that are just document filenames (e.g. "就業規則_20260201.pdf")
+    if (/^[\w\u3000-\u9fff\uff00-\uffef_.【】\-]+\.(pdf|docx?|xlsx?)$/i.test(trimmed)) continue;
+    cleaned.push(line);
+  }
+  result = cleaned.join('\n');
+  // Remove PDF artifact markers like [第X項] that interfere with actual content
+  result = result.replace(/\[第\d+項\]\s*/g, '');
+  // Rejoin split number+unit patterns: "10\n日" or "10  日" -> "10日"
+  result = result.replace(/(\d+)\s*\n\s*日/g, '$1日');
+  // Rejoin year range patterns split across lines: "0.5 年" -> "0.5年"
+  result = result.replace(/(\d+(?:\.\d+)?)\s*\n\s*年/g, '$1年');
+  // Normalize table header: "勤続年数\n付与日数" -> single line
+  result = result.replace(/(勤続年数)\s*\n\s*(付与日数)/g, '$1 付与日数');
+  // Rejoin year range + day count split across lines: "1.5年未満\n10日" -> "1.5年未満 10日"
+  result = result.replace(/(年未満|年以上)\s*\n\s*(\d+日)/g, '$1 $2');
+  // Clean up 〃 (ditto mark) commonly used in Japanese tables to mean repeat of 年
+  result = result.replace(/〃/g, '年');
+  return result;
+};
+
 export const extractRelevantSnippet = (raw: string, terms: string[], maxChars: number): string => {
   const sourceText = String(raw || '').trim();
   if (!sourceText) return '';
@@ -167,7 +197,7 @@ export const buildContextFromDocs = (input: BuildContextInput): BuildContextOutp
     if (Array.isArray(docContent)) {
       docContent = docContent.join(' ');
     }
-    docContent = String(docContent || '');
+    docContent = normalizeTableContent(String(docContent || ''));
 
     const sourceKey = String(
       (Array.isArray(doc?.title) ? doc.title[0] : doc?.title) ||

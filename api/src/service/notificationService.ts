@@ -139,8 +139,27 @@ export async function listNotifications(userId: number, pageNum: number, pageSiz
  * Uses the per-user notification_reads table so each admin has independent read state.
  * Also updates the DB is_read flag for direct (non-broadcast) notifications.
  */
-export async function markNotificationAsRead(userId: number, id: number) {
-  // Always insert into per-user read tracking (upsert)
+export async function markNotificationAsRead(userId: number, id: number, departmentCode?: string) {
+  // Validate the notification exists and is visible to this user
+  const notification = await AppNotification.findOne({
+    raw: true,
+    where: {
+      id,
+      [Op.or]: [
+        { user_id: userId },
+        // Broadcast notifications (user_id=null) scoped to user's department
+        ...(departmentCode
+          ? [{ user_id: null, department_code: departmentCode }]
+          : [{ user_id: null }]),
+      ],
+    } as any,
+  }) as any;
+
+  if (!notification) {
+    return false;
+  }
+
+  // Insert into per-user read tracking (upsert)
   try {
     await pgPool.query(
       `INSERT INTO notification_reads (user_id, notification_id, read_at)
@@ -158,7 +177,7 @@ export async function markNotificationAsRead(userId: number, id: number) {
     { is_read: true, read_at: new Date() } as any,
     { where: { id, user_id: userId } },
   );
-  return updated > 0 || true; // Always return true since per-user tracking succeeded
+  return updated > 0 || notification.user_id == null; // true for broadcasts (read tracked via notification_reads)
 }
 
 /**
@@ -194,11 +213,16 @@ export async function markAllNotificationsAsRead(userId: number, departmentCode?
   const notifIds = rows.map((r: any) => Number(r.id)).filter((id) => Number.isFinite(id));
   const directIds = rows.filter((r: any) => r.user_id != null && Number(r.user_id) === userId).map((r: any) => Number(r.id));
 
-  // Bulk insert per-user read tracking
+  // Bulk insert per-user read tracking using parameterized query
   if (notifIds.length > 0) {
-    const values = notifIds.map((nid) => `(${userId}, ${nid}, NOW())`).join(',');
+    const params: (number | null)[] = [userId];
+    const valueClauses = notifIds.map((nid, i) => {
+      params.push(nid);
+      return `($1, $${i + 2}, NOW())`;
+    });
     await pgPool.query(
-      `INSERT INTO notification_reads (user_id, notification_id, read_at) VALUES ${values} ON CONFLICT (user_id, notification_id) DO NOTHING`,
+      `INSERT INTO notification_reads (user_id, notification_id, read_at) VALUES ${valueClauses.join(',')} ON CONFLICT (user_id, notification_id) DO NOTHING`,
+      params,
     ).catch((err) => console.warn('[notificationService] Bulk read insert failed:', err));
   }
 
@@ -251,9 +275,15 @@ export async function purgeUserNotifications(params?: { departmentCode?: string 
       transaction,
     });
 
-    // Clean up notification_reads for deleted notifications
-    pgPool.query('DELETE FROM notification_reads WHERE notification_id NOT IN (SELECT id FROM app_notifications)')
-      .catch(() => {});
+    // Clean up notification_reads for purged notifications.
+    // app_notifications lives in MySQL so we cannot cross-join to find orphaned rows.
+    // When purging all (no department filter), truncate all read tracking.
+    // When purging by department, we accept minor orphaned rows — they are harmless
+    // and will be ignored since the parent notification no longer exists.
+    if (!params?.departmentCode) {
+      pgPool.query('DELETE FROM notification_reads')
+        .catch((err) => console.warn('[notificationService] Failed to clean up notification_reads after purge:', err));
+    }
 
     return {
       appDeleted,

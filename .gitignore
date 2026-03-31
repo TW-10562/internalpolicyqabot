@@ -48,3 +48,5 @@ config/*.env
 ssl/*.crt
 ssl/*.key
 ssl/*.pem
+ssl-vendor/*.pem
+ssl-vendor/*.key

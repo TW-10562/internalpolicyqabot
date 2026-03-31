@@ -32,7 +32,11 @@ router.post('/ticket', async (ctx: any) => {
   }
 
   try {
-    const user = ctx.state.user || { userId: 1, userName: 'test' };
+    const user = ctx.state.user;
+    if (!user?.userId) {
+      ctx.body = { code: 401, message: 'User authentication required' };
+      return;
+    }
     const scope = (ctx.state?.accessScope || {}) as AccessScope;
     const result = await createSupportTicket({
       userId: user.userId,

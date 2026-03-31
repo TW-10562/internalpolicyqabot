@@ -156,7 +156,7 @@ type CachedPipelineResponse = {
   metrics: RunRagPipelineResult['metrics'];
 };
 
-const RESPONSE_CACHE_ENABLED = String(process.env.RAG_RESPONSE_CACHE_ENABLED || '1') !== '0';
+const RESPONSE_CACHE_ENABLED = false; // Disabled — per-chat cache causes stale/confusing results
 const RESPONSE_CACHE_FINGERPRINT_MAX_IDS = Math.max(
   8,
   Number(process.env.RAG_RESPONSE_CACHE_FINGERPRINT_MAX_IDS || 64),
@@ -211,7 +211,7 @@ const RAG_MIN_TERM_OVERLAP = Math.max(
   1,
   Number(process.env.RAG_MIN_TERM_OVERLAP || 2),
 );
-const RAG_MAX_DOCUMENTS = Math.max(1, Number(process.env.RAG_MAX_DOCUMENTS || 2));
+const RAG_MAX_DOCUMENTS = Math.max(1, Number(process.env.RAG_MAX_DOCUMENTS || 4));
 const RAG_MAX_EVIDENCE_CHUNKS = Math.max(1, Number(process.env.RAG_MAX_EVIDENCE_CHUNKS || 3));
 const RAG_MIN_TERM_OVERLAP_STRICT = Math.max(1, Number(process.env.RAG_MIN_TERM_OVERLAP_STRICT || 1));
 const RAG_MIN_SEMANTIC_SIMILARITY = Math.max(0, Number(process.env.RAG_MIN_SEMANTIC_SIMILARITY || 0.25));

@@ -224,21 +224,11 @@ function normalizeAiText(input: string): string {
       normalizedLines.push('');
       continue;
     }
+    // Preserve markdown table rows and dividers as-is
     const pipeCount = (raw.match(/\|/g) || []).length;
     const isTableDivider = /^[:\-\|\s]+$/.test(raw);
-    if (isTableDivider) {
-      continue;
-    }
-    if (pipeCount >= 2 && !isTableDivider) {
-      const cells = raw
-        .split('|')
-        .map((c) => c.trim())
-        .filter(Boolean);
-      if (cells.length >= 2) {
-        normalizedLines.push(`• ${cells[0]}: ${cells.slice(1).join(' | ')}`);
-      } else {
-        normalizedLines.push(raw);
-      }
+    if (pipeCount >= 2 || isTableDivider) {
+      normalizedLines.push(raw);
       continue;
     }
     normalizedLines.push(raw);
@@ -290,10 +280,16 @@ const normalizeReplyForDisplay = (value: string): string => {
   return normalized;
 };
 
+const HEADING_RE = /^(#{1,3})\s+(.+)$/;
+const TABLE_ROW_RE = /^\|(.+)\|$/;
+const TABLE_DIVIDER_RE = /^[:\-\|\s]+$/;
+
 type MarkdownBlock =
   | { type: 'paragraph'; lines: string[] }
   | { type: 'ul'; items: Array<{ text: string }> }
-  | { type: 'ol'; items: Array<{ text: string; order: number }> };
+  | { type: 'ol'; items: Array<{ text: string; order: number }> }
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'table'; headers: string[]; rows: string[][] };
 
 function parseMarkdownBlocks(value: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
@@ -301,6 +297,8 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
   let paragraphLines: string[] = [];
   let listType: 'ul' | 'ol' | null = null;
   let listItems: Array<{ text: string; order?: number }> = [];
+  let tableRows: string[][] = [];
+  let tableHasHeader = false;
 
   const flushParagraph = () => {
     if (!paragraphLines.length) return;
@@ -325,12 +323,55 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
     listItems = [];
   };
 
-  for (const rawLine of lines) {
-    const line = String(rawLine || '');
+  const flushTable = () => {
+    if (tableRows.length < 1) { tableRows = []; tableHasHeader = false; return; }
+    const headers = tableHasHeader && tableRows.length > 0 ? tableRows[0] : [];
+    const dataRows = tableHasHeader ? tableRows.slice(1) : tableRows;
+    blocks.push({ type: 'table', headers, rows: dataRows });
+    tableRows = [];
+    tableHasHeader = false;
+  };
+
+  const parseTableCells = (line: string): string[] =>
+    line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = String(lines[i] || '');
     const trimmed = line.trim();
     if (!trimmed) {
       flushParagraph();
       flushList();
+      flushTable();
+      continue;
+    }
+
+    // Table divider row (|---|---|)
+    if (TABLE_DIVIDER_RE.test(trimmed) && trimmed.includes('|')) {
+      if (tableRows.length === 1) {
+        tableHasHeader = true;
+      }
+      continue;
+    }
+
+    // Table row (| cell | cell |)
+    if (TABLE_ROW_RE.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      tableRows.push(parseTableCells(trimmed));
+      continue;
+    }
+
+    // If we were building a table, flush it
+    if (tableRows.length > 0) {
+      flushTable();
+    }
+
+    // Heading (# / ## / ###)
+    const heading = trimmed.match(HEADING_RE);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: 'heading', level: heading[1].length, text: String(heading[2] || '').trim() });
       continue;
     }
 
@@ -365,6 +406,7 @@ function parseMarkdownBlocks(value: string): MarkdownBlock[] {
 
   flushParagraph();
   flushList();
+  flushTable();
   return blocks;
 }
 
@@ -401,8 +443,49 @@ function RichMessageText({ text }: { text: string }) {
   if (!blocks.length) return null;
 
   return (
-    <div className="space-y-2 text-sm leading-relaxed break-words text-slate-900 dark:text-slate-100">
+    <div className="space-y-2.5 text-sm leading-relaxed break-words text-slate-900 dark:text-slate-100">
       {blocks.map((block, blockIndex) => {
+        if (block.type === 'heading') {
+          const Tag = block.level === 1 ? 'h3' : block.level === 2 ? 'h4' : 'h5';
+          const sizeClass = block.level === 1 ? 'text-base font-semibold' : block.level === 2 ? 'text-sm font-semibold' : 'text-sm font-medium';
+          return (
+            <Tag key={`h-${blockIndex}`} className={`${sizeClass} text-slate-800 dark:text-slate-200 mt-1`}>
+              {renderInlineMarkdown(block.text, `h-${blockIndex}`)}
+            </Tag>
+          );
+        }
+
+        if (block.type === 'table') {
+          return (
+            <div key={`tbl-${blockIndex}`} className="overflow-x-auto my-1">
+              <table className="min-w-full text-xs border-collapse border border-slate-300 dark:border-slate-600 rounded">
+                {block.headers.length > 0 && (
+                  <thead>
+                    <tr className="bg-slate-100 dark:bg-slate-700/60">
+                      {block.headers.map((cell, ci) => (
+                        <th key={`th-${blockIndex}-${ci}`} className="px-3 py-1.5 text-left font-semibold border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">
+                          {renderInlineMarkdown(cell, `th-${blockIndex}-${ci}`)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                )}
+                <tbody>
+                  {block.rows.map((row, ri) => (
+                    <tr key={`tr-${blockIndex}-${ri}`} className={ri % 2 === 0 ? 'bg-white dark:bg-slate-800/40' : 'bg-slate-50 dark:bg-slate-800/20'}>
+                      {row.map((cell, ci) => (
+                        <td key={`td-${blockIndex}-${ri}-${ci}`} className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300">
+                          {renderInlineMarkdown(cell, `td-${blockIndex}-${ri}-${ci}`)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
         if (block.type === 'paragraph') {
           return (
             <p key={`p-${blockIndex}`}>

@@ -11,6 +11,7 @@ import {
   NO_EVIDENCE_FOUND_TOKEN,
 } from '@/rag/generation/promptBuilder';
 import { hasJapaneseChars } from '@/rag/language/detectLanguage';
+import { normalizeTableContent } from '@/rag/context/contextBuilder';
 import { translateText } from '@/utils/translation';
 import { publishChatStreamEvent } from '@/service/chatStreamService';
 import {
@@ -1457,9 +1458,10 @@ export const generateEvidenceFirstGroundedAnswer = async ({
         userLanguage === 'en' &&
         hasJapaneseChars(String(chunk.text || '')) &&
         translatedChunks < EVIDENCE_TRANSLATION_MAX_CHUNKS;
+      const rawExcerpt = normalizeTableContent(String(chunk.text || '').trim());
       const preparedChunk = shouldTranslateChunk
-        ? await buildTranslatedExcerptForEnglish(chunk)
-        : { excerpt: String(chunk.text || '').trim(), translated: false };
+        ? await buildTranslatedExcerptForEnglish({ ...chunk, text: rawExcerpt })
+        : { excerpt: rawExcerpt, translated: false };
       if (preparedChunk.translated) {
         translatedChunks += 1;
       }

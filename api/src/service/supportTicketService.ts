@@ -74,10 +74,11 @@ export async function replyToTicket(data: ReplyTicketData) {
       replied_at: new Date(),
     });
 
-    // Create notification for the user
+    // Create notification for the user using the ticket owner's department
+    // (not the admin's department) so the user can see it
     await add(Notification, {
       user_id: ticket.user_id,
-      department_code: data.departmentCode,
+      department_code: ticket.department_code,
       title: 'Admin Reply to Your Query',
       message: `Your query "${ticket.subject}" has been answered by admin.`,
       type: 'admin_reply',

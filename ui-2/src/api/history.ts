@@ -35,10 +35,12 @@ export type HistoryUserOption = {
   last_activity_at: string | null;
 };
 
-export function listHistory(pageNum = 1, pageSize = 20, opts?: { userId?: number; allUsers?: boolean }) {
+export function listHistory(pageNum = 1, pageSize = 20, opts?: { userId?: number; allUsers?: boolean; dateFrom?: string; dateTo?: string }) {
   const params: Record<string, any> = { pageNum, pageSize };
   if (typeof opts?.userId === 'number' && Number.isFinite(opts.userId)) params.userId = opts.userId;
   if (opts?.allUsers === true) params.allUsers = true;
+  if (opts?.dateFrom) params.dateFrom = opts.dateFrom;
+  if (opts?.dateTo) params.dateTo = opts.dateTo;
   return request<{ ok: boolean; data: { rows: HistoryConversation[]; total: number; page_num: number; page_size: number }; error: any }>(
     '/api/history',
     { method: 'GET', params },
