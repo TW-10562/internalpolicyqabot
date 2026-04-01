@@ -61,16 +61,8 @@ const resolveSsoDepartment = (params: {
   microsoftDepartment?: string | null;
   existingDepartment?: string | null;
   existingDepartmentCode?: string | null;
-}): { department: string; departmentCode: DepartmentCode; source: 'admin_role' | 'microsoft' | 'existing' | 'fallback' } => {
-  const adminDepartment = roleDepartmentForAdmin(params.roleCode);
-  if (adminDepartment) {
-    return {
-      department: departmentNameForCode(adminDepartment),
-      departmentCode: adminDepartment,
-      source: 'admin_role',
-    };
-  }
-
+}): { department: string; departmentCode: DepartmentCode; source: 'microsoft' | 'existing' | 'fallback' } => {
+  // Always use SSO department from Microsoft, never override based on admin role.
   const microsoftDepartment = normalizeText(params.microsoftDepartment);
   if (microsoftDepartment) {
     return {

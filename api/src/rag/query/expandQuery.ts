@@ -64,7 +64,7 @@ type SemanticBridgeVariants = {
 };
 
 type SemanticBridgeRule = {
-  key: 'disciplinary' | 'incident' | 'reporting' | 'procedure' | 'workplace' | 'fiscal';
+  key: 'disciplinary' | 'incident' | 'reporting' | 'procedure' | 'workplace' | 'fiscal' | 'harassment';
   pattern: RegExp;
   englishVariants: string[];
   japaneseVariants: string[];
@@ -107,7 +107,39 @@ const EN_SEMANTIC_BRIDGE_RULES: SemanticBridgeRule[] = [
     englishVariants: ['fiscal year', 'accounting period'],
     japaneseVariants: ['事業年度', '会計年度', '決算期', '経理規程'],
   },
+  {
+    key: 'harassment',
+    pattern: /\bharass(?:ment|ing)?\b|\bbull(?:y|ying)\b|\bpower\s+harass/i,
+    englishVariants: ['power harassment', 'harassment prevention', 'harassment policy'],
+    japaneseVariants: ['パワハラ', 'ハラスメント', 'ハラスメント防止', 'パワーハラスメント', '嫌がらせ'],
+  },
 ];
+
+// Static Japanese concept synonym map for terms that users express differently
+// from how they appear in HR policy documents.
+const JA_CONCEPT_SYNONYM_MAP: Array<{ pattern: RegExp; synonyms: string[] }> = [
+  { pattern: /嫌がらせ|いじめ/, synonyms: ['パワハラ', 'ハラスメント', 'ハラスメント防止'] },
+  { pattern: /パワハラ/, synonyms: ['ハラスメント', 'ハラスメント防止', '嫌がらせ'] },
+  { pattern: /ハラスメント/, synonyms: ['パワハラ', 'ハラスメント防止', '嫌がらせ'] },
+  { pattern: /セクハラ/, synonyms: ['セクシャルハラスメント', 'ハラスメント防止'] },
+  { pattern: /マタハラ/, synonyms: ['マタニティハラスメント', 'ハラスメント防止'] },
+  { pattern: /有休|有給/, synonyms: ['年次有給休暇', '有給休暇'] },
+  { pattern: /産休/, synonyms: ['産前産後休暇', '出産休暇'] },
+  { pattern: /育休/, synonyms: ['育児休業', '育児休暇'] },
+  { pattern: /残業/, synonyms: ['時間外労働', '時間外勤務'] },
+];
+
+const expandJapaneseConceptSynonyms = (query: string): string[] => {
+  const text = String(query || '').trim();
+  if (!text) return [];
+  const synonyms: string[] = [];
+  for (const rule of JA_CONCEPT_SYNONYM_MAP) {
+    if (rule.pattern.test(text)) {
+      synonyms.push(...rule.synonyms);
+    }
+  }
+  return synonyms;
+};
 
 const prioritizeJapaneseVariants = (variants: string[], limit: number): string[] => {
   const unique = uniqueStringList(
@@ -766,6 +798,14 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
     }
   }
 
+  // Expand Japanese concept synonyms from the original query and canonical form
+  const jaConceptSynonyms = containsJapanese(rawQuery)
+    ? uniqueStringList([
+        ...expandJapaneseConceptSynonyms(rawQuery),
+        ...expandJapaneseConceptSynonyms(canonical),
+      ], 6)
+    : [];
+
   const translatedCompositeQueries = buildTranslatedCompositeQueries(translatedKeywords);
   const japaneseDomainCompositeQueries = buildJapaneseDomainCompositeQueries(canonical, domainOnly);
 
@@ -791,6 +831,7 @@ export const expandQuery = async (input: ExpandQueryInput): Promise<ExpandQueryO
   const expandedQueries = uniqueStringList(
     [
       canonical,
+      ...jaConceptSynonyms,
       ...semanticEnglishVariants,
       ...generatedJapaneseQueries,
       ...intentOnly,

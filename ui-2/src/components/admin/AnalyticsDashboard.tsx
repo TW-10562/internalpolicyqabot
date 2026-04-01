@@ -192,7 +192,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
         request('/api/faq', {
           method: 'GET',
           params: { limit: 8, minCount: 3 },
-        }),
+        }).catch(() => null),
       ]);
       if (Number(analyticsResponse.code) !== 200) {
         throw new Error(String(analyticsResponse.message || t('analytics.loadFailed')));

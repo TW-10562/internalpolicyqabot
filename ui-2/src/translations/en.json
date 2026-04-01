@@ -818,5 +818,13 @@
       "gaAdmin": "GA_ADMIN · GA docs + GA FAQ",
       "accAdmin": "ACC_ADMIN · ACC docs + ACC FAQ"
     }
+  },
+  "health": {
+    "systemNotice": "System Notice",
+    "llmUnavailable": "The AI model is temporarily unavailable. Responses may be delayed or incomplete. We are working to resolve this — please try again shortly.",
+    "serviceDisruption": "Service Disruption",
+    "dbUnavailable": "A database connectivity issue has been detected. Some features may not work as expected.",
+    "serviceUnavailable": "Service Unavailable",
+    "serverUnreachable": "Unable to reach the server. Please check your connection or try again later."
   }
 }

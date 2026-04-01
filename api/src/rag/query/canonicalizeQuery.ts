@@ -280,7 +280,13 @@ const normalizeJapaneseToken = (token: string): string => {
 const isJapaneseQuestionPhrase = (token: string): boolean => {
   const value = String(token || '').trim();
   if (!value) return false;
-  if (/^(どう|どのよう|どの様|なぜ|なんで|いつ|どこ|なに|何|どれ|どちら)/.test(value)) return true;
+  // Match standalone question words or question words followed only by particles/grammar.
+  // Avoid filtering compound terms like 何日間休暇 where 何 is a quantifier prefix.
+  if (/^(どう|どのよう|どの様|なぜ|なんで|いつ|どこ|なに|どれ|どちら)/.test(value)) return true;
+  // 何 is only a question word when standalone or followed by particles/grammar — not when
+  // followed by counters/kanji that form compound nouns (e.g. 何日間, 何時間, 何回).
+  if (/^何$/.test(value)) return true;
+  if (/^何[がをはもの]/.test(value)) return true;
   if (/すれば(よい|いい)?$/.test(value)) return true;
   return false;
 };
@@ -319,6 +325,7 @@ const canonicalizeJapanese = (query: string): string => {
       }
     }
 
+    // Extract consecutive kanji blocks and katakana blocks
     const blocks = String(chunk).match(/[\u4e00-\u9fff]{2,}|[\u30a0-\u30ffー]{2,}/g) || [];
     for (const block of blocks) {
       const normalized = normalizeJapaneseToken(block);
@@ -326,6 +333,15 @@ const canonicalizeJapanese = (query: string): string => {
       if (JP_STOPWORDS.has(normalized)) continue;
       if (isJapaneseQuestionPhrase(normalized)) continue;
       if (normalized.length >= 2) candidates.push(normalized);
+    }
+    // Extract kanji+hiragana compound words (e.g. 嫌がらせ, 取り扱い, 問い合わせ)
+    const compoundBlocks = String(chunk).match(/[\u4e00-\u9fff][\u3040-\u309f]{1,3}[\u4e00-\u9fff\u3040-\u309f]*/g) || [];
+    for (const block of compoundBlocks) {
+      const normalized = normalizeJapaneseToken(block);
+      if (!normalized || normalized.length < 3) continue;
+      if (JP_STOPWORDS.has(normalized)) continue;
+      if (isJapaneseQuestionPhrase(normalized)) continue;
+      candidates.push(normalized);
     }
   }
 

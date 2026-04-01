@@ -18,6 +18,7 @@ import PDFPreview, { SourceCitation } from './PDFPreview';
 interface ChatInterfaceProps {
   focusSignal?: number;
   onUserTyping?: (typing: boolean) => void;
+  isAdmin?: boolean;
 }
 
 interface ChatTask {
@@ -907,7 +908,7 @@ function DualLanguageMessage({
   );
 }
 
-export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfaceProps) {
+export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -1880,7 +1881,7 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                     </div>
                   )}
 
-                  {message.type === 'bot' && message.kpi && (
+                  {isAdmin && message.type === 'bot' && message.kpi && (
                     <div className="w-full rounded-lg border border-black/10 dark:border-white/10 bg-white/40 dark:bg-white/5 px-3 py-2 text-xs text-slate-700 dark:text-slate-200">
                       <div className="font-semibold mb-1">{t('chat.kpiMetrics')}</div>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
@@ -1891,7 +1892,6 @@ export default function ChatInterface({ focusSignal, onUserTyping }: ChatInterfa
                         <span>{t('chat.kpi.backendTotal')}</span><span>{formatMs(message.kpi.backend?.totalMs)}</span>
                         <span>{t('chat.kpi.rag')}</span><span>{formatMs(message.kpi.backend?.ragMs)}</span>
                         <span>{t('chat.kpi.llm')}</span><span>{formatMs(message.kpi.backend?.llmMs)}</span>
-                        <span>{t('chat.kpi.title')}</span><span>{formatMs(message.kpi.backend?.titleMs)}</span>
                         <span>{t('chat.kpi.retrieval')}</span><span>{formatMs(message.kpi.backend?.retrievalMs)}</span>
                       </div>
                     </div>

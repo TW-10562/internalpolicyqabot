@@ -2,7 +2,9 @@ import { Op, QueryTypes } from 'sequelize';
 import ChatHistoryConversation from '@/mysql/model/chat_history_conversation.model';
 import ChatHistoryMessage from '@/mysql/model/chat_history_message.model';
 import User from '@/mysql/model/user.model';
+import File from '@/mysql/model/file.model';
 import seq from '@/mysql/db/seq.db';
+import { classifyQuestionBatch } from '@/service/questionClassifier';
 
 export type PersistChatTurnInput = {
   userId: number;
@@ -679,6 +681,28 @@ const parseSourceIds = (raw: unknown): string[] => {
   return [];
 };
 
+/**
+ * Given source doc IDs and a docId→department map,
+ * return the most common department among the sources (majority vote).
+ */
+const resolveSourceDepartment = (sourceIds: string[], docDeptMap: Map<string, string>): string | null => {
+  if (sourceIds.length === 0 || docDeptMap.size === 0) return null;
+  const counts: Record<string, number> = {};
+  for (const id of sourceIds) {
+    const dept = docDeptMap.get(id);
+    if (dept) counts[dept] = (counts[dept] || 0) + 1;
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [dept, count] of Object.entries(counts)) {
+    if (count > bestCount) {
+      best = dept;
+      bestCount = count;
+    }
+  }
+  return best;
+};
+
 const collectFaqItems = (
   rows: any[],
   assistantById: Map<string, any>,
@@ -689,6 +713,7 @@ const collectFaqItems = (
     requireSources: boolean;
     skipAnswerRelevance?: boolean;
   },
+  docDeptMap: Map<string, string>,
 ): FaqItem[] => {
   const map = new Map<string, FaqAggregate>();
   const minCount = Math.max(1, Number(options.minCount) || 1);
@@ -715,7 +740,10 @@ const collectFaqItems = (
 
     const lastAsked = new Date(m.created_at || Date.now()).getTime();
     const prev = map.get(key);
-    const dept = String(m.department_code || '').toUpperCase() || 'OTHER';
+    // Determine department from source documents (majority vote), fall back to user's department.
+    const dept = resolveSourceDepartment(sourceIds, docDeptMap)
+      || String(m.department_code || '').toUpperCase()
+      || 'OTHER';
     const nextSourceCount = sourceIds.length;
     const nextQualityLabel = options.qualityLabel;
     const nextAnswerScore = scoreAnswerQuality(answer, ragUsed, nextSourceCount);
@@ -874,6 +902,8 @@ export async function listFaqItems(params: {
     });
   };
 
+  const scopedDeptCode = String(params.departmentCode || '').trim().toUpperCase() || null;
+
   const buildFaqItemsForAttempt = async (attempt: Attempt) => {
     const messages = await ChatHistoryMessage.findAll({
       raw: true,
@@ -902,13 +932,58 @@ export async function listFaqItems(params: {
     }) as any[];
     const assistantById = new Map<string, any>();
     for (const a of assistantRows) assistantById.set(String(a.message_id), a);
+
+    // Build docId → department_code map from source documents.
+    const allSourceIds = new Set<string>();
+    for (const a of assistantRows) {
+      for (const id of parseSourceIds(a.source_ids)) allSourceIds.add(id);
+    }
+    const docDeptMap = new Map<string, string>();
+    if (allSourceIds.size > 0) {
+      const fileRows = await File.findAll({
+        attributes: ['storage_key', 'department_code'],
+        where: { storage_key: { [Op.in]: Array.from(allSourceIds) } },
+        raw: true,
+      }) as any[];
+      for (const f of fileRows) {
+        const dept = String(f.department_code || '').toUpperCase();
+        if (dept) docDeptMap.set(String(f.storage_key), dept);
+      }
+    }
+
     const items = collectFaqItems(scopedMessages, assistantById, {
       minCount: attempt.minCount,
       qualityLabel: attempt.qualityLabel,
       requireRagUsed: attempt.requireRagUsed,
       requireSources: attempt.requireSources,
       skipAnswerRelevance: Boolean(attempt.skipAnswerRelevance),
-    });
+    }, docDeptMap);
+
+    // Reclassify FAQ items stuck on 'OTHER' using LLM-based question classification.
+    // Skip when a department scope is active — those items will be filtered out anyway,
+    // so classifying them wastes time. Only run for unscoped views (SUPER_ADMIN / users).
+    if (!scopedDeptCode) {
+      const othersItems = items.filter((i) => String(i.departmentCode || '').toUpperCase() === 'OTHER');
+      if (othersItems.length > 0) {
+        const LLM_CLASSIFY_TIMEOUT_MS = 15000;
+        try {
+          const classifyPromise = classifyQuestionBatch(othersItems.map((i) => i.question));
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('llm_classify_timeout')), LLM_CLASSIFY_TIMEOUT_MS),
+          );
+          const classified = await Promise.race([classifyPromise, timeoutPromise]);
+          for (const item of othersItems) {
+            const result = classified.get(item.question);
+            if (result && result.department !== 'OTHERS') {
+              item.departmentCode = result.department;
+            }
+          }
+        } catch (e: any) {
+          faqLog('llm_classify_skipped', { error: String(e?.message || e).slice(0, 100) });
+        }
+      }
+    }
+
     faqLog('stage', {
       stage: attempt.stage,
       count: items.length,
@@ -927,12 +1002,17 @@ export async function listFaqItems(params: {
     }));
   };
 
-  // Safety filter: after collecting FAQ items, remove any whose departmentCode
-  // maps to a category the user is not allowed to see (defense in depth).
-  const filterByAllowedCategories = (items: FaqItem[]): FaqItem[] => {
+  // Filter FAQ items by allowed categories (role-based) and department scope.
+  // OTHERS category is always visible to all admins.
+  const filterFaqItems = (items: FaqItem[]): FaqItem[] => {
     return items.filter((item) => {
       const cat = departmentToFaqCategory(item.departmentCode);
-      return allowedCategories.includes(cat);
+      if (!allowedCategories.includes(cat)) return false;
+      if (scopedDeptCode) {
+        const itemDept = String(item.departmentCode || '').toUpperCase();
+        if (itemDept !== scopedDeptCode && cat !== 'OTHERS') return false;
+      }
+      return true;
     });
   };
 
@@ -941,7 +1021,7 @@ export async function listFaqItems(params: {
   let fallbackStage = 'none';
   for (const attempt of attempts) {
     const items = await buildFaqItemsForAttempt(attempt);
-    const filtered = filterByAllowedCategories(items);
+    const filtered = filterFaqItems(items);
     if (filtered.length > 0) {
       selectedItems = filtered.slice(0, limit);
       selectedMode = attempt.qualityLabel;
@@ -959,7 +1039,7 @@ export async function listFaqItems(params: {
   });
 
   if (selectedItems.length === 0) {
-    const seedItems = filterByAllowedCategories(buildSeedItems()).slice(0, limit);
+    const seedItems = filterFaqItems(buildSeedItems()).slice(0, limit);
     faqLog('seeded', {
       roleCode: roleCode || null,
       count: seedItems.length,

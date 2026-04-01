@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ToastProvider } from './context/ToastContext';
+import { ToastProvider, useToast } from './context/ToastContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { useLang } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
@@ -29,9 +29,61 @@ import {
 } from './api/notifications';
 import { getToken, logout } from './api/auth';
 import { logoutFromMicrosoft } from './auth/microsoftAuth';
+import { checkSystemHealth } from './api/health';
 
 
 const POLL_INTERVAL_MS = 30_000; // 30 seconds
+
+/** Proactive health monitor — must be rendered inside ToastProvider */
+function SystemHealthMonitor() {
+  const toast = useToast();
+  const { t } = useLang();
+
+  useEffect(() => {
+    let cancelled = false;
+    const HEALTH_POLL_MS = 60_000;
+
+    const runHealthCheck = async () => {
+      try {
+        const health = await checkSystemHealth();
+        if (cancelled) return;
+        if (!health.llm) {
+          toast.addToast({
+            type: 'warning',
+            title: t('health.systemNotice'),
+            message: t('health.llmUnavailable'),
+            duration: 12000,
+          });
+        }
+        if (!health.db) {
+          toast.addToast({
+            type: 'error',
+            title: t('health.serviceDisruption'),
+            message: t('health.dbUnavailable'),
+            duration: 12000,
+          });
+        }
+      } catch {
+        if (cancelled) return;
+        toast.addToast({
+          type: 'error',
+          title: t('health.serviceUnavailable'),
+          message: t('health.serverUnreachable'),
+          duration: 12000,
+        });
+      }
+    };
+
+    runHealthCheck();
+    const interval = setInterval(runHealthCheck, HEALTH_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [t]);
+
+  return null;
+}
 
 function AppContent() {
   const { t } = useLang();
@@ -525,6 +577,7 @@ function AppContent() {
   if (!user) {
     return (
       <ToastProvider>
+        <SystemHealthMonitor />
         <LoginPage onLogin={handleLogin} />
       </ToastProvider>
     );
@@ -532,6 +585,7 @@ function AppContent() {
 
   return (
     <ToastProvider>
+      <SystemHealthMonitor />
       <HomePage
         user={user}
         onFeatureClick={handleFeatureClick}

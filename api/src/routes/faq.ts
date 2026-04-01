@@ -2,7 +2,7 @@ import Router from 'koa-router';
 import Joi from 'joi';
 import { ok, fail } from '@/service/apiResponse';
 import { requireScopedAccess } from '@/controller/auth';
-import { AccessScope } from '@/service/rbac';
+import { AccessScope, isDepartmentAdminRole } from '@/service/rbac';
 import { listFaqItems } from '@/service/historyPersistenceService';
 import { getAllowedFaqCategories } from '@/service/faqAccess';
 
@@ -39,6 +39,7 @@ router.get('/', async (ctx: any) => {
       sampleSize: value.sampleSize,
       roleCode: scope.roleCode,
       allowedCategories,
+      departmentCode: isDepartmentAdminRole(scope.roleCode) ? scope.departmentCode : undefined,
     });
     ctx.body = ok(data);
   } catch (e: any) {

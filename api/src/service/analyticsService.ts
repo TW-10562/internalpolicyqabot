@@ -278,14 +278,6 @@ const loadScopedChatOutputs = async (
     });
 };
 
-const countScopedChatOutputs = async (
-  startAt: Date | null,
-  scope: DepartmentAnalyticsScope | null,
-): Promise<number> => {
-  const rows = await loadScopedChatOutputs(startAt, scope, false);
-  return rows.length;
-};
-
 const reconcileMissingQueryRows = async (
   startAt: Date,
   scope: DepartmentAnalyticsScope | null,
@@ -459,8 +451,10 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const fileWhere: any = {};
   if (departmentCode) fileWhere.department_code = normalizeDepartmentCode(departmentCode);
 
+  const allTimeQueryWhere = buildScopedEventWhere({ event_type: QUERY_EVENT }, departmentScope);
+
   const [allTimeQueryCount, queryRows, supplementalQueryRows, ragRows, feedbackRows, totalDocs, docsByDept, flaggedRows] = await Promise.all([
-    countScopedChatOutputs(null, departmentScope),
+    AnalyticsEvent.count({ where: allTimeQueryWhere }),
     AnalyticsEvent.findAll({
       attributes: ['user_id', 'user_name', 'status', 'answer_text', 'response_ms', 'metadata_json'],
       where: queryWhere,
@@ -542,11 +536,7 @@ export async function getAnalyticsOverview(range: TimeRange, departmentCode?: st
   const errorRate = queriesInRange > 0 ? Number(((failedRequests / queriesInRange) * 100).toFixed(2)) : 0;
   const responseRate = queriesInRange > 0 ? Number(((successfulResponses / queriesInRange) * 100).toFixed(2)) : 0;
 
-  const activeUsers = await User.count({
-    where: {
-      deleted_at: null,
-    },
-  });
+  const activeUsers = await User.count({ where: { deleted_at: null } });
 
   let ragUsedCount = 0;
   let ragUnusedCount = 0;

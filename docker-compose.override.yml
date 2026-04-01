@@ -81,7 +81,7 @@ services:
       RAG_CONTEXT_MAX_TOKENS: "3000"
       RAG_EVIDENCE_ALLOW_CROSS_DOC_FALLBACK: "1"
       LLM_BASE_URL: "http://host.docker.internal:9080/v1"
-      LLM_MODEL: "qwen3-30B-A3B-Instruct-2507-FP8"
+      LLM_MODEL: "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
     healthcheck:
       test:
         [
@@ -126,7 +126,7 @@ services:
       RAG_CONTEXT_MAX_TOKENS: "3000"
       RAG_EVIDENCE_ALLOW_CROSS_DOC_FALLBACK: "1"
       LLM_BASE_URL: "http://host.docker.internal:9080/v1"
-      LLM_MODEL: "qwen3-30B-A3B-Instruct-2507-FP8"
+      LLM_MODEL: "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
     depends_on:
       postgres:
         condition: service_healthy

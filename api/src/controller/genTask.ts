@@ -11,6 +11,7 @@ import { queryConditionsData } from '@/service';
 import { handleAddGenTask } from '@/service/genTaskService';
 import { createChatStreamSubscriber } from '@/service/chatStreamService';
 import { recordFeedbackEvent } from '@/service/analyticsService';
+import { resolveContentDepartment } from '@/service/feedbackDepartmentResolver';
 import { config } from '@/config/index';
 import { detectLanguage } from '@/utils/languageDetector';
 import { classifyQueryIntent, QueryIntent } from '@/utils/queryIntentClassifier';
@@ -629,11 +630,14 @@ export const sendFeedbackToCache = async (ctx: any, next: () => Promise<void>) =
       }, ctx);
     }
 
+    const contentDept = await resolveContentDepartment(Number(rawTaskOutputId))
+      .catch(() => null);
+
     await recordFeedbackEvent({
       taskOutputId: Number(rawTaskOutputId),
       userId: Number(userId || 0) || undefined,
       userName: String(userName || ''),
-      departmentCode: accessScope.departmentCode,
+      departmentCode: contentDept || accessScope.departmentCode,
       cacheSignal: cache_signal,
       query,
       answer,

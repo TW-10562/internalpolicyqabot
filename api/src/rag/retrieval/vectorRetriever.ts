@@ -28,8 +28,12 @@ const normalizeVectorDocs = (raw: any[], topK: number): any[] =>
           metadata?.ArticleName ||
           `vector_doc_${idx + 1}`,
       );
-      const rawSimilarity = Number(item?.score ?? item?.similarity ?? item?.relevance_score ?? item?.rerank_score);
-      const rawDistance = Number(item?.distance ?? item?.dist ?? item?.vector_distance);
+      const rawSimilarity = Number(
+        item?.score ?? metadata?.vector_similarity ?? item?.similarity ?? item?.relevance_score ?? metadata?.rerank_score ?? item?.rerank_score,
+      );
+      const rawDistance = Number(
+        metadata?.vector_distance ?? item?.distance ?? item?.dist ?? item?.vector_distance,
+      );
       const vectorSimilarity =
         Number.isFinite(rawSimilarity) && rawSimilarity > 0
           ? rawSimilarity

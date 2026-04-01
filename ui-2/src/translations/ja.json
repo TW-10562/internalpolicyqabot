@@ -818,5 +818,13 @@
       "gaAdmin": "GA_ADMIN ・ GA文書 + GA FAQ",
       "accAdmin": "ACC_ADMIN ・ ACC文書 + ACC FAQ"
     }
+  },
+  "health": {
+    "systemNotice": "システム通知",
+    "llmUnavailable": "AIモデルが一時的に利用できません。回答に遅延や不完全な場合があります。復旧に取り組んでおりますので、しばらくしてから再度お試しください。",
+    "serviceDisruption": "サービス障害",
+    "dbUnavailable": "データベースの接続に問題が検出されました。一部の機能が正常に動作しない場合があります。",
+    "serviceUnavailable": "サービス利用不可",
+    "serverUnreachable": "サーバーに接続できません。接続状況をご確認いただくか、しばらくしてから再度お試しください。"
   }
 }

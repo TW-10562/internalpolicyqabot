@@ -10,6 +10,7 @@ export type AccessScope = {
   userId: number;
   userName: string;
   departmentCode: DepartmentCode;
+  ssoDepartmentCode: DepartmentCode;
   roleCode: RoleCode;
 };
 
@@ -184,6 +185,7 @@ export async function getAccessScopeByUserId(userId: number, fallbackUserName = 
     userId: Number(row.user_id),
     userName: String(row.user_name || fallbackUserName || row.user_id),
     departmentCode: effectiveDepartment,
+    ssoDepartmentCode: departmentCode,
     roleCode: resolvedRole,
   };
 }
