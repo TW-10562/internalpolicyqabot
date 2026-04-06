@@ -471,7 +471,7 @@ export default function AdminDashboard({ activeTab: controlledTab, onTabChange, 
         )}
 
         {activeTab === 'activity' && (
-          <ActivityLogComponent activities={mockActivity} showTitle={false} />
+          <ActivityLogComponent activities={mockActivity} showTitle />
         )}
 
         {activeTab === 'messages' && (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { ToastProvider, useToast } from './context/ToastContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { useLang } from './context/LanguageContext';
@@ -9,7 +9,7 @@ import Popup from './components/modals/Popup';
 import ChatInterface from './components/chat/ChatInterface';
 import HistoryPage from './components/chat/HistoryPage';
 import ProfilePopup from './components/modals/ProfilePopup';
-import AdminDashboard from './components/admin/AdminDashboard';
+const AdminDashboard = lazy(() => import('./components/admin/AdminDashboard'));
 // @ts-ignore
 import Messenger from './components/chat/Messenger';
 // @ts-ignore
@@ -27,9 +27,10 @@ import {
   markNotificationRead as markAppNotificationRead,
 
 } from './api/notifications';
-import { getToken, logout } from './api/auth';
+import { getToken, getMe, logout, removeToken } from './api/auth';
 import { logoutFromMicrosoft } from './auth/microsoftAuth';
 import { checkSystemHealth } from './api/health';
+import MaintenanceBanner from './components/shared/MaintenanceBanner';
 
 
 const POLL_INTERVAL_MS = 30_000; // 30 seconds
@@ -88,6 +89,7 @@ function SystemHealthMonitor() {
 function AppContent() {
   const { t } = useLang();
   const [user, setUser] = useState<User | null>(null);
+  const [authRestoring, setAuthRestoring] = useState(() => !!getToken());
   const [activeFeature, setActiveFeature] = useState<FeatureType | null>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -98,6 +100,57 @@ function AppContent() {
 
   // Track whether we've done the initial bell-click mark-all-read
   const bellMarkedReadRef = useRef(false);
+
+  // Restore auth session on mount when a token exists in localStorage
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setAuthRestoring(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const response = await getMe();
+        if (cancelled) return;
+
+        if (response.code === 200 && response.result) {
+          const r = response.result;
+          const roleCode = r.roleCode || 'USER';
+          const departmentCode = r.departmentCode || 'OTHER';
+          const isAdmin = ['SUPER_ADMIN', 'HR_ADMIN', 'GA_ADMIN', 'ACC_ADMIN'].includes(roleCode);
+          const departmentName =
+            String(r.department || '').trim() ||
+            (departmentCode === 'HR' ? 'Human Resources'
+              : departmentCode === 'GA' ? 'General Affairs'
+              : departmentCode === 'ACC' ? 'Accounting'
+              : 'Other');
+
+          setUser({
+            employeeId: r.empId || r.email || '',
+            name: r.displayName || r.email || '',
+            department: departmentName,
+            departmentCode,
+            role: isAdmin ? 'admin' : 'user',
+            roleCode,
+            lastLogin: new Date().toISOString(),
+          });
+        } else {
+          // Token/session invalid — clean up
+          removeToken();
+        }
+      } catch {
+        // Network error or server down — clear stale token
+        removeToken();
+      } finally {
+        if (!cancelled) setAuthRestoring(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Compute unread count from notification list
   const computeNotificationCount = useCallback((messagesList: any[], userRole: string): number => {
@@ -568,11 +621,19 @@ function AppContent() {
       case 'notifications':
         return <Messenger user={user} />;
       case 'admin':
-        return <AdminDashboard user={user || undefined} />;
+        return <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="w-6 h-6 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" /></div>}><AdminDashboard user={user || undefined} /></Suspense>;
       default:
         return null;
     }
   };
+
+  if (authRestoring) {
+    return (
+      <div className="h-[100dvh] flex items-center justify-center bg-surface dark:bg-[#0f1724]">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -625,6 +686,7 @@ function App() {
   return (
     <ThemeProvider>
       <LanguageProvider>
+        <MaintenanceBanner />
         <AppContent />
       </LanguageProvider>
     </ThemeProvider>

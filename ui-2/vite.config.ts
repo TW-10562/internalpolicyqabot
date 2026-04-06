@@ -12,6 +12,21 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: {
       exclude: ['lucide-react'],
     },
+    build: {
+      chunkSizeWarningLimit: 600,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Vendor chunks — cached independently from app code
+            'vendor-react': ['react', 'react-dom'],
+            // Large libs — only loaded on demand
+            'vendor-xlsx': ['xlsx'],
+            'vendor-pdf': ['jspdf', 'jspdf-autotable'],
+            'vendor-mammoth': ['mammoth'],
+          },
+        },
+      },
+    },
     server: {
       host: '0.0.0.0',
       port: Number.isFinite(uiPort) ? uiPort : 7001,
@@ -23,6 +38,11 @@ export default defineConfig(({ mode }) => {
           rewrite: (path) => path.replace(/^\/dev-api/, ''),
         },
       },
+    },
+    test: {
+      environment: 'jsdom',
+      globals: true,
+      setupFiles: ['./src/test/setup.ts'],
     },
   };
 });

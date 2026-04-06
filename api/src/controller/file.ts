@@ -752,8 +752,12 @@ const isInlineViewable = (filename: string, mimeType: string): boolean => {
   if (mt === 'application/pdf') return true;
   if (mt.startsWith('text/plain')) return true;
   if (mt === 'image/png' || mt === 'image/jpeg' || mt === 'image/jpg' || mt === 'image/webp') return true;
+  // Office formats — served inline so the frontend can parse them client-side
+  if (mt.includes('spreadsheetml') || mt.includes('ms-excel')) return true;
+  if (mt.includes('wordprocessingml') || mt.includes('msword')) return true;
 
-  return ext === '.pdf' || ext === '.txt' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp';
+  return ext === '.pdf' || ext === '.txt' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.webp'
+    || ext === '.xlsx' || ext === '.xls' || ext === '.csv' || ext === '.docx';
 };
 
 const buildContentDisposition = (disposition: 'inline' | 'attachment', filename: string): string => {
@@ -778,26 +782,91 @@ export const previewFile = async (ctx) => {
     ctx.body = '不正な入力です';
     return;
   }
-  const allowed = await canAccessStorageKey(scope, storage_key);
-  if (!allowed) {
-    ctx.status = 403;
-    ctx.body = 'アクセス権限がありません';
+
+  // Try direct storage key path first (resolves across all configured roots)
+  const directPath = await resolveDocumentFilePath(storage_key);
+  if (directPath) {
+    const allowed = await canAccessStorageKey(scope, storage_key);
+    if (!allowed) { ctx.status = 403; ctx.body = 'アクセス権限がありません'; return; }
+    const mimeType = resolveFileMimeType(storage_key, '');
+    ctx.set('Content-Type', mimeType);
+    ctx.set('Content-Disposition', buildContentDisposition('inline', path.basename(storage_key)));
+    ctx.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    ctx.set('X-Content-Type-Options', 'nosniff');
+    ctx.body = fs.createReadStream(directPath);
     return;
   }
-  const filePath = path.join(FILE_UPLOAD_DIR, storage_key);
-  if (!fs.existsSync(filePath)) {
-    ctx.set('Content-Type', 'application/json');
-    ctx.body = {
-      code: 404,
-      message: 'ファイルが見つかりません',
-    };
-    return;
+
+  // Fallback: search DB by filename (for source citations where the key is a display name)
+  // RAG source titles often differ from actual filenames (different dates, missing
+  // underscores/extensions), so we extract the semantic prefix and search broadly.
+  const decoded = decodeURIComponent(storage_key);
+  const noExt = decoded.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '');
+  // Strip trailing date patterns like _20210316, 20211001, _20260301 to get the core name
+  const coreName = noExt.replace(/[_\s-]?\d{6,8}$/, '');
+  try {
+    // Search with multiple strategies: exact → prefix → core name contains
+    const searchPatterns = [
+      { filename: decoded },                                    // exact match
+      { filename: { [Op.like]: `${noExt}%` } },                // prefix without extension
+      ...(coreName && coreName !== noExt
+        ? [{ filename: { [Op.like]: `%${coreName}%` } }]       // core name anywhere
+        : []),
+    ];
+    const candidates = await File.findAll({
+      where: { [Op.or]: searchPatterns },
+      attributes: ['id', 'filename', 'storage_key', 'mime_type', 'department_code'],
+      limit: 20,
+      raw: true,
+    }) as unknown as Array<{ id: number; filename: string; storage_key: string; mime_type: string; department_code: string }>;
+
+    if (candidates.length > 0) {
+      // Score matches: exact > prefix > core name
+      const decodedLower = decoded.toLowerCase();
+      const noExtLower = noExt.toLowerCase();
+      const coreNameLower = coreName.toLowerCase();
+      const scored = candidates.map((f) => {
+        const fname = f.filename.toLowerCase();
+        const fnameNoExt = fname.replace(/\.[^.]+$/, '');
+        let score = 0;
+        if (fname === decodedLower || fnameNoExt === noExtLower) score = 100;           // exact
+        else if (fnameNoExt.startsWith(noExtLower)) score = 80;                          // prefix
+        else if (coreNameLower && fnameNoExt.includes(coreNameLower)) score = 50;        // core name
+        // Prefer files without 【新旧対照表】 prefix (those are comparison docs)
+        if (fname.includes('新旧対照表')) score -= 10;
+        return { ...f, score };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      const match = scored[0];
+
+      // Department access check
+      if (!isSuperAdminRole(scope.roleCode) &&
+          String(match.department_code || '') !== String(scope.departmentCode || '')) {
+        ctx.status = 403;
+        ctx.body = 'アクセス権限がありません';
+        return;
+      }
+
+      // Use resolveDocumentFilePath (same as viewFileById) — handles multiple roots
+      const resolvedPath = await resolveDocumentFilePath(match.storage_key);
+      if (resolvedPath) {
+        const displayName = path.basename(match.filename) || path.basename(match.storage_key);
+        const mimeType = resolveFileMimeType(displayName, match.mime_type);
+        ctx.set('Content-Type', mimeType);
+        ctx.set('Content-Disposition', buildContentDisposition('inline', displayName));
+        ctx.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        ctx.set('X-Content-Type-Options', 'nosniff');
+        ctx.body = fs.createReadStream(resolvedPath);
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn('[previewFile] Filename fallback failed:', (e as any)?.message || e);
   }
-  const mimeType = mime.lookup(storage_key) || 'application/octet-stream';
-  ctx.set('Content-Type', mimeType);
-  ctx.set('Content-Disposition', `inline; filename="${encodeURIComponent(storage_key)}"`);
-  ctx.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  ctx.body = fs.createReadStream(filePath);
+
+  ctx.status = 404;
+  ctx.set('Content-Type', 'application/json');
+  ctx.body = { code: 404, message: 'ファイルが見つかりません' };
 };
 
 export const downloadFile = async (ctx) => {

@@ -57,7 +57,10 @@ def get_active_embedding_cache_dir() -> str:
 
 def process_text(text):
     text = jaconv.z2h(str(text or ""), kana=False, digit=True, ascii=True)
-    text = text.replace(" ", "").replace("\n", "").replace("\t", "")
+    # Collapse tabs and multiple spaces into a single space, but preserve
+    # sentence-level whitespace so the model retains structural context.
+    text = text.replace("\t", " ")
+    text = " ".join(text.split())
     return text
 
 
@@ -164,8 +167,12 @@ def load_embeddings():
             model_kwargs={
                 "device": EMBEDDING_MODEL_DEVICE,
                 "local_files_only": True,
+                "trust_remote_code": True,
             },
-            encode_kwargs={"normalize_embeddings": True},
+            encode_kwargs={
+                "normalize_embeddings": True,
+                "batch_size": 32,
+            },
         )
         return emb
 
@@ -195,7 +202,19 @@ embeddings = load_embeddings()
 @lru_cache(maxsize=EMBED_QUERY_CACHE_SIZE)
 def _embed_query_cached(normalized_text: str) -> tuple[float, ...]:
     started = perf_counter()
-    vector = tuple(embeddings.embed_query(normalized_text))
+    try:
+        vector = tuple(embeddings.embed_query(normalized_text))
+    except RuntimeError as e:
+        if "CUDA" in str(e):
+            logger.warning(
+                f"[RAG] CUDA error during embedding, attempting recovery: {e}"
+            )
+            torch.cuda.empty_cache()
+            # Retry once after clearing CUDA cache
+            vector = tuple(embeddings.embed_query(normalized_text))
+            logger.info("[RAG] CUDA recovery successful after cache clear")
+        else:
+            raise
     logger.info(
         f"[RAG] Query embedding computed in {perf_counter() - started:.3f}s "
         f"(chars={len(normalized_text)})"

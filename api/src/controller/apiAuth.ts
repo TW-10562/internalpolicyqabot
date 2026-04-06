@@ -4,11 +4,12 @@ import dayjs from 'dayjs';
 
 import { config } from '@config/index';
 import { createHash } from '@/utils';
-import { addSession, removeKey, removeListKey } from '@/utils/auth';
+import { addSession, removeKey, removeListKey, queryKeyValue } from '@/utils/auth';
 import { getFullUserInfo } from '@/utils/userInfo';
 import { verifyPassword } from '@/service/user';
 import { findUserByEmpId } from '@/service/adminUser';
-import { normalizeRoleCode } from '@/service/rbac';
+import { normalizeRoleCode, getAccessScopeByUserId } from '@/service/rbac';
+import { getUserById } from '@/db/adapter';
 
 export const loginByEmployeeId = async (ctx: Context, next: () => Promise<void>) => {
   try {
@@ -108,6 +109,55 @@ export const loginByEmployeeId = async (ctx: Context, next: () => Promise<void>)
       },
       ctx,
     );
+  }
+};
+
+export const getCurrentUser = async (ctx: Context, next: () => Promise<void>) => {
+  try {
+    const { userId, userName, empId, roleCode: tokenRoleCode, departmentCode: tokenDeptCode } = ctx.state.user || {};
+
+    if (!userId) {
+      return ctx.app.emit('error', { code: '401', message: '無効なトークン' }, ctx);
+    }
+
+    // Fetch fresh user data from DB to reflect any role/department changes
+    const dbUser = await getUserById(Number(userId));
+    if (!dbUser) {
+      return ctx.app.emit('error', { code: '401', message: '無効なトークン' }, ctx);
+    }
+
+    if (String(dbUser.status || dbUser.del_flag || '') === '2' || String(dbUser.del_flag) === '2') {
+      return ctx.app.emit('error', { code: '403', message: 'account_deactivated' }, ctx);
+    }
+
+    let roleCode = normalizeRoleCode(dbUser.role_code || tokenRoleCode || 'USER');
+    const departmentCode = String(dbUser.department_code || tokenDeptCode || 'OTHER');
+
+    // Resolve display name from DB fields
+    const displayName =
+      String(dbUser.nick_name || dbUser.display_name || dbUser.user_name || userName || '').trim() || empId;
+
+    const department =
+      String(dbUser.department || dbUser.department_name || '').trim() ||
+      (departmentCode === 'HR' ? 'Human Resources'
+        : departmentCode === 'GA' ? 'General Affairs'
+        : departmentCode === 'ACC' ? 'Accounting'
+        : 'Other');
+
+    ctx.state.formatData = {
+      userId: Number(userId),
+      empId: String(dbUser.emp_id || empId || ''),
+      email: String(dbUser.email || ''),
+      displayName,
+      roleCode,
+      department,
+      departmentCode,
+    };
+
+    await next();
+  } catch (error) {
+    console.error('[apiAuth.getCurrentUser] error:', error);
+    return ctx.app.emit('error', { code: '401', message: '無効なトークン' }, ctx);
   }
 };
 

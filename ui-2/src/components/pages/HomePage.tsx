@@ -15,7 +15,8 @@ import Header from '../layout/Header';
 import ChatInterface from '../chat/ChatInterface';
 import HistoryPage from '../chat/HistoryPage';
 import NotificationsPanel from '../notifications/NotificationsPanel';
-import AdminDashboard from '../admin/AdminDashboard';
+import { lazy, Suspense } from 'react';
+const AdminDashboard = lazy(() => import('../admin/AdminDashboard'));
 import InlineContactAdmin from '../contact/InlineContactAdmin';
 import FAQPage from '../faq/FAQPage';
 import { useEffect, useState } from 'react';
@@ -158,12 +159,14 @@ export default function HomePage({
             )}
 
             {user.role === 'admin' && activeSection !== 'history' && (
+              <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="w-6 h-6 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" /></div>}>
               <AdminDashboard
                 activeTab={activeSection as any}
                 onTabChange={(t) => setActiveSection(t as Section)}
                 initialTab="analytics"
                 user={user}
               />
+              </Suspense>
             )}
 
             {user.role !== 'admin' && activeSection === 'faq' && (

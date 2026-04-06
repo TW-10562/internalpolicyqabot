@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node notify.js status)",
+      "Bash(node notify.js on --type update --time \"15 minutes\" --time-ja \"約15分\")",
+      "Bash(node notify.js off)",
+      "Bash(curl -s \"http://localhost:8983/solr/mycore/select?q=%E6%AE%8B%E6%A5%AD+%E7%94%B3%E8%AB%8B+%E5%B1%8A%E5%87%BA&fl=DocumentName_s,ArticleName_s,score&rows=5&wt=json\")",
+      "Bash(python3 -c ':*)",
+      "Bash(docker restart:*)"
+    ]
+  }
+}

@@ -59,6 +59,11 @@ export async function logout(): Promise<void> {
   }
 }
 
+// Validate current token and return user profile (used to restore session on refresh)
+export async function getMe(): Promise<LoginResponse> {
+  return request<LoginResponse>('/api/auth/me', { method: 'GET' });
+}
+
 // Check if user is logged in
 export function isLoggedIn(): boolean {
   return !!getToken();

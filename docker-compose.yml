@@ -171,6 +171,7 @@ services:
       NODE_ENV: "production"
     volumes:
       - ./api/config:/app/config:ro
+      - ./api/data:/app/api/data
       - ./uploads:/app/uploads
       - /srv/tbot/storage/docs:/data/docs
     extra_hosts:

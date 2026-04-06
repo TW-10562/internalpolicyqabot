@@ -56,6 +56,8 @@ interface AnalyticsData {
         lastName: string;
         userJobRole: string;
         areaOfWork: string;
+        department?: string;
+        departmentCode?: string;
       } | null;
       taskOutputId: number | null;
       queryText: string;
@@ -290,30 +292,6 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
               </p>
             ) : null}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {(['7d', '30d', '90d'] as TimeRange[]).map((range) => (
-              <button
-                key={range}
-                type="button"
-                onClick={() => setTimeRange(range)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-                  timeRange === range
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white dark:bg-dark-surface text-[#232333] dark:text-dark-text border-[#E8E8E8] dark:border-dark-border'
-                }`}
-              >
-                {range.toUpperCase()}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => void loadAnalytics()}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border border-[#E8E8E8] dark:border-dark-border bg-white dark:bg-dark-surface text-[#232333] dark:text-dark-text transition-colors"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              {t('analytics.refresh')}
-            </button>
-          </div>
         </div>
       )}
       {loadError ? (
@@ -321,6 +299,32 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
           {loadError}
         </div>
       ) : null}
+
+      {/* Time range selector — always visible */}
+      <div className="flex flex-wrap items-center gap-2">
+        {(['7d', '30d', '90d'] as TimeRange[]).map((range) => (
+          <button
+            key={range}
+            type="button"
+            onClick={() => setTimeRange(range)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+              timeRange === range
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white dark:bg-dark-surface text-[#232333] dark:text-dark-text border-[#E8E8E8] dark:border-dark-border'
+            }`}
+          >
+            {range.toUpperCase()}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => void loadAnalytics()}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border border-[#E8E8E8] dark:border-dark-border bg-white dark:bg-dark-surface text-[#232333] dark:text-dark-text transition-colors"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          {t('analytics.refresh')}
+        </button>
+      </div>
 
       {/* TOP SUMMARY - Responsive Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -453,7 +457,7 @@ export default function AnalyticsDashboard({ user, showHeader = true }: Analytic
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium text-[#232333] dark:text-dark-text">
-                        {incident.userName} · {incident.departmentCode}
+                        {incident.userName} · {profile?.department || incident.departmentCode}
                       </span>
                       <span className="text-xs text-[#6E7680] dark:text-dark-text-muted">
                         {formatDateTimeJP(incident.createdAt)}

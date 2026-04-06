@@ -164,7 +164,23 @@ const matchesPhrase = (query: string, phrase: string): boolean => {
   const normalizedQuery = normalizeSpacing(query).toLowerCase();
   const normalizedPhrase = normalizeSpacing(phrase).toLowerCase();
   if (!normalizedQuery || !normalizedPhrase) return false;
-  if (hasJapaneseChars(normalizedPhrase)) return normalizedQuery.includes(normalizedPhrase);
+  if (hasJapaneseChars(normalizedPhrase)) {
+    if (!normalizedQuery.includes(normalizedPhrase)) return false;
+    // For short generic Japanese terms (e.g. "休暇"), require that the query
+    // does NOT contain a longer compound around this term.  This prevents
+    // "看護休暇" from triggering the generic "休暇 → 年次有給休暇" expansion.
+    if (normalizedPhrase.length <= 3) {
+      const idx = normalizedQuery.indexOf(normalizedPhrase);
+      // Check if the match is part of a longer kanji compound
+      const charBefore = idx > 0 ? normalizedQuery[idx - 1] : '';
+      const charAfter = idx + normalizedPhrase.length < normalizedQuery.length
+        ? normalizedQuery[idx + normalizedPhrase.length]
+        : '';
+      const kanjiRange = /[\u3400-\u9fff]/;
+      if (kanjiRange.test(charBefore) || kanjiRange.test(charAfter)) return false;
+    }
+    return true;
+  }
   const escaped = normalizedPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${escaped}\\b`, 'i').test(normalizedQuery);
 };
@@ -244,6 +260,24 @@ const findTermbaseKeywords = (query: string): string[] => {
     const candidates = uniqueKeywords([canonical, ...synonyms], MAX_TRANSLATED_KEYWORDS * 2);
     if (!candidates.some((candidate) => matchesPhrase(source, candidate))) continue;
     matchedEntries.push({ key: canonical, candidates });
+  }
+  // Prefer longer/more-specific entries: if "summer vacation" matched, drop "vacation".
+  // A generic key is suppressed when a longer matched key contains it as a substring.
+  const matchedKeys = matchedEntries.map((e) => e.key.toLowerCase());
+  const suppressed = new Set<string>();
+  for (const key of matchedKeys) {
+    for (const other of matchedKeys) {
+      if (other.length > key.length && other.includes(key)) {
+        suppressed.add(key);
+      }
+    }
+  }
+  if (suppressed.size > 0) {
+    for (let i = matchedEntries.length - 1; i >= 0; i--) {
+      if (suppressed.has(matchedEntries[i].key.toLowerCase())) {
+        matchedEntries.splice(i, 1);
+      }
+    }
   }
 
   const sourceLower = source.toLowerCase();

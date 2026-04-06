@@ -4,6 +4,7 @@ import ChatHistoryMessage from '@/mysql/model/chat_history_message.model';
 import User from '@/mysql/model/user.model';
 import File from '@/mysql/model/file.model';
 import seq from '@/mysql/db/seq.db';
+import { shouldExcludeFaqTurnForModeration } from '@/service/faqHistoryFilters';
 import { classifyQuestionBatch } from '@/service/questionClassifier';
 
 export type PersistChatTurnInput = {
@@ -719,13 +720,15 @@ const collectFaqItems = (
   const minCount = Math.max(1, Number(options.minCount) || 1);
 
   for (const m of rows) {
+    const outputId = String(m.message_id || '').split(':')[0];
+    const assistant = assistantById.get(`${outputId}:assistant`);
+    if (shouldExcludeFaqTurnForModeration(m.metadata_json, assistant?.metadata_json)) continue;
+
     const q = normalizeFaqText(String(m.original_text || ''));
     if (isLowValueQuestion(q)) continue;
     const key = buildFaqQuestionKey(q);
     if (!key) continue;
 
-    const outputId = String(m.message_id || '').split(':')[0];
-    const assistant = assistantById.get(`${outputId}:assistant`);
     const answer = stripFaqSourceAttribution(
       normalizeFaqText(String(assistant?.model_answer_text || assistant?.original_text || '')),
     );
@@ -740,10 +743,11 @@ const collectFaqItems = (
 
     const lastAsked = new Date(m.created_at || Date.now()).getTime();
     const prev = map.get(key);
-    // Determine department from source documents (majority vote), fall back to user's department.
-    const dept = resolveSourceDepartment(sourceIds, docDeptMap)
-      || String(m.department_code || '').toUpperCase()
-      || 'OTHER';
+    // Determine department from source documents (majority vote).
+    // Note: we intentionally do NOT fall back to the asker's own department_code here,
+    // because the asker's department ≠ the FAQ topic's department.
+    // Items without a source-doc department will be classified by the LLM later.
+    const dept = resolveSourceDepartment(sourceIds, docDeptMap) || 'OTHER';
     const nextSourceCount = sourceIds.length;
     const nextQualityLabel = options.qualityLabel;
     const nextAnswerScore = scoreAnswerQuality(answer, ragUsed, nextSourceCount);

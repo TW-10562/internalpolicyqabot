@@ -3,6 +3,8 @@ import { AlertTriangle, RefreshCw, Trash2, X } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { formatDateTimeJP } from '../../lib/dateTime';
+import { exportCsv, exportPdf, stampedFilename, type PdfColumnDef } from '../../lib/export';
+import ExportDropdown from '../shared/ExportDropdown';
 import {
   listTriageTickets,
   purgeTriageTickets,
@@ -87,6 +89,56 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
     return { open, closed };
   }, [tickets]);
 
+  const buildTriageExportRows = () => {
+    const headers = ['ID', 'Status', 'Department', 'Reported By', 'Employee ID', 'Assigned To', 'Issue Type', 'User Query', 'User Comment', 'Expected Answer', 'Assistant Answer', 'Updated At'];
+    const rows = tickets.map((tk) => [
+      tk.id,
+      tk.status,
+      tk.department_code || '',
+      tk.created_by_user_name || tk.created_by || '',
+      tk.created_by_emp_id || '',
+      tk.assigned_to_user_name || tk.assigned_to || '',
+      tk.issue_type || '',
+      tk.user_query_original || '',
+      tk.user_comment || '',
+      tk.expected_answer || '',
+      tk.assistant_answer || '',
+      formatDateTimeJP(tk.updated_at),
+    ]);
+    return { headers, rows };
+  };
+
+  const handleExportTriageCsv = () => {
+    const { headers, rows } = buildTriageExportRows();
+    exportCsv(stampedFilename('escalations'), headers, rows);
+  };
+
+  const handleExportTriagePdf = async () => {
+    const { rows } = buildTriageExportRows();
+    const pdfHeaders: PdfColumnDef[] = [
+      { header: 'ID', width: 0.5, align: 'center' },
+      { header: 'Status', width: 1, align: 'center' },
+      { header: 'Dept', width: 0.6, align: 'center' },
+      { header: 'Reported By', width: 1.2 },
+      { header: 'Emp ID', width: 1 },
+      { header: 'Assigned To', width: 1.2 },
+      { header: 'Issue Type', width: 1.2 },
+      { header: 'User Query', width: 2.5 },
+      { header: 'Comment', width: 1.5 },
+      { header: 'Expected', width: 2 },
+      { header: 'Bot Answer', width: 2 },
+      { header: 'Updated', width: 1.5 },
+    ];
+    await exportPdf({
+      title: 'Escalation Tickets',
+      subtitle: `${tickets.length} tickets (${grouped.open.length} open)`,
+      headers: pdfHeaders,
+      rows,
+      filename: stampedFilename('escalations'),
+      orientation: 'landscape',
+    });
+  };
+
   const updateStatus = async (ticketId: number, status: TriageStatus) => {
     setUpdatingId(ticketId);
     try {
@@ -157,6 +209,9 @@ export default function TriagePanel({ currentUser }: TriagePanelProps) {
             <h3 className="app-page-title">{t('triage.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
+            {tickets.length > 0 && (
+              <ExportDropdown onExportCsv={handleExportTriageCsv} onExportPdf={handleExportTriagePdf} />
+            )}
             <button
               onClick={() => {
                 setShowPurgeDialog(true);

@@ -438,10 +438,65 @@ function renderInlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
   });
 }
 
-function RichMessageText({ text }: { text: string }) {
-  const normalized = normalizeReplyForDisplay(text);
+type SourceEntry = { docId: string; title?: string; page?: number; fileId?: number };
+
+/** Strip the SOURCES / SOURCE footer from display text and return it separately */
+const splitSourceFooter = (text: string): { body: string; sourceLines: string[] } => {
+  const lines = text.split('\n');
+  let sourceStartIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (SOURCE_LINE_RE.test(lines[i])) { sourceStartIdx = i; break; }
+  }
+  if (sourceStartIdx < 0) return { body: text, sourceLines: [] };
+  const body = lines.slice(0, sourceStartIdx).join('\n').trimEnd();
+  const sourceLines = lines.slice(sourceStartIdx + 1)
+    .map((l) => l.replace(/^\s*[-•]\s*/, '').replace(/\s*\(照会語:.*?\)\s*$/, '').replace(/\s*\(matched query:.*?\)\s*$/i, '').trim())
+    .filter(Boolean);
+  return { body, sourceLines };
+};
+
+/** Deduplicate source display names by stripping extensions */
+const deduplicateSourceNames = (names: string[]): string[] => {
+  const stripExt = (n: string) => n.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '').toLowerCase();
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const n of names) {
+    const key = stripExt(n);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(n);
+  }
+  return result;
+};
+
+function RichMessageText({ text, sources, onSourceClick }: {
+  text: string;
+  sources?: SourceEntry[];
+  onSourceClick?: (src: SourceEntry) => void;
+}) {
+  // Split out source footer and render it as clickable links
+  const { body, sourceLines } = splitSourceFooter(text);
+  const normalized = normalizeReplyForDisplay(body);
   const blocks = parseMarkdownBlocks(normalized);
-  if (!blocks.length) return null;
+
+  const dedupedSourceLines = deduplicateSourceNames(sourceLines);
+
+  // Build a lookup from display name → source entry for click handling
+  const sourceMap = new Map<string, SourceEntry>();
+  if (sources?.length) {
+    const stripExt = (n: string) => n.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '').toLowerCase();
+    for (const s of sources) {
+      const name = s.title || s.docId;
+      sourceMap.set(stripExt(name), s);
+    }
+  }
+
+  const findSource = (displayName: string): SourceEntry | undefined => {
+    const stripExt = (n: string) => n.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '').toLowerCase();
+    return sourceMap.get(stripExt(displayName));
+  };
+
+  if (!blocks.length && !dedupedSourceLines.length) return null;
 
   return (
     <div className="space-y-2.5 text-sm leading-relaxed break-words text-slate-900 dark:text-slate-100">
@@ -523,6 +578,32 @@ function RichMessageText({ text }: { text: string }) {
           </ol>
         );
       })}
+
+      {/* Inline source links */}
+      {dedupedSourceLines.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-200/50 dark:border-white/10">
+          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Sources: </span>
+          {dedupedSourceLines.map((name, idx) => {
+            const src = findSource(name);
+            const isClickable = !!src && !!onSourceClick;
+            return (
+              <span key={idx}>
+                {idx > 0 && <span className="text-xs text-slate-400 dark:text-slate-500"> · </span>}
+                {isClickable ? (
+                  <button
+                    onClick={() => onSourceClick!(src!)}
+                    className="text-xs text-blue-500 dark:text-blue-400 hover:underline hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
+                  >
+                    {name}
+                  </button>
+                ) : (
+                  <span className="text-xs text-slate-600 dark:text-slate-300">{name}</span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -738,10 +819,14 @@ function DualLanguageMessage({
   content,
   taskOutputId,
   isInitialMessage,
+  sources,
+  onSourceClick,
 }: {
   content: DualLanguageContent;
   taskOutputId?: number;
   isInitialMessage?: boolean;
+  sources?: SourceEntry[];
+  onSourceClick?: (src: SourceEntry) => void;
 }) {
   const [translation, setTranslation] = useState<string | null>(null);
   const [loadingTranslation, setLoadingTranslation] = useState(false);
@@ -859,7 +944,7 @@ function DualLanguageMessage({
           </div>
         )}
 
-        <RichMessageText text={displayText || ''} />
+        <RichMessageText text={displayText || ''} sources={sources} onSourceClick={onSourceClick} />
       </div>
 
       {/* CHANGE: Translation button is hidden on the initial welcome message */}
@@ -925,7 +1010,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
   const [fieldSort, setFieldSort] = useState(0);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; title: string } | null>(null);
-  const [pdfPreview, setPdfPreview] = useState<{ filename: string; page: number; highlight?: string } | null>(null);
+  const [pdfPreview, setPdfPreview] = useState<{ filename: string; page: number; highlight?: string; fileUrl?: string; fileId?: number } | null>(null);
   const [triageDraft, setTriageDraft] = useState<TriageDraft | null>(null);
   const [triageIssueType, setTriageIssueType] = useState('incorrectAnswer');
   const [triageComment, setTriageComment] = useState('');
@@ -1070,7 +1155,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
     taskId: string,
     outputId?: number,
     sortHint?: number,
-  ): Promise<{ id?: number; status?: string; content?: string } | null> => {
+  ): Promise<{ id?: number; status?: string; content?: string; sources?: Array<{ docId: string; title?: string; page?: number; fileId?: number }> } | null> => {
     try {
       const response = await listTaskOutput({ pageNum: 1, pageSize: 1000, taskId });
       const rows = Array.isArray(response?.result?.rows) ? response.result.rows : [];
@@ -1089,10 +1174,21 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
       }
 
       if (!selected) return null;
+
+      // Extract ragSources from metadata for clickable citations
+      let sources: Array<{ docId: string; title?: string; page?: number }> | undefined;
+      try {
+        const meta = JSON.parse(selected?.metadata || '{}');
+        if (Array.isArray(meta.ragSources) && meta.ragSources.length > 0) {
+          sources = meta.ragSources;
+        }
+      } catch { /* ignore */ }
+
       return {
         id: Number(selected?.id || 0) || undefined,
         status: String(selected?.status || ''),
         content: String(selected?.content || ''),
+        sources,
       };
     } catch {
       return null;
@@ -1120,7 +1216,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
     let renderedContentText = '';
     let lastSmoothFlushAt = Date.now();
     const progressSteps = ['Analyzing your question', 'Searching documents', 'Building answer'];
-    const pollIntervalMs = 200;
+    const pollIntervalMs = 500;
     const pollTimeoutMs = Math.max(
       60_000,
       Number((import.meta as any)?.env?.VITE_CHAT_POLL_TIMEOUT_MS || 240_000),
@@ -1206,6 +1302,17 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
               const backend = backendFromTrace
                 ? { ...backendFromTrace, totalMs: backendFromTrace.totalMs ?? backendFromKpi?.totalMs, ragMs: backendFromTrace.ragMs ?? backendFromKpi?.ragMs, llmMs: backendFromTrace.llmMs ?? backendFromKpi?.llmMs, titleMs: backendFromTrace.titleMs ?? backendFromKpi?.titleMs, retrievalMs: backendFromTrace.retrievalMs ?? backendFromKpi?.retrievalMs }
                 : (backendFromKpi || undefined);
+              // Extract ragSources from metadata for clickable citations
+              const parsedSources = (() => {
+                try {
+                  const meta = JSON.parse(latestOutput.metadata || '{}');
+                  if (Array.isArray(meta.ragSources) && meta.ragSources.length > 0) {
+                    return meta.ragSources as Array<{ docId: string; title?: string; page?: number; fileId?: number }>;
+                  }
+                } catch { /* ignore */ }
+                return undefined;
+              })();
+
               setMessages(prev => {
                 const updated = prev.map((message) => ({ ...message }));
                 const targetIndex = updated.findIndex((message) => message.id === messageId);
@@ -1221,6 +1328,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
                       status: latestOutput.status,
                       taskOutputId: latestOutput.id,
                       kpi: { ...clientKpi, backend },
+                      sources: parsedSources,
                     };
                   }
                 }
@@ -1383,6 +1491,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
               taskOutputId:
                 storedOutput?.id || currentOutputId || updated[targetIndex].taskOutputId,
               kpi: { ...clientKpi, backend },
+              sources: storedOutput?.sources,
             };
           }
           return updated;
@@ -1590,6 +1699,14 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
       await sendFeedbackToCache({ taskOutputId, cache_signal: cacheSignal, query: prevUser?.content || '', answer: message.content || '' });
       setMessages(prev => prev.map(m => m.id === messageId ? { ...m, feedback: { emoji } } : m));
     } catch (error) { console.error('Feedback error:', error); }
+  };
+
+  const handleSourceClick = (src: { docId: string; title?: string; page?: number; fileId?: number }) => {
+    setPdfPreview({
+      filename: src.title || src.docId,
+      page: src.page || 1,
+      fileId: src.fileId,
+    });
   };
 
   const openTriageForMessage = (botMessageId: string, taskOutputId: number | undefined, assistantAnswer: string) => {
@@ -1801,6 +1918,8 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
                                   content={parsed}
                                   taskOutputId={message.taskOutputId}
                                   isInitialMessage={isInitialMessage}
+                                  sources={message.sources}
+                                  onSourceClick={handleSourceClick}
                                 />
                                 {/* CHANGE: No action buttons on initial welcome message */}
                                 {!isInitialMessage && (
@@ -1828,6 +1947,8 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
                                     content={{ isDualLanguage: false, isSingleLanguage: false, rawContent: message.content, content: message.content }}
                                     taskOutputId={message.taskOutputId}
                                     isInitialMessage={isInitialMessage}
+                                    sources={message.sources}
+                                    onSourceClick={handleSourceClick}
                                   />
                                 </div>
                                 {!isInitialMessage && (
@@ -1897,15 +2018,6 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
                     </div>
                   )}
 
-                  {message.source && (
-                    <SourceCitation
-                      document={message.source.document}
-                      page={message.source.page}
-                      excerpt={message.content.slice(0, 100)}
-                      onClick={() => setPdfPreview({ filename: message.source!.document, page: message.source!.page, highlight: message.content.slice(0, 50) })}
-                    />
-                  )}
-
                   <span className="text-xs text-slate-500 dark:text-slate-400 px-2 hidden sm:inline">
                     {formatTimeJP(message.timestamp, '')}
                   </span>
@@ -1920,7 +2032,7 @@ export default function ChatInterface({ focusSignal, onUserTyping, isAdmin }: Ch
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setPdfPreview(null)} />
             <div className="relative w-full max-w-4xl">
-              <PDFPreview filename={pdfPreview.filename} pageNumber={pdfPreview.page} highlightText={pdfPreview.highlight} onClose={() => setPdfPreview(null)} />
+              <PDFPreview filename={pdfPreview.filename} fileUrl={pdfPreview.fileUrl} fileId={pdfPreview.fileId} pageNumber={pdfPreview.page} highlightText={pdfPreview.highlight} onClose={() => setPdfPreview(null)} />
             </div>
           </div>
         )}

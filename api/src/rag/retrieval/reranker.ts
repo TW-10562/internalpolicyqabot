@@ -70,7 +70,9 @@ export const extractQueryTermsForRerank = (queryText: string): string[] => {
       cjkParts.push(v.slice(-2));
     }
   }
-  return Array.from(new Set([...raw, ...cjkParts].filter(Boolean))).slice(0, 16);
+  // Include particle-split keywords (e.g. "子の看護休暇" → "看護休暇")
+  const jpKeywords = extractJapaneseKeywordTerms(queryText);
+  return Array.from(new Set([...raw, ...cjkParts, ...jpKeywords].filter(Boolean))).slice(0, 16);
 };
 
 export const buildRetrievalCandidates = (query: string): string[] => {
@@ -190,7 +192,11 @@ export const countDocTermHits = (doc: any, terms: string[]): number => {
     const t = String(term || '').trim();
     if (!t) continue;
     if (hasJapaneseChars(t)) {
-      if (hay.includes(t.toLowerCase())) hits += 1;
+      if (hay.includes(t.toLowerCase())) {
+        // Weight by term length: longer (more specific) terms score higher.
+        // "看護休暇" (4 chars) → +2, "休暇" (2 chars) → +1
+        hits += Math.max(1, Math.ceil(t.length / 2));
+      }
       continue;
     }
     const lowerTerm = t.toLowerCase();

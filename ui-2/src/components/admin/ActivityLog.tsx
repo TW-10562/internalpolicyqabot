@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { useLang } from '../../context/LanguageContext';
 import { formatDateTimeJP } from '../../lib/dateTime';
+import { exportCsv, exportPdf, stampedFilename, type PdfColumnDef } from '../../lib/export';
+import ExportDropdown from '../shared/ExportDropdown';
 
 interface ActivityLog {
   id: string;
@@ -89,9 +91,60 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 export default function ActivityLogComponent({ activities, showTitle = true }: ActivityLogProps) {
   const { t } = useLang();
 
+  const buildExportRows = () => {
+    const headers = ['Timestamp', 'User', 'Email', 'Role', 'Department', 'Action', 'Detail'];
+    const rows = activities.map((a) => [
+      formatDateTimeJP(a.timestamp),
+      a.user,
+      a.email || '',
+      a.role || '',
+      a.department || '',
+      a.action,
+      a.detail,
+    ]);
+    return { headers, rows };
+  };
+
+  const handleExportCsv = () => {
+    const { headers, rows } = buildExportRows();
+    exportCsv(stampedFilename('activity-logs'), headers, rows);
+  };
+
+  const handleExportPdf = async () => {
+    const { rows } = buildExportRows();
+    const pdfHeaders: PdfColumnDef[] = [
+      { header: 'Timestamp', width: 2 },
+      { header: 'User', width: 2 },
+      { header: 'Email', width: 2 },
+      { header: 'Role', width: 1 },
+      { header: 'Department', width: 1 },
+      { header: 'Action', width: 2 },
+      { header: 'Detail', width: 4 },
+    ];
+    await exportPdf({
+      title: 'Activity Logs',
+      subtitle: `${activities.length} records`,
+      headers: pdfHeaders,
+      rows,
+      filename: stampedFilename('activity-logs'),
+      orientation: 'landscape',
+    });
+  };
+
   return (
     <div className="space-y-4">
-      {showTitle ? <h3 className="app-page-title transition-colors">{t('activity.title')}</h3> : null}
+      {showTitle ? (
+        <div className="flex items-center justify-between">
+          <h3 className="app-page-title transition-colors">{t('activity.title')}</h3>
+          {activities.length > 0 && <ExportDropdown onExportCsv={handleExportCsv} onExportPdf={handleExportPdf} />}
+        </div>
+      ) : (
+        activities.length > 0 && (
+          <div className="flex justify-end">
+            <ExportDropdown onExportCsv={handleExportCsv} onExportPdf={handleExportPdf} />
+          </div>
+        )
+      )}
 
       {activities.length === 0 ? (
         <div className="text-center text-muted dark:text-dark-text-muted text-sm py-8">

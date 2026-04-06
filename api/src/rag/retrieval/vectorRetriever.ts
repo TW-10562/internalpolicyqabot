@@ -159,7 +159,7 @@ export const retrieveVectorDocuments = async (
       process.env.EMBEDDING_MODEL_NAME ||
       'Qwen/Qwen3-Embedding-8B',
   ).trim();
-  const topK = Math.max(8, Number(process.env.RAG_VECTOR_TOP_K || 20));
+  const topK = Math.max(8, Number(process.env.RAG_VECTOR_TOP_K || 30));
 
   const payload = {
     collection_name: String(

@@ -119,6 +119,90 @@ const parseHistoryUserText = (rawMetadata: unknown): string => {
   }
 };
 
+/**
+ * Resolve ragSources to MySQL file IDs so the frontend can call /api/files/:id/view.
+ * Matches by filename (title) or storage_key (docId).
+ * File list is cached for 60s to avoid querying on every chat response.
+ */
+let _fileListCache: { data: Array<{ id: number; filename: string; storage_key: string }>; ts: number } | null = null;
+const FILE_LIST_CACHE_TTL = 60_000;
+
+const enrichRagSourcesWithFileIds = async (
+  ragSources: Array<{ docId: string; title?: string; page?: number }>,
+): Promise<Array<{ docId: string; title?: string; page?: number; fileId?: number }>> => {
+  if (!ragSources.length) return [];
+  try {
+    const now = Date.now();
+    let files: Array<{ id: number; filename: string; storage_key: string }>;
+    if (_fileListCache && (now - _fileListCache.ts) < FILE_LIST_CACHE_TTL) {
+      files = _fileListCache.data;
+    } else {
+      const FileModel = (await import('@/mysql/model/file.model')).default;
+      files = await FileModel.findAll({
+        attributes: ['id', 'filename', 'storage_key'],
+        raw: true,
+      }) as unknown as Array<{ id: number; filename: string; storage_key: string }>;
+      _fileListCache = { data: files, ts: now };
+    }
+
+    // Build lookup structures
+    const stripExt = (v: string) => v.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '').toLowerCase();
+    const stripDate = (v: string) => v.replace(/[_\s-]?\d{6,8}$/, '').toLowerCase();
+    const fileRecords = files.map((f) => ({
+      id: Number(f.id),
+      filename: String(f.filename || '').trim(),
+      filenameLower: String(f.filename || '').trim().toLowerCase(),
+      filenameNoExt: stripExt(String(f.filename || '').trim()),
+      filenameCore: stripDate(stripExt(String(f.filename || '').trim())),
+      storageKey: String(f.storage_key || '').trim().toLowerCase(),
+    }));
+
+    /** Find the best matching file for a source name (title or docId) */
+    const findFileId = (name: string): number | undefined => {
+      const lower = name.toLowerCase();
+      const noExt = stripExt(name);
+      const core = stripDate(noExt);
+
+      // 1. exact filename match
+      let match = fileRecords.find((f) => f.filenameLower === lower || f.filenameNoExt === noExt);
+      if (match) return match.id;
+      // 2. storage key match
+      match = fileRecords.find((f) => f.storageKey === lower || f.storageKey.endsWith(`/${lower}`));
+      if (match) return match.id;
+      // 3. core name match (strip dates) — most important for RAG titles
+      if (core) {
+        const coreMatches = fileRecords.filter((f) => f.filenameCore === core);
+        // Prefer non-comparison docs (no 新旧対照表)
+        const preferred = coreMatches.filter((f) => !f.filenameLower.includes('新旧対照表'));
+        if (preferred.length) return preferred[0].id;
+        if (coreMatches.length) return coreMatches[0].id;
+      }
+      // 4. partial contains
+      if (core && core.length >= 4) {
+        match = fileRecords.find((f) => f.filenameNoExt.includes(core) && !f.filenameLower.includes('新旧対照表'));
+        if (match) return match.id;
+      }
+      return undefined;
+    };
+
+    // Resolve file IDs and deduplicate (e.g. "file" vs "file.pdf" = same doc)
+    const deduped: Array<{ docId: string; title?: string; page?: number; fileId?: number }> = [];
+    const seenKeys = new Set<string>();
+    for (const s of ragSources) {
+      const name = String(s.title || s.docId || '').trim();
+      const dedupKey = stripDate(stripExt(name));
+      if (seenKeys.has(dedupKey)) continue;
+      seenKeys.add(dedupKey);
+      const fileId = findFileId(name) || findFileId(String(s.docId || '').trim());
+      deduped.push({ ...s, fileId });
+    }
+    return deduped;
+  } catch (e) {
+    console.warn('[enrichRagSources] Failed to resolve file IDs:', (e as any)?.message || e);
+    return ragSources;
+  }
+};
+
 const escapeTermsValue = (value: string) => String(value || '').replace(/([,\\])/g, '\\$1');
 const SOLR_TIMEOUT_MS = Math.max(1000, Number(process.env.RAG_SOLR_TIMEOUT_MS || 12000));
 const RAG_BACKEND_TIMEOUT_MS = Math.max(800, Number(process.env.RAG_BACKEND_TIMEOUT_MS || 6000));
@@ -137,9 +221,9 @@ const QUERY_TRANSLATION_NEGATIVE_CACHE_TTL_MS = Math.max(
   Number(process.env.RAG_QUERY_TRANSLATION_NEGATIVE_CACHE_TTL_MS || 8000),
 );
 const FINAL_TRANSLATION_TIMEOUT_MS = Math.max(2000, Number(process.env.RAG_FINAL_TRANSLATION_TIMEOUT_MS || 6000));
-const DOC_CONTEXT_CHARS = Math.max(600, Number(process.env.RAG_DOC_CONTEXT_CHARS || 1200));
-const RAG_MAX_CONTEXT_CHUNKS = Math.max(1, Number(process.env.RAG_MAX_CONTEXT_CHUNKS || 3));
-const RAG_MAX_CONTEXT_TOKENS = Math.max(200, Number(process.env.RAG_MAX_CONTEXT_TOKENS || 900));
+const DOC_CONTEXT_CHARS = Math.max(600, Number(process.env.RAG_DOC_CONTEXT_CHARS || 1800));
+const RAG_MAX_CONTEXT_CHUNKS = Math.max(1, Number(process.env.RAG_MAX_CONTEXT_CHUNKS || 5));
+const RAG_MAX_CONTEXT_TOKENS = Math.max(200, Number(process.env.RAG_MAX_CONTEXT_TOKENS || 1500));
 const RAG_CONTEXT_CHARS_PER_TOKEN = Math.max(2, Number(process.env.RAG_CONTEXT_CHARS_PER_TOKEN || 4));
 const CHAT_MAX_PREDICT = Math.max(
   120,
@@ -2432,6 +2516,40 @@ const isCannotConfirmStyleAnswer = (value: string): boolean => {
   return matchesRejectionPhrase && !isSubstantialAnswer;
 };
 
+/**
+ * Strip the generic rejection phrase from answers that contain substantial
+ * real content. When the LLM produces a partial answer it sometimes appends
+ * the exact "could not be confirmed" phrase alongside valid information,
+ * which confuses users. This function removes that trailing boilerplate
+ * while preserving the real answer content.
+ */
+const stripRejectionPhraseFromPartialAnswer = (value: string): string => {
+  const text = String(value || '');
+  if (!text) return text;
+
+  const rejectionPhrases = [
+    noEvidenceReply('en'),
+    noEvidenceReply('ja'),
+    'The information could not be confirmed from the available documents.',
+    '利用可能な文書からは、その情報を確認できませんでした。',
+  ];
+
+  // Only strip if the answer has substantial content beyond the rejection phrase
+  let result = text;
+  for (const phrase of rejectionPhrases) {
+    if (!result.includes(phrase)) continue;
+    const without = result.replace(phrase, '').trim();
+    // Only strip if there is meaningful content remaining (>100 chars)
+    if (without.length > 100) {
+      result = without;
+    }
+  }
+
+  // Clean up any leftover blank lines from removal
+  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return result;
+};
+
 const isGenerationFailureStyleAnswer = (value: string): boolean => {
   const text = String(value || '').toLowerCase();
   if (!text) return false;
@@ -3287,13 +3405,18 @@ const appendSourceFooter = (
   if (!rawBase) return rawBase;
   const base = stripExistingSourceFooter(rawBase).trimEnd();
 
-  const sourceNames = Array.from(
-    new Set(
-      (sources || [])
-        .map((s) => String(s?.title || s?.docId || '').trim())
-        .filter(Boolean),
-    ),
-  );
+  // Deduplicate sources: strip common extensions so "file" and "file.pdf" collapse
+  const stripExt = (name: string) => name.replace(/\.(pdf|docx?|xlsx?|csv|txt|pptx?)$/i, '');
+  const seen = new Set<string>();
+  const sourceNames: string[] = [];
+  for (const s of sources || []) {
+    const raw = String(s?.title || s?.docId || '').trim();
+    if (!raw) continue;
+    const key = stripExt(raw).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sourceNames.push(raw);
+  }
   if (!sourceNames.length) return base;
 
   let bodyWithCitation = base;
@@ -4501,6 +4624,17 @@ export const chatGenProcess = async (job) => {
         }
 
         console.log(`[DEBUG] finalAnswer after pipeline: empty=${!finalAnswer} length=${String(finalAnswer||'').length} isCannotConfirm=${isCannotConfirmStyleAnswer(finalAnswer)} isGenFailure=${isGenerationFailureStyleAnswer(finalAnswer)} preview="${String(finalAnswer||'').slice(0, 150)}"`);
+
+        // Strip generic rejection phrases from substantial partial answers
+        // so users don't see contradictory "here is the answer" + "could not be confirmed" output.
+        if (finalAnswer && !isCannotConfirmStyleAnswer(finalAnswer)) {
+          const cleaned = stripRejectionPhraseFromPartialAnswer(finalAnswer);
+          if (cleaned !== finalAnswer) {
+            console.log(`[STEP 3] Stripped rejection boilerplate from partial answer (${String(finalAnswer).length} → ${cleaned.length} chars)`);
+            finalAnswer = cleaned;
+          }
+        }
+
         if (!finalAnswer) {
           if (kpiMetrics.ragUsed) {
             markEmptyLlmResponseFallback('modular_final_answer_empty');
@@ -4837,11 +4971,33 @@ export const chatGenProcess = async (job) => {
           cache_hit: false,
         });
 
+        // Merge ragSources into metadata so the frontend can render clickable citations
+        const enrichedSources1 = ragSources.length > 0
+          ? await enrichRagSourcesWithFileIds(ragSources)
+          : [];
+        const updatedMeta1 = (() => {
+          try {
+            const existing = JSON.parse(String(metadata || '{}'));
+            if (enrichedSources1.length > 0) {
+              existing.ragSources = enrichedSources1.map((s) => ({
+                docId: s.docId,
+                title: s.title || undefined,
+                page: s.page || undefined,
+                fileId: s.fileId || undefined,
+              }));
+            }
+            return JSON.stringify(existing);
+          } catch {
+            return metadata;
+          }
+        })();
+
         await put<IGenTaskOutputSer>(
           KrdGenTaskOutput,
           { id: outputId },
           {
             content,
+            metadata: updatedMeta1,
             status: finalStatus,
             update_by: 'JOB',
           },
@@ -5896,7 +6052,10 @@ export const chatGenProcess = async (job) => {
 
             if (docs.length > 0) {
               const rerankStart = Date.now();
-              const rerankTerms = extractQueryTermsForRerank(retrievalQueryUsed);
+              // Include Japanese expanded queries in rerank terms so English queries
+              // can match Japanese document content via translated keywords.
+              const rerankSeed = [retrievalQueryUsed, ...multilingualRetrievalQueries].join(' ');
+              const rerankTerms = extractQueryTermsForRerank(rerankSeed);
               let reranked = docs
                 .map((doc) => ({
                   doc,
@@ -6190,7 +6349,8 @@ export const chatGenProcess = async (job) => {
 
             if (docs.length > 0 && semanticBackendQueried) {
               const semanticRerankStart = Date.now();
-              const rerankTerms = extractQueryTermsForRerank(retrievalQueryUsed || searchQuery);
+              const semanticRerankSeed = [retrievalQueryUsed || searchQuery, ...multilingualRetrievalQueries].join(' ');
+              const rerankTerms = extractQueryTermsForRerank(semanticRerankSeed);
               let semanticReranked = docs
                 .map((doc) => ({
                   doc,
@@ -6586,6 +6746,15 @@ export const chatGenProcess = async (job) => {
       if (isCannotConfirmStyleAnswer(finalAnswer)) {
         finalAnswer = noEvidenceReply(userLanguage);
         content = finalAnswer;
+      }
+      // Strip generic rejection phrases from substantial partial answers (legacy path)
+      if (finalAnswer && !isCannotConfirmStyleAnswer(finalAnswer)) {
+        const cleaned = stripRejectionPhraseFromPartialAnswer(finalAnswer);
+        if (cleaned !== finalAnswer) {
+          console.log(`[STEP 3] Stripped rejection boilerplate from partial answer (legacy) (${String(finalAnswer).length} → ${cleaned.length} chars)`);
+          finalAnswer = cleaned;
+          content = finalAnswer;
+        }
       }
       if (kpiMetrics.ragUsed && isGenerationFailureStyleAnswer(finalAnswer)) {
         markEmptyLlmResponseFallback('legacy_generation_failure_style');
@@ -7097,12 +7266,34 @@ export const chatGenProcess = async (job) => {
     }
     console.log(`[CHAT PROCESS] KPI metrics:`, kpiMetrics);
 
+    // Merge ragSources into metadata so the frontend can render clickable citations
+    const enrichedSources2 = ragSources.length > 0
+      ? await enrichRagSourcesWithFileIds(ragSources)
+      : [];
+    const updatedMeta2 = (() => {
+      try {
+        const existing = JSON.parse(String(metadata || '{}'));
+        if (enrichedSources2.length > 0) {
+          existing.ragSources = enrichedSources2.map((s) => ({
+            docId: s.docId,
+            title: s.title || undefined,
+            page: s.page || undefined,
+            fileId: s.fileId || undefined,
+          }));
+        }
+        return JSON.stringify(existing);
+      } catch {
+        return metadata;
+      }
+    })();
+
     try {
       await put<IGenTaskOutputSer>(
         KrdGenTaskOutput,
         { id: outputId },
         {
           content,
+          metadata: updatedMeta2,
           status: finalStatus,
           update_by: 'JOB',
         },

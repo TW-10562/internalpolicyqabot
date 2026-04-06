@@ -37,6 +37,7 @@ export const authWhites = [
   '/api/auth/login',
   '/api/auth/sso/microsoft',
   '/api/auth/sso/microsoft/mock',
+  '/api/maintenance',
 ];
 
 export const auth = async (ctx: Context, next: () => Promise<void>) => {

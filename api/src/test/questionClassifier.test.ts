@@ -1,5 +1,5 @@
 /**
- * Test suite for QuestionClassifier.
+ * Test suite for QuestionClassifier and FaqCategoryService.
  *
  * Run: npx ts-node -r tsconfig-paths/register src/test/questionClassifier.test.ts
  *
@@ -17,7 +17,7 @@ type TestCase = {
 };
 
 const TEST_CASES: TestCase[] = [
-  // HR cases
+  // ─── HR cases ───
   {
     question: 'What kind of person is referred to as a contracted employee?',
     expected: 'HR',
@@ -44,7 +44,7 @@ const TEST_CASES: TestCase[] = [
     description: 'EN: leave entitlement',
   },
 
-  // ACC cases
+  // ─── ACC cases ───
   {
     question: '食事電子マネーの会社補助率と従業員の自己負担率はそれぞれ何％ですか',
     expected: 'ACC',
@@ -66,7 +66,7 @@ const TEST_CASES: TestCase[] = [
     description: 'EN: reimbursement calculation',
   },
 
-  // GA cases
+  // ─── GA cases ───
   {
     question: '役員はいつビジネスクラスの航空運賃を利用できますか？',
     expected: 'GA',
@@ -83,7 +83,7 @@ const TEST_CASES: TestCase[] = [
     description: 'EN: travel expense policy',
   },
 
-  // OTHERS cases
+  // ─── OTHERS cases ───
   {
     question: 'hello',
     expected: 'OTHERS',
@@ -93,6 +93,47 @@ const TEST_CASES: TestCase[] = [
     question: 'What is the weather today?',
     expected: 'OTHERS',
     description: 'EN: unrelated question',
+  },
+
+  // ─── Mixed-signal cases: monetary vocabulary + HR policy intent ───
+  {
+    question: '勤続年数が3年未満で自己都合退職した場合、事業主掛金はどのように扱われますか？',
+    expected: 'HR',
+    description: 'JA: retirement vesting policy — monetary words but HR policy ownership',
+  },
+  {
+    question: '育児休業中の社会保険料はどうなりますか？',
+    expected: 'HR',
+    description: 'JA: childcare leave insurance — insurance terms but HR leave policy',
+  },
+  {
+    question: '食事補助の支給条件は？',
+    expected: 'HR',
+    description: 'JA: meal benefit eligibility — subsidy term but asking about eligibility rules',
+  },
+  {
+    question: 'What are the conditions to qualify for the retirement pension plan?',
+    expected: 'HR',
+    description: 'EN: pension eligibility — pension/money context but HR policy question',
+  },
+
+  // ─── Mixed-signal cases: GA context with monetary surface ───
+  {
+    question: '出張時のホテル代の上限金額は？',
+    expected: 'GA',
+    description: 'JA: hotel limit for business trip — amount question but GA travel policy',
+  },
+
+  // ─── Genuine ACC cases that should remain ACC ───
+  {
+    question: '通勤手当の金額はいくらですか？',
+    expected: 'ACC',
+    description: 'JA: commuting allowance specific amount — genuine financial question',
+  },
+  {
+    question: '退職金の計算方法を教えてください',
+    expected: 'ACC',
+    description: 'JA: retirement pay calculation method — asking for formula/number',
   },
 ];
 
@@ -110,7 +151,7 @@ async function runTests() {
     const ok = result.department === tc.expected;
     const icon = ok ? '✓' : '✗';
     console.log(`  ${icon} [${tc.expected}] ${tc.description}`);
-    console.log(`    Q: "${tc.question.slice(0, 60)}${tc.question.length > 60 ? '...' : ''}"`);
+    console.log(`    Q: "${tc.question.slice(0, 70)}${tc.question.length > 70 ? '...' : ''}"`);
     console.log(`    Got: ${result.department} (${result.confidence.toFixed(2)}) — ${result.reason}`);
     if (ok) {
       passed++;
@@ -129,16 +170,37 @@ async function runTests() {
   if (batchOk) passed++;
   else { failed++; failures.push('Batch size mismatch'); }
 
-  // Test 3: Source-doc priority in faqCategoryService
-  console.log('\n--- Test: Source-Doc Priority ---');
-  const faqResult = await resolveFaqDepartment('some random question', 'HR');
-  const faqOk = faqResult.department === 'HR' && faqResult.reason === 'source_document_department';
-  console.log(`  ${faqOk ? '✓' : '✗'} Source-doc department takes priority over LLM`);
-  console.log(`    Got: ${faqResult.department} (${faqResult.confidence}) — ${faqResult.reason}`);
-  if (faqOk) passed++;
-  else { failed++; failures.push('Source-doc priority not respected'); }
+  // Test 3: Semantic classification overrides conflicting source-doc metadata
+  console.log('\n--- Test: Semantic Override of Metadata ---');
+  const pensionQ = '勤続年数が3年未満で自己都合退職した場合、事業主掛金はどのように扱われますか？';
+  const overrideResult = await resolveFaqDepartment(pensionQ, 'ACC');
+  const overrideOk = overrideResult.department === 'HR';
+  console.log(`  ${overrideOk ? '✓' : '✗'} Semantic HR classification overrides source-doc ACC`);
+  console.log(`    Q: "${pensionQ.slice(0, 60)}..."`);
+  console.log(`    Source-doc: ACC | Got: ${overrideResult.department} (${overrideResult.confidence.toFixed(2)}) — ${overrideResult.reason}`);
+  if (overrideOk) passed++;
+  else { failed++; failures.push(`Semantic override failed: expected HR, got ${overrideResult.department} for pension vesting Q with ACC source-doc`); }
 
-  // Test 4: Empty question fallback
+  // Test 4: Agreement between LLM and source-doc boosts confidence
+  console.log('\n--- Test: Source-Doc Agreement Boost ---');
+  const leaveQ = 'How many paid leave days do I get after 6 months?';
+  const agreeResult = await resolveFaqDepartment(leaveQ, 'HR');
+  const agreeOk = agreeResult.department === 'HR' && agreeResult.confidence > 0.6;
+  console.log(`  ${agreeOk ? '✓' : '✗'} LLM+source-doc agreement produces HR with high confidence`);
+  console.log(`    Got: ${agreeResult.department} (${agreeResult.confidence.toFixed(2)}) — ${agreeResult.reason}`);
+  if (agreeOk) passed++;
+  else { failed++; failures.push('Source-doc agreement boost failed'); }
+
+  // Test 5: Null source-doc falls through to LLM
+  console.log('\n--- Test: Null Source-Doc Fallback ---');
+  const nullSrcResult = await resolveFaqDepartment(leaveQ, null);
+  const nullSrcOk = nullSrcResult.department === 'HR';
+  console.log(`  ${nullSrcOk ? '✓' : '✗'} Null source-doc → LLM-only classification`);
+  console.log(`    Got: ${nullSrcResult.department} (${nullSrcResult.confidence.toFixed(2)}) — ${nullSrcResult.reason}`);
+  if (nullSrcOk) passed++;
+  else { failed++; failures.push('Null source-doc fallback failed'); }
+
+  // Test 6: Empty question fallback
   console.log('\n--- Test: Edge Cases ---');
   const emptyResult = await classifyQuestion({ question: '' });
   const emptyOk = emptyResult.department === 'OTHERS';

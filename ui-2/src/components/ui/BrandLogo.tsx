@@ -1,4 +1,3 @@
-import logoImage from '../../../assets/logo.png';
 import { useTheme } from '../../context/ThemeContext';
 
 interface BrandLogoProps {
@@ -11,7 +10,7 @@ export default function BrandLogo({ alt, className = '' }: BrandLogoProps) {
 
   return (
     <img
-      src={logoImage}
+      src="/logo.png"
       alt={alt}
       className={`${className} ${theme === 'dark' ? 'brightness-0 invert' : ''}`.trim()}
     />

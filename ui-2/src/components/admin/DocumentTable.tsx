@@ -13,6 +13,8 @@ import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { getToken } from '../../api/auth';
 import { formatDateJP } from '../../lib/dateTime';
+import { exportCsv, exportPdf, stampedFilename, type PdfColumnDef } from '../../lib/export';
+import ExportDropdown from '../shared/ExportDropdown';
 
 interface DocumentHistory {
   id: number;
@@ -57,6 +59,9 @@ export default function DocumentTable({
   const [previewMimeType, setPreviewMimeType] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewExcelSheets, setPreviewExcelSheets] = useState<Array<{ name: string; html: string }>>([]);
+  const [previewActiveSheet, setPreviewActiveSheet] = useState(0);
+  const [previewWordHtml, setPreviewWordHtml] = useState<string | null>(null);
   const [pendingBulkDelete, setPendingBulkDelete] = useState<DocumentHistory[] | null>(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -76,6 +81,43 @@ export default function DocumentTable({
     if (!q) return documentHistory;
     return documentHistory.filter(doc => doc.filename.toLowerCase().includes(q));
   }, [documentHistory, searchQuery]);
+
+  const buildDocExportRows = () => {
+    const headers = ['Filename', 'Size (MB)', 'Uploaded By', 'Upload Date', 'Department', 'Status'];
+    const rows = filteredDocs.map((doc) => [
+      doc.filename,
+      (doc.size / 1024 / 1024).toFixed(2),
+      doc.create_by || 'System',
+      formatDateJP(doc.created_at),
+      getDepartmentLabel(doc.department_code),
+      'Active',
+    ]);
+    return { headers, rows };
+  };
+
+  const handleExportDocsCsv = () => {
+    const { headers, rows } = buildDocExportRows();
+    exportCsv(stampedFilename('documents'), headers, rows);
+  };
+
+  const handleExportDocsPdf = async () => {
+    const { rows } = buildDocExportRows();
+    const pdfHeaders: PdfColumnDef[] = [
+      { header: 'Filename', width: 4 },
+      { header: 'Size (MB)', width: 1, align: 'right' },
+      { header: 'Uploaded By', width: 2 },
+      { header: 'Upload Date', width: 2 },
+      { header: 'Department', width: 1.5, align: 'center' },
+      { header: 'Status', width: 1, align: 'center' },
+    ];
+    await exportPdf({
+      title: 'Document List',
+      subtitle: `${filteredDocs.length} documents`,
+      headers: pdfHeaders,
+      rows,
+      filename: stampedFilename('documents'),
+    });
+  };
 
   const allFilteredSelected = filteredDocs.length > 0 && filteredDocs.every(doc => selectedDocIds.has(doc.id));
   const someFilteredSelected = filteredDocs.some(doc => selectedDocIds.has(doc.id));
@@ -112,7 +154,11 @@ export default function DocumentTable({
     if (normalizedMime === 'application/pdf') return true;
     if (normalizedMime.startsWith('text/plain')) return true;
     if (normalizedMime === 'image/png' || normalizedMime === 'image/jpeg' || normalizedMime === 'image/jpg' || normalizedMime === 'image/webp') return true;
-    return ext === 'pdf' || ext === 'txt' || ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp';
+    // Office formats (client-side rendering via xlsx / mammoth)
+    if (normalizedMime.includes('spreadsheetml') || normalizedMime.includes('ms-excel')) return true;
+    if (normalizedMime.includes('wordprocessingml') || normalizedMime.includes('msword')) return true;
+    return ext === 'pdf' || ext === 'txt' || ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp'
+      || ext === 'xlsx' || ext === 'xls' || ext === 'csv' || ext === 'docx';
   };
 
   const closePreview = () => {
@@ -123,6 +169,9 @@ export default function DocumentTable({
     setPreviewMimeType(null);
     setPreviewError(null);
     setIsPreviewLoading(false);
+    setPreviewExcelSheets([]);
+    setPreviewActiveSheet(0);
+    setPreviewWordHtml(null);
   };
 
   const handlePreviewDownload = () => {
@@ -171,10 +220,36 @@ export default function DocumentTable({
       const contentType = response.headers.get('Content-Type') || blob.type || doc.mime_type;
       setPreviewMimeType(contentType || null);
 
-      const inline = isInlineViewable(doc.filename, contentType || doc.mime_type);
-      if (inline && String(contentType || '').toLowerCase().startsWith('text/plain')) {
+      const ext = doc.filename.split('.').pop()?.toLowerCase();
+      const mime = String(contentType || '').toLowerCase();
+
+      if (mime.startsWith('text/plain') || ext === 'txt') {
         const text = await blob.text();
         setPreviewText(text);
+      } else if (mime.includes('spreadsheetml') || mime.includes('ms-excel') || ext === 'xlsx' || ext === 'xls' || ext === 'csv') {
+        try {
+          const XLSX = await import('xlsx');
+          const buffer = await blob.arrayBuffer();
+          const wb = XLSX.read(buffer, { type: 'array' });
+          const sheets = wb.SheetNames.map((name) => {
+            const ws = wb.Sheets[name];
+            const html = XLSX.utils.sheet_to_html(ws, { id: 'excel-table', editable: false });
+            return { name, html };
+          });
+          setPreviewExcelSheets(sheets);
+          setPreviewActiveSheet(0);
+        } catch (e) {
+          console.warn('[DocumentTable] Excel parse error:', e);
+        }
+      } else if (mime.includes('wordprocessingml') || mime.includes('msword') || ext === 'docx') {
+        try {
+          const mammoth = await import('mammoth');
+          const buffer = await blob.arrayBuffer();
+          const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
+          setPreviewWordHtml(result.value);
+        } catch (e) {
+          console.warn('[DocumentTable] Word parse error:', e);
+        }
       }
     } catch (error) {
       console.error('❌ [DocumentTable] Error viewing file:', error);
@@ -267,6 +342,9 @@ export default function DocumentTable({
               className="w-full input-with-icon pr-4 py-2 bg-surface dark:bg-dark-surface border border-default dark:border-default rounded-xl text-foreground dark:text-dark-text placeholder-muted dark:placeholder-dark-text-muted focus:outline-none focus-ring-accent transition-colors"
             />
           </div>
+          {filteredDocs.length > 0 && (
+            <ExportDropdown onExportCsv={handleExportDocsCsv} onExportPdf={handleExportDocsPdf} />
+          )}
           <button
             onClick={onUploadClick}
             className="flex items-center justify-center gap-2 h-10 px-4 btn-primary dark:bg-accent-strong text-on-accent rounded-xl transition-colors cursor-pointer whitespace-nowrap font-medium shadow-sm"
@@ -340,6 +418,8 @@ export default function DocumentTable({
                   const isPdf = mime.includes('application/pdf') || ext === 'pdf';
                   const isImage = mime.startsWith('image/');
                   const isText = mime.startsWith('text/plain') || ext === 'txt';
+                  const isExcel = previewExcelSheets.length > 0;
+                  const isWord = !!previewWordHtml;
 
                   if (!previewUrl) {
                     return (
@@ -376,6 +456,54 @@ export default function DocumentTable({
                       <pre className="h-full overflow-auto p-6 text-sm font-mono whitespace-pre-wrap text-foreground dark:text-dark-text">
                         {previewText || ''}
                       </pre>
+                    );
+                  }
+
+                  if (isExcel) {
+                    return (
+                      <div className="h-full flex flex-col">
+                        {previewExcelSheets.length > 1 && (
+                          <div className="flex gap-1 px-4 pt-3 pb-1 bg-[#F6F6F6] dark:bg-dark-bg-primary border-b border-[#E8E8E8] dark:border-dark-border overflow-x-auto shrink-0">
+                            {previewExcelSheets.map((sheet, idx) => (
+                              <button
+                                key={sheet.name}
+                                onClick={() => setPreviewActiveSheet(idx)}
+                                className={`px-3 py-1.5 text-xs font-medium rounded-t whitespace-nowrap transition-colors ${
+                                  idx === previewActiveSheet
+                                    ? 'bg-white dark:bg-dark-surface text-blue-600 dark:text-blue-400 border border-b-0 border-[#E8E8E8] dark:border-dark-border'
+                                    : 'text-muted dark:text-dark-text-muted hover:text-foreground dark:hover:text-dark-text hover:bg-white/60 dark:hover:bg-dark-border'
+                                }`}
+                              >
+                                {sheet.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div
+                          className="flex-1 overflow-auto p-4 doc-excel-preview"
+                          dangerouslySetInnerHTML={{ __html: previewExcelSheets[previewActiveSheet]?.html || '' }}
+                        />
+                        <style>{`
+                          .doc-excel-preview table { border-collapse: collapse; width: 100%; font-size: 0.8125rem; }
+                          .doc-excel-preview th, .doc-excel-preview td { border: 1px solid #e2e8f0; padding: 4px 8px; text-align: left; white-space: nowrap; }
+                          .doc-excel-preview th { background: #f1f5f9; font-weight: 600; }
+                          .doc-excel-preview tr:nth-child(even) { background: #f8fafc; }
+                        `}</style>
+                      </div>
+                    );
+                  }
+
+                  if (isWord) {
+                    return (
+                      <div className="h-full overflow-auto">
+                        <div
+                          className="p-6 prose prose-sm dark:prose-invert max-w-none doc-word-preview"
+                          dangerouslySetInnerHTML={{ __html: previewWordHtml }}
+                        />
+                        <style>{`
+                          .doc-word-preview img { max-width: 100%; height: auto; }
+                        `}</style>
+                      </div>
                     );
                   }
 

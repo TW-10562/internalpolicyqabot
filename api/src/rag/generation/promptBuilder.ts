@@ -38,7 +38,7 @@ export const buildEnterpriseRagSystemPrompt = (
     '2. Do NOT invent facts, rules, thresholds, dates, amounts, percentages, or procedures.',
     '3. Do NOT supplement the answer with your own knowledge, even if you believe it to be correct.',
     `4. If the answer is not clearly supported by the retrieved context, reply exactly: "${strictNoAnswer}"`,
-    `5. If only PARTIAL evidence exists, state what IS supported and explicitly note what could not be confirmed.`,
+    `5. If only PARTIAL evidence exists, state what IS supported and add a specific note about which aspects are not covered (e.g. "The specific procedure for X is not detailed in the available documents."). NEVER use the exact rejection phrase "${strictNoAnswer}" inside a partial answer.`,
     language === 'ja'
       ? '6. ユーザーへの回答は必ず日本語のみで行ってください。他の言語（英語、ベトナム語など）は使用禁止です。'
       : '6. CRITICAL: You MUST answer ONLY in English. Do NOT output Vietnamese, Chinese, or any other language. Even if the source documents are in Japanese, translate the content and answer in English only.',

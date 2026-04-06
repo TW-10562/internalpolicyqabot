@@ -18,6 +18,12 @@ export interface Message {
     page: number;
     language?: string;
   };
+  sources?: Array<{
+    docId: string;
+    title?: string;
+    page?: number;
+    fileId?: number;
+  }>;
   // API integration fields
   taskOutputId?: number;
   status?: string;

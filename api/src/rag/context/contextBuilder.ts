@@ -86,7 +86,11 @@ export const extractRelevantSnippet = (raw: string, terms: string[], maxChars: n
     for (const term of sortedTerms) {
       const token = String(term || '').trim().toLowerCase();
       if (!token) continue;
-      if (lower.includes(token)) coverage += 1;
+      if (lower.includes(token)) {
+        // Weight by term length: longer/compound terms are more specific
+        // "看護休暇" (4 chars) → +2, "休暇" (2 chars) → +1
+        coverage += Math.max(1, Math.ceil(token.length / 2));
+      }
     }
     const obligationBoost = obligationPattern.test(textValue) ? 1 : 0;
     const articleBoost = articlePattern.test(textValue) ? 1 : 0;
@@ -145,7 +149,9 @@ export const extractRelevantSnippet = (raw: string, terms: string[], maxChars: n
     for (const term of sortedTerms) {
       const token = String(term || '').trim().toLowerCase();
       if (!token) continue;
-      if (lower.includes(token)) coverage += 1;
+      if (lower.includes(token)) {
+        coverage += Math.max(1, Math.ceil(token.length / 2));
+      }
     }
     const obligationBoost = obligationPattern.test(snippet) ? 1 : 0;
     return {
@@ -184,7 +190,7 @@ export const buildContextFromDocs = (input: BuildContextInput): BuildContextOutp
   const maxChunks = Math.min(8, Math.max(1, Number(input.maxChunks || 1)));
   const contextBudgetChars = Math.max(800, Number(input.contextBudgetChars || 800));
   const docContextChars = Math.max(180, Number(input.docContextChars || 180));
-  const maxChunksPerSource = Math.max(1, Number(process.env.RAG_CONTEXT_MAX_CHUNKS_PER_SOURCE || 1));
+  const maxChunksPerSource = Math.max(1, Number(process.env.RAG_CONTEXT_MAX_CHUNKS_PER_SOURCE || 2));
   const retrievalTerms = extractQueryTermsForRerank(input.retrievalQuery);
 
   const preSelected: PreparedChunk[] = [];
@@ -204,7 +210,7 @@ export const buildContextFromDocs = (input: BuildContextInput): BuildContextOutp
       doc?.file_name_s ||
       doc?.id ||
       '',
-    ).trim();
+    ).trim().replace(/\.(pdf|docx?|xlsx?)$/i, '');
     if (sourceKey) {
       const sourceUsed = Number(perSourceCount.get(sourceKey) || 0);
       if (sourceUsed >= maxChunksPerSource) continue;

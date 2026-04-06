@@ -24,7 +24,7 @@ const genTaskLog = (...args: any[]) => {
   if (GEN_TASK_VERBOSE) console.log(...args);
 };
 const CHAT_OUTPUT_STREAM_TIMEOUT_MS = Math.max(15000, Number(process.env.CHAT_OUTPUT_STREAM_TIMEOUT_MS || 300000));
-const CHAT_OUTPUT_STREAM_POLL_MS = Math.max(30, Number(process.env.CHAT_OUTPUT_STREAM_POLL_MS || 40));
+const CHAT_OUTPUT_STREAM_POLL_MS = Math.max(100, Number(process.env.CHAT_OUTPUT_STREAM_POLL_MS || 200));
 const CHAT_OUTPUT_STREAM_CHUNK_SIZE = Math.max(1, Number(process.env.CHAT_OUTPUT_STREAM_CHUNK_SIZE || 4));
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

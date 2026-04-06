@@ -97,8 +97,8 @@ export const retrieveDocumentsWithHybrid = async (
     .sort((left, right) => Number(right?.vector_similarity || right?.score || 0) - Number(left?.vector_similarity || left?.score || 0))
     .slice(0, 20);
 
-  const solrWeight = Math.max(0, Number(process.env.RAG_HYBRID_SOLR_WEIGHT || 0.6));
-  const vectorWeight = Math.max(0, Number(process.env.RAG_HYBRID_VECTOR_WEIGHT || 0.4));
+  const solrWeight = Math.max(0, Number(process.env.RAG_HYBRID_SOLR_WEIGHT || 0.4));
+  const vectorWeight = Math.max(0, Number(process.env.RAG_HYBRID_VECTOR_WEIGHT || 0.6));
   const totalWeight = Math.max(0.0001, solrWeight + vectorWeight);
   const normalizedSolrWeight = solrWeight / totalWeight;
   const normalizedVectorWeight = vectorWeight / totalWeight;

@@ -3,6 +3,8 @@ import { Clock, Trash2, ChevronRight, User, CalendarDays, X } from 'lucide-react
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { formatDateTimeJP, formatDateJP } from '../../lib/dateTime';
+import { exportCsv, exportPdf, stampedFilename, type PdfColumnDef } from '../../lib/export';
+import ExportDropdown from '../shared/ExportDropdown';
 import {
   deleteHistoryConversation,
   getHistoryConversation,
@@ -86,6 +88,8 @@ export default function HistoryPage({ user }: HistoryPageProps) {
 
   const [loadingList, setLoadingList] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState('');
   const [rows, setRows] = useState<ConversationRow[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<HistoryMessage[]>([]);
@@ -159,6 +163,240 @@ export default function HistoryPage({ user }: HistoryPageProps) {
     }
     return Array.from(byTurn.values());
   }, [messages]);
+
+  /* ---------------------------------------------------------------- */
+  /*  Export All Conversations (fetches ALL pages + messages)           */
+  /* ---------------------------------------------------------------- */
+
+  const fetchAllConversationsWithMessages = async () => {
+    // Step 1: Fetch all conversation rows across all pages
+    const allRows: ConversationRow[] = [];
+    const fetchPageSize = 100;
+    let page = 1;
+    let totalConvs = 0;
+
+    setExportProgress('Fetching conversations...');
+
+    // First request to know total
+    const opts: any = isSuperAdmin
+      ? (selectedUserId != null ? { userId: selectedUserId } : { allUsers: true })
+      : {};
+    if (selectedDate) {
+      opts.dateFrom = selectedDate;
+      opts.dateTo = selectedDate;
+    }
+
+    const firstRes: any = await listHistory(1, fetchPageSize, Object.keys(opts).length > 0 ? opts : undefined);
+    if (!firstRes?.ok || !firstRes?.data) throw new Error('Failed to fetch conversations');
+
+    const firstRows: ConversationRow[] = Array.isArray(firstRes.data.rows) ? firstRes.data.rows : [];
+    allRows.push(...firstRows);
+    totalConvs = Number(firstRes.data.total || firstRows.length);
+    const totalPages = Math.ceil(totalConvs / fetchPageSize);
+
+    // Fetch remaining pages
+    for (page = 2; page <= totalPages; page++) {
+      setExportProgress(`Fetching conversations (${allRows.length}/${totalConvs})...`);
+      const res: any = await listHistory(page, fetchPageSize, Object.keys(opts).length > 0 ? opts : undefined);
+      if (res?.ok && Array.isArray(res?.data?.rows)) {
+        allRows.push(...res.data.rows);
+      }
+    }
+
+    // Step 2: For each conversation, fetch its messages
+    // Sort conversations: most recent first (for export ordering)
+    allRows.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+    type ExportTurn = {
+      conversationTitle: string;
+      userName: string;
+      empId: string;
+      department: string;
+      askedAt: string;
+      question: string;
+      answeredAt: string;
+      answer: string;
+    };
+
+    const allTurns: ExportTurn[] = [];
+
+    for (let i = 0; i < allRows.length; i++) {
+      const row = allRows[i];
+      setExportProgress(`Fetching messages (${i + 1}/${allRows.length})...`);
+
+      try {
+        const ownerUserId = isSuperAdmin ? Number(row.user_id) : undefined;
+        const msgRes: any = await getHistoryConversation(
+          row.conversation_id,
+          isSuperAdmin && Number.isFinite(ownerUserId) ? { userId: ownerUserId } : undefined,
+        );
+        if (msgRes?.ok && Array.isArray(msgRes?.data?.messages)) {
+          const msgs: HistoryMessage[] = msgRes.data.messages;
+          // Build turns from messages (same logic as the turns memo)
+          const byId = new Map<string, HistoryMessage>();
+          for (const m of msgs) {
+            if (!byId.has(m.message_id)) byId.set(m.message_id, m);
+          }
+          const ordered = Array.from(byId.values()).sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
+          const turnMap = new Map<string, { question?: string; answer?: string; askedAt?: string; answeredAt?: string }>();
+          for (const m of ordered) {
+            const parts = String(m.message_id || '').split(':');
+            const rawId = parts.length >= 3 ? parts[parts.length - 2] : parts[0];
+            const turnId = rawId || String(new Date(m.created_at).getTime());
+            if (!turnMap.has(turnId)) turnMap.set(turnId, {});
+            const turn = turnMap.get(turnId)!;
+            if (m.role === 'user') {
+              turn.question = m.original_text;
+              turn.askedAt = m.created_at;
+            } else if (m.role === 'assistant') {
+              turn.answer = m.model_answer_text || m.original_text;
+              turn.answeredAt = m.created_at;
+            }
+          }
+
+          const convTitle = resolveConversationTitle(row.title);
+          const userName = row.user_name || row.emp_id || '';
+          for (const turn of turnMap.values()) {
+            allTurns.push({
+              conversationTitle: convTitle,
+              userName,
+              empId: row.emp_id || '',
+              department: row.department_code || '',
+              askedAt: turn.askedAt ? formatDateTimeJP(turn.askedAt) : '',
+              question: turn.question || '',
+              answeredAt: turn.answeredAt ? formatDateTimeJP(turn.answeredAt) : '',
+              answer: turn.answer || '',
+            });
+          }
+        }
+      } catch {
+        // Skip conversations that fail to load — don't block the whole export
+      }
+    }
+
+    return { allRows, allTurns, totalConvs };
+  };
+
+  const handleExportAllCsv = async () => {
+    setExporting(true);
+    try {
+      const { allTurns, totalConvs } = await fetchAllConversationsWithMessages();
+      setExportProgress('Generating CSV...');
+
+      const headers = isSuperAdmin
+        ? ['Conversation', 'User', 'Employee ID', 'Department', 'Asked At', 'Question', 'Answered At', 'Answer']
+        : ['Conversation', 'Asked At', 'Question', 'Answered At', 'Answer'];
+
+      const rowData = allTurns.map((t) =>
+        isSuperAdmin
+          ? [t.conversationTitle, t.userName, t.empId, t.department, t.askedAt, t.question, t.answeredAt, t.answer]
+          : [t.conversationTitle, t.askedAt, t.question, t.answeredAt, t.answer],
+      );
+      exportCsv(stampedFilename('all-conversations'), headers, rowData);
+      toast.success('Export complete', `${totalConvs} conversations exported`);
+    } catch (err: any) {
+      toast.error('Export failed', err?.message || 'Could not export conversations');
+    } finally {
+      setExporting(false);
+      setExportProgress('');
+    }
+  };
+
+  const handleExportAllPdf = async () => {
+    setExporting(true);
+    try {
+      const { allTurns, totalConvs } = await fetchAllConversationsWithMessages();
+      setExportProgress('Generating PDF...');
+
+      const pdfHeaders: PdfColumnDef[] = isSuperAdmin
+        ? [
+            { header: 'Conversation', width: 2 },
+            { header: 'User', width: 1.2 },
+            { header: 'Dept', width: 0.7, align: 'center' },
+            { header: 'Asked At', width: 1.5 },
+            { header: 'Question', width: 4 },
+            { header: 'Answered At', width: 1.5 },
+            { header: 'Answer', width: 4 },
+          ]
+        : [
+            { header: 'Conversation', width: 2 },
+            { header: 'Asked At', width: 1.5 },
+            { header: 'Question', width: 5 },
+            { header: 'Answered At', width: 1.5 },
+            { header: 'Answer', width: 5 },
+          ];
+
+      const rowData = allTurns.map((t) =>
+        isSuperAdmin
+          ? [t.conversationTitle, t.userName, t.department, t.askedAt, t.question, t.answeredAt, t.answer]
+          : [t.conversationTitle, t.askedAt, t.question, t.answeredAt, t.answer],
+      );
+      await exportPdf({
+        title: 'All Conversations — Full Export',
+        subtitle: `${totalConvs} conversations, ${allTurns.length} Q&A turns`,
+        headers: pdfHeaders,
+        rows: rowData,
+        filename: stampedFilename('all-conversations'),
+        orientation: 'landscape',
+      });
+      toast.success('Export complete', `${totalConvs} conversations exported`);
+    } catch (err: any) {
+      toast.error('Export failed', err?.message || 'Could not export conversations');
+    } finally {
+      setExporting(false);
+      setExportProgress('');
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /*  Export Single Conversation (full content, no truncation)         */
+  /* ---------------------------------------------------------------- */
+
+  const handleExportChatCsv = () => {
+    if (!turns.length) return;
+    const title = resolveConversationTitle(selectedConversation?.title);
+    const headers = ['#', 'User', 'Asked At', 'Question', 'Answered At', 'Answer'];
+    const rowData = turns.map((turn, i) => [
+      i + 1,
+      selectedConversationUserLabel,
+      turn.askedAt ? formatDateTimeJP(turn.askedAt) : '',
+      turn.question || '',
+      turn.answeredAt ? formatDateTimeJP(turn.answeredAt) : '',
+      turn.answer || '',
+    ]);
+    exportCsv(stampedFilename(`chat-${title.slice(0, 30).replace(/[^a-z0-9]/gi, '_')}`), headers, rowData);
+  };
+
+  const handleExportChatPdf = async () => {
+    if (!turns.length) return;
+    const title = resolveConversationTitle(selectedConversation?.title);
+    const pdfHeaders: PdfColumnDef[] = [
+      { header: '#', width: 0.4, align: 'center' },
+      { header: 'User', width: 1.5 },
+      { header: 'Asked At', width: 1.5 },
+      { header: 'Question', width: 5 },
+      { header: 'Answered At', width: 1.5 },
+      { header: 'Answer', width: 5 },
+    ];
+    const rowData = turns.map((turn, i) => [
+      i + 1,
+      selectedConversationUserLabel,
+      turn.askedAt ? formatDateTimeJP(turn.askedAt) : '',
+      turn.question || '',
+      turn.answeredAt ? formatDateTimeJP(turn.answeredAt) : '',
+      turn.answer || '',
+    ]);
+    await exportPdf({
+      title: `Chat: ${title}`,
+      subtitle: `${turns.length} Q&A turns`,
+      headers: pdfHeaders,
+      rows: rowData,
+      filename: stampedFilename(`chat-${title.slice(0, 30).replace(/[^a-z0-9]/gi, '_')}`),
+      orientation: 'landscape',
+    });
+  };
 
   const loadList = async (
     targetPage = pageNum,
@@ -354,8 +592,16 @@ export default function HistoryPage({ user }: HistoryPageProps) {
   return (
     <div className="h-full min-h-0 grid grid-cols-1 gap-4 overflow-hidden p-3 sm:p-4 lg:grid-cols-[320px_minmax(0,1fr)]">
       <div className="flex min-h-[260px] flex-col rounded-xl border border-default bg-surface dark:bg-dark-surface overflow-hidden lg:min-h-0">
-        <div className="px-4 py-3 border-b border-default font-semibold text-foreground dark:text-dark-text">
-          {t('history.title')}
+        <div className="px-4 py-3 border-b border-default flex items-center justify-between gap-2">
+          <span className="font-semibold text-foreground dark:text-dark-text">{t('history.title')}</span>
+          {visibleRows.length > 0 && (
+            <ExportDropdown
+              onExportCsv={handleExportAllCsv}
+              onExportPdf={handleExportAllPdf}
+              disabled={exporting}
+              label=""
+            />
+          )}
         </div>
 
         {/* Date picker bar */}
@@ -567,13 +813,18 @@ export default function HistoryPage({ user }: HistoryPageProps) {
               <h3 className="text-base font-semibold text-foreground dark:text-dark-text">
                 {resolveConversationTitle(selectedConversation?.title)}
               </h3>
-              <button
-                onClick={() => handleDeleteConversation(selectedConversationId)}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-              >
-                <Trash2 className="w-4 h-4" />
-                {t('history.deleteConversation')}
-              </button>
+              <div className="flex items-center gap-2">
+                {turns.length > 0 && (
+                  <ExportDropdown onExportCsv={handleExportChatCsv} onExportPdf={handleExportChatPdf} />
+                )}
+                <button
+                  onClick={() => handleDeleteConversation(selectedConversationId)}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {t('history.deleteConversation')}
+                </button>
+              </div>
             </div>
 
             <div className="space-y-3">
@@ -615,6 +866,19 @@ export default function HistoryPage({ user }: HistoryPageProps) {
           </>
         )}
       </div>
+
+      {/* Export progress overlay */}
+      {exporting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-surface dark:bg-dark-surface border border-default rounded-2xl shadow-xl px-8 py-6 flex flex-col items-center gap-3 max-w-sm">
+            <div className="w-8 h-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+            <p className="text-sm font-medium text-foreground dark:text-dark-text">Exporting conversations...</p>
+            {exportProgress && (
+              <p className="text-xs text-muted dark:text-dark-text-muted">{exportProgress}</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

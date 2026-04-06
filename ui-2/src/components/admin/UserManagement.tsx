@@ -3,6 +3,8 @@ import { Plus, Edit, Trash2, X, Save, Upload, Search, RotateCcw } from 'lucide-r
 import { useLang } from '../../context/LanguageContext';
 import { useToast } from '../../context/ToastContext';
 import { formatDateTimeJP } from '../../lib/dateTime';
+import { exportCsv, exportPdf, stampedFilename, type PdfColumnDef } from '../../lib/export';
+import ExportDropdown from '../shared/ExportDropdown';
 import {
   bulkDeleteAdminUsers,
   createAdminUser,
@@ -523,6 +525,48 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
     return formatDateTimeJP(value, value || '-');
   };
 
+  const buildUserExportRows = () => {
+    const headers = ['Employee ID', 'First Name', 'Last Name', 'Email', 'Role', 'Department', 'Status', 'Last Updated'];
+    const rows = users.map((u) => [
+      u.employeeCode,
+      u.firstName,
+      u.lastName,
+      u.email,
+      u.roleCode,
+      u.departmentCode,
+      u.lifecycleStatus,
+      formatDateTimeJP(u.lastUpdated),
+    ]);
+    return { headers, rows };
+  };
+
+  const handleExportUsersCsv = () => {
+    const { headers, rows } = buildUserExportRows();
+    exportCsv(stampedFilename('users'), headers, rows);
+  };
+
+  const handleExportUsersPdf = async () => {
+    const { rows } = buildUserExportRows();
+    const pdfHeaders: PdfColumnDef[] = [
+      { header: 'Employee ID', width: 1.5 },
+      { header: 'First Name', width: 2 },
+      { header: 'Last Name', width: 2 },
+      { header: 'Email', width: 3 },
+      { header: 'Role', width: 1.5, align: 'center' },
+      { header: 'Department', width: 1.5, align: 'center' },
+      { header: 'Status', width: 1, align: 'center' },
+      { header: 'Last Updated', width: 2 },
+    ];
+    await exportPdf({
+      title: 'User List',
+      subtitle: `${users.length} users`,
+      headers: pdfHeaders,
+      rows,
+      filename: stampedFilename('users'),
+      orientation: 'landscape',
+    });
+  };
+
   const getActionButtonClass = (tone: 'primary' | 'success' | 'warning' | 'danger') => {
     const base = 'inline-flex shrink-0 items-center justify-center rounded-lg p-2 transition-colors';
     if (tone === 'primary') return `${base} text-blue-600 hover:bg-blue-50`;
@@ -576,6 +620,9 @@ const UserManagement = forwardRef<UserManagementHandle, UserManagementProps>(fun
                 ) : null}
               </div>
 
+              {users.length > 0 && (
+                <ExportDropdown onExportCsv={handleExportUsersCsv} onExportPdf={handleExportUsersPdf} />
+              )}
               {canBulkDelete && (
                 <button
                   type="button"

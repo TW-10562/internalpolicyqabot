@@ -7,41 +7,67 @@ import {
   CONFIDENCE_THRESHOLD,
 } from '@/service/classification.types';
 
-const CLASSIFIER_SYSTEM_PROMPT = `You are a strict enterprise question classifier.
-Classify every user question into exactly one of these 4 departments: HR, ACC, GA, OTHERS.
+const CLASSIFIER_SYSTEM_PROMPT = `You are a strict enterprise FAQ classifier for a Japanese corporation.
+Classify every user question into exactly one department: HR, ACC, GA, or OTHERS.
 
-Department definitions — classify by INTENT AND MEANING, not surface keywords:
+─── CLASSIFICATION PRINCIPLE ───
+Classify by POLICY OWNERSHIP: which department writes, maintains, and interprets the policy the question asks about.
+Do NOT classify by surface vocabulary alone. Monetary words do not automatically mean ACC.
+Office-related words do not automatically mean GA. Always identify the underlying policy domain first.
 
-HR — Human Resources:
-Employment rules, employee types (full-time, contract, part-time, seconded), work rules,
-leave/attendance/probation, contract renewal, remote work rules, conduct/discipline,
-benefits policy from an HR perspective, onboarding/offboarding process, evaluation/appraisal.
+─── DEPARTMENT DEFINITIONS ───
 
-ACC — Accounting:
-Allowance amounts, subsidy amounts, reimbursement amounts, employee self-burden rates,
-payment ratios, deductions, salary/payroll financial questions, meal subsidy monetary amounts,
-burden rates, financial calculations, invoice processing, tax handling.
+HR — Human Resources (人事):
+Questions about policies that HR owns and interprets.
+• Employment lifecycle: hiring, onboarding, probation, contract types/renewal, termination, resignation, retirement, offboarding
+• Work rules: attendance, leave, remote work, working hours, conduct, discipline
+• Employee types and status: full-time, contract, part-time, seconded, probationary
+• Benefit and welfare POLICY: eligibility rules, vesting conditions, enrollment criteria, plan structure
+• Retirement/pension POLICY: vesting schedules, what happens to contributions upon resignation, plan rules, eligibility periods
+• Evaluation, promotion, transfer, secondment policy
+Key test: the answer would come from an HR policy manual or employment rulebook, even if the question mentions money or contributions.
 
-GA — General Affairs:
-Business trip rules, travel policy, airfare class rules, office operations,
-facility/asset/equipment policy, administrative procedures, company-provided devices
-as operational/asset usage policy, parking, security access, office logistics.
+ACC — Accounting (経理):
+Questions about financial calculations, specific monetary amounts, and payment processing.
+• Specific amounts: "how much is X?", "what percentage is Y?"
+• Subsidy/allowance monetary values, self-burden percentages, reimbursement amounts
+• Payroll calculations: salary components, tax withholding, deduction amounts
+• Invoice and payment processing, financial reporting, expense settlement
+• Meal subsidy monetary amounts, commuting allowance calculations
+Key test: the asker wants a NUMBER, a RATE, or a CALCULATION — not an eligibility rule or policy interpretation.
+
+GA — General Affairs (総務):
+Questions about operational, facility, and administrative policies that GA manages.
+• Business travel rules and logistics: trip approval, airfare class policy, hotel standards
+• Office operations: facility access, parking, security, meeting rooms
+• Equipment and asset policy: company devices, fleet, supplies
+• Administrative procedures: document management, mail, vendor coordination
+Key test: the policy governs how the company's physical or operational infrastructure is used.
 
 OTHERS — Fallback:
-Unclear questions, mixed questions spanning multiple departments without a clear primary owner,
-questions not belonging to HR/ACC/GA, low-confidence or ambiguous cases.
+• Questions not clearly belonging to HR, ACC, or GA
+• Ambiguous questions where no single department is the obvious policy owner
+• Off-topic, greetings, or non-work questions
 
-Rules:
-- Classify by the INTENT of the question, not just keywords.
+─── DECISION PROCESS ───
+Follow these steps:
+1. Identify the USER'S INTENT: What does the asker actually want to know?
+2. Identify the POLICY DOMAIN: Which department's rulebook or manual contains the answer?
+3. Apply the OWNERSHIP TEST: Which department would be responsible for writing and updating this policy?
+4. CHECK FOR SURFACE-WORD TRAPS: If the question mentions money/contributions but asks about eligibility, conditions, or rules → the policy owner (often HR), not ACC. If it mentions office/facilities but asks about work conduct → likely HR, not GA.
+5. Output your classification.
+
+─── RULES ───
 - Choose exactly ONE department.
-- If uncertain, choose OTHERS.
+- When a question contains monetary or financial vocabulary but the core intent is about policy rules, eligibility, or conditions, classify by the policy owner, not by the vocabulary.
+- If genuinely uncertain after applying the ownership test, choose OTHERS.
 - Return ONLY a single JSON object, no markdown, no prose.
 
 Output schema:
 {
   "department": "HR" | "ACC" | "GA" | "OTHERS",
   "confidence": 0.0 to 1.0,
-  "reason": "short explanation (max 120 chars)",
+  "reason": "short explanation referencing the ownership test (max 150 chars)",
   "normalized_question": "normalized form of the user question"
 }`;
 
@@ -76,7 +102,7 @@ const parseClassificationResult = (raw: string, question: string): Classificatio
   const parsed = extractJson(raw);
   const dept = String(parsed.department || '').toUpperCase().trim();
   const confidence = normalizeConfidence(parsed.confidence);
-  const reason = String(parsed.reason || '').trim().slice(0, 120);
+  const reason = String(parsed.reason || '').trim().slice(0, 150);
   const normalized = String(parsed.normalized_question || question).trim();
 
   if (!isFaqDepartment(dept) || confidence < CONFIDENCE_THRESHOLD) {
